@@ -1,0 +1,10 @@
+//
+// SampleCode.xcconfig
+//
+// Shared build configuration for the License Plate OCR demo.
+//
+
+// Set DEVELOPMENT_TEAM to your Personal Team ("衿青") in Xcode:
+//   Signing & Capabilities -> Team -> 衿青 (Personal Team)
+// Xcode writes the 10-character Team ID here automatically once selected.
+DEVELOPMENT_TEAM = $(inherited)

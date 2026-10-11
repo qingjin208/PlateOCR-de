@@ -1,0 +1,24 @@
+换成你自己的德国车牌 YOLO 模型
+================================
+
+当前 `Resources/` 里放的是官方 Ultralytics `yolov8n` 的 Core ML 导出（COCO 80 类，
+输入 640×640），作为**占位模型**——它不含车牌类别，Demo 用它检测 `car`(class 2)，
+再对车辆区域做 OCR 并筛出德国车牌。
+
+换成你的车牌模型（二选一）：
+A. 命名为 `license_plate_yolo.mlpackage` 放进这里，并把 `ContentView` 里
+   `LicensePlateRecognizer(modelName: "yolov8n", config: .cocoCar)`
+   改回 `LicensePlateRecognizer()`（默认 .germanPlate 配置、targetClassIndices=[0]）。
+B. 用任意文件名，显式传参：
+   `LicensePlateRecognizer(modelName: "你的名字", config: YOLOConfig(...))`。
+
+模型要求：
+1. 由 YOLO（Ultralytics YOLOv8/11/12 等）训练，任务为「德国车牌检测」，
+   单类（license_plate）即可。
+2. 导出为 Core ML，且**不要启用 NMS 变体**，保留原始输出便于 SDK 解码：
+   `yolo export model=best.pt format=coreml imgsz=640 nms=False`
+   SDK 会自动识别两种常见布局：通道优先 `[1, 84, 8400]` 与 `[1, N, 4+numClasses]`。
+3. 拖入 Xcode 工程，勾选「Copy items if needed」并加入 LicensePlateOCR target，
+   Xcode 会把它编译为 `.mlmodelc`。
+4. 若输出布局不同（corner 格式 / 已带 NMS），在 `YOLOConfig` 调整
+   `format`、`numClasses`、`classNames`、`targetClassIndices`、`confidenceThreshold`、`iouThreshold`。
