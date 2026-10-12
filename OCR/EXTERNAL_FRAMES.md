@@ -1,6 +1,6 @@
 # External frame recognition
 
-The default pipeline uses VINRecognizeSDK's `yolo.nb` plate detector followed by Apple's Vision `RecognizeTextRequest`. Paddle OCR models are not used. The SDK does not create a camera or request camera permission. Only the demo's `CameraController` owns an `AVCaptureSession`.
+The default pipeline uses VINRecognizeSDK's original `yolo.nb` graph and weights converted to `license_plate_yolo.mlmodel`, followed by Apple's Vision `RecognizeTextRequest`. Detection runs through Core ML with eligible compute units set to `.all`. This branch has no Paddle runtime dependency. The SDK does not create a camera or request camera permission. Only the demo's `CameraController` owns an `AVCaptureSession`.
 
 ## Input and results
 
@@ -35,21 +35,16 @@ Switching away from the camera or backgrounding the app stops capture and invali
 
 ## Model and build
 
-The source branch is `feature/german-plate-external-frame-demo`, commit `b75dc3e8955e5e8f7be41ac655156752f5d9b93c`. The model, Paddle Lite static runtime and seven runtime headers are copied byte-for-byte. Their provenance and model/runtime SHA-256 hashes are recorded in [model-provenance.json](ThirdParty/model-provenance.json). Inspection of the copied runtime found LLVM bitcode objects targeting `arm64-apple-ios9.0.0`; compatibility with the selected Xcode linker must be confirmed by a device build.
+The original NB model came from `feature/german-plate-external-frame-demo`, commit `b75dc3e8955e5e8f7be41ac655156752f5d9b93c`. `main` at `9ec6f24` retains that NB runtime baseline. This branch converts the same graph and all 129 FP32 parameter tensors to Core ML built-in neural-network layers. See [model provenance](Models/nb-coreml-provenance.json) and [conversion details](Models/README.md).
 
-The native wrapper preserves the source's actual BGR channel order, mean/std normalization, 640 × 640 letterboxing, 0.45 confidence threshold and 0.45 NMS IoU threshold. It supports both source output layouts, restores original image coordinates and clips boxes at image boundaries. Core Graphics supplies preprocessing instead of adding an OpenCV dependency; interpolation may differ slightly from the source implementation.
+The Core ML model incorporates the source's BGR mean/std normalization. The SDK preserves 640 × 640 letterboxing, 0.45 confidence threshold and 0.45 NMS IoU threshold. It decodes `[1, 5, 8400]` with center/size coordinates in input pixels, restores original image coordinates and clips boxes at image boundaries. Core Graphics supplies letterboxing. No custom Paddle layers or replacement model are used.
 
-Open `LicensePlateOCR.xcodeproj` with Xcode 16 or newer and run on a physical arm64 iPhone with iOS 18 or newer. The copied runtime is an iOS device binary. The demo's simulator path reports an explicit unsupported-runtime error; it does not substitute the old car detector. The Swift Package supports device integration through a native target with local include/library paths. Its current iOS linker settings require a physical-device destination; simulator package consumers need a compatible simulator runtime. The macOS package path supports injected-detector tests but does not execute the bundled iOS detector.
+Open `LicensePlateOCR.xcodeproj` with Xcode 16 or newer and run on an iPhone with iOS 18 or newer. Xcode compiles the bundled `.mlmodel` to `.mlmodelc`. The Swift Package uses its own resource bundle and no local native-library search paths. Simulator and macOS builds no longer need a Paddle runtime slice; compilation and prediction still need verification on Apple platforms.
 
 ## Validation
 
-Portable decoder tests cover multiple plates, overlapping proposals, both tensor layouts, normalized/pixel coordinates, letterbox reversal, edge clipping, padding-only detections, invalid shapes and nonfinite scores:
+Windows checks verify original weight bytes and compare the recovered NB graph evaluated with PyTorch against the serialized Core ML graph evaluated independently through ONNX Runtime. Three synthetic inputs pass; detailed evidence is in [nb-coreml-validation.json](Models/nb-coreml-validation.json). This is not actual Core ML or Paddle Lite runtime parity.
 
-```sh
-c++ -std=c++17 Tests/PlateDecoderTests.cpp -o /tmp/plate-decoder-tests
-/tmp/plate-decoder-tests
-```
-
-On macOS 15 or newer, `swift test` in `OCR/` exercises injected detectors and OCR, multiple plate crops, NV12 ranges, orientation, oversized-frame rejection, and fragmented OCR text. These tests do not assess the real model's accuracy. Neither the C++ nor Swift tests were executed in the Windows workspace: the available MSVC installation lacks standard-library headers, and Apple frameworks are unavailable. Completed checks cover copied-file integrity, Xcode project syntax/source membership/link settings, and `git diff --check`.
+On macOS 15 or newer, `swift test` in `OCR/` covers both raw output layouts, float16/float32/float64 storage, clipping/NMS, model compilation/loading, and Core ML CPU predictions against two original-graph fixtures. Existing tests also cover multiple plate crops, NV12 ranges, orientation, oversized-frame rejection and fragmented OCR text. The Swift tests were not run in the Windows workspace.
 
 Before accepting device behavior, build the demo and check BGRA and both NV12 ranges at 4K, several plates in one frame, portrait alignment, permission denial, mode changes, camera tab re-entry and background/foreground transitions. Compare recognized text with known plates and inspect the reported latency. Windows cannot run Xcode, Apple Vision or the iOS runtime; device accuracy and end-to-end latency remain unverified until this check is performed.

@@ -1,0 +1,7 @@
+# Machine-learning models and weights are binary artifacts.
+*.mlmodel binary
+*.nb binary
+*.bin binary
+*.pt binary
+*.a binary
+*.f32 binary

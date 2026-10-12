@@ -1,6 +1,8 @@
 # 德国车牌识别：车牌检测 + Apple Vision OCR
 
-默认使用从 `VINRecognizeSDK` 项目 `feature/german-plate-external-frame-demo` 分支复制的 **`yolo.nb` 车牌检测模型**。检测后逐个裁剪车牌区域，交给 Apple Vision `RecognizeTextRequest` 识别字符，再校验和规范化德国车牌格式。
+当前 `feature/coreml-plate-detection` 分支使用由原 **`yolo.nb` 计算图和权重转换的 `license_plate_yolo.mlmodel`**，通过 Apple Core ML 执行车牌检测。129 个 FP32 参数张量与原模型逐字节一致，没有替换检测模型。检测后逐个裁剪车牌区域，继续交给 Apple Vision `RecognizeTextRequest` 识别字符。
+
+`main` 保留原 Paddle Lite / `.nb` 方案，基准提交为 `9ec6f24`。本分支不链接 Paddle Lite，也不向 App 打包 `.nb`；原 `.nb` 仅保留在 `Models/source/` 作为离线转换输入。
 
 ## 使用
 
@@ -33,19 +35,21 @@ for plate in frame.plates {
 
 ## 项目文件
 
-- `LicensePlateOCR/LicensePlateSDK/Resources/yolo.nb`：实际车牌检测模型。
-- `NativePlateDetector/`：Paddle Lite 检测桥接、预处理、坐标还原和 NMS。
-- `ThirdParty/PaddleLite/`：原分支的 Paddle Lite 运行库和头文件。
-- `ThirdParty/model-provenance.json`：源提交、模型与运行库 SHA-256、预处理参数。
+- `LicensePlateOCR/LicensePlateSDK/Resources/license_plate_yolo.mlmodel`：由原 `.nb` 转换的 Core ML 车牌检测模型。
+- `Models/source/yolo.nb`：原模型，仅供离线转换和一致性验证。
+- `Models/nb-coreml-provenance.json`：模型 SHA-256、原始参数映射和转换元数据。
+- `Models/nb-coreml-validation.json`：CPU 图计算一致性验证结果。
+- `Scripts/convert_nb_to_coreml.py`：保留原权重的转换脚本。
+- `Scripts/validate_nb_coreml.py`：原图与导出图的独立 CPU 验证脚本。
 - `LicensePlateOCR/LicensePlateSDK/`：外部帧接口、Apple OCR 和德国车牌后处理。
 - `LicensePlateOCR/Camera/`：由 Demo 持有的相机、实时框选和结果展示。
 - `Tests/`：解码和帧处理回归测试。
-- `Package.swift`：包含原生检测桥接的本地 Swift Package 定义。
+- `Package.swift`：仅依赖 Apple 框架的 Swift Package 定义。
 
 ## 平台与验证限制
 
-复制的 Paddle Lite 二进制面向 iOS 真机，模拟器中的 Demo 会明确显示不支持的错误。当前 Swift Package 的 iOS 链接配置也要求真机目标；模拟器接入需要另行提供兼容的运行库。macOS 可使用注入的检测器运行测试，但不能执行这份 iOS 检测运行库。
+模型加载配置为 `MLComputeUnits.all`，允许 Core ML 选择符合条件的 CPU、GPU 和 Apple Neural Engine。是否实际使用 Neural Engine，以及速度和功耗是否改善，需要在目标 iPhone 上测量；不能仅凭模型格式作保证。Swift Package 已移除真机专用 Paddle 二进制限制，实际平台编译仍需 Apple 工具链验证。
 
-模型、运行库和全部七个头文件已经与源分支进行字节一致性检查。当前开发环境为 Windows，尚未执行 Xcode 编译、Apple OCR 测试或 iPhone 真机验证；识别准确率、画面框位置、4K 输入和实时延迟需要按接入文档在真机上确认。
+已验证全部 129 个原始参数张量逐字节一致，且原 NB 计算图与序列化 Core ML 图在黑图、114 灰图和固定随机图上的独立 CPU 执行结果通过误差检查。这里的验证不使用实际 Paddle Lite 或 Apple Core ML 运行时，不能代替真机识别与性能测试。
 
-项目保留了原有 Core ML 检测器及 COCO 模型作为可选资源，默认程序已经使用 `yolo.nb`。替换成其他 Core ML 模型时可显式调用 `LicensePlateRecognizer(modelName:config:)`。
+当前环境为 Windows，尚未执行 Xcode 编译和 Swift 测试，也尚未验证 Core ML 真机推理。已加入实际模型加载测试及原图输出对照数据。转换方法、数值验证边界和真机对比步骤见 [Models/README.md](Models/README.md)。

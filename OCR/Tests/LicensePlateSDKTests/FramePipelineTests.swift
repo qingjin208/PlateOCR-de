@@ -60,4 +60,22 @@ final class FramePipelineTests: XCTestCase {
         XCTAssertEqual(PlatePostProcessor().process(observations: parts, region: .zero,
             imageSize: CGSize(width: 100, height: 50))?.text, "HH-AB 1234")
     }
+
+    func testCompletePlateWinsOverHigherConfidenceFragment() {
+        let parts = [
+            PlateObservation(boundingBox: CGRect(x: 0, y: 0.1, width: 0.2, height: 0.7), string: "HH", confidence: 0.8, candidates: []),
+            PlateObservation(boundingBox: CGRect(x: 0.3, y: 0.2, width: 0.6, height: 0.7), string: "AB1234", confidence: 0.99, candidates: [])
+        ]
+        let result = PlatePostProcessor().process(observations: parts, region: .zero, imageSize: CGSize(width: 100, height: 50))
+        XCTAssertEqual(result?.text, "HH-AB 1234")
+        XCTAssertEqual(result?.confidence ?? 0, 0.8, accuracy: 0.0001)
+    }
+
+    func testEUStripAndDresdenPrefixAreDistinguished() {
+        XCTAssertEqual(GermanPlateValidator.canonicalize("D HH AB 1234"), "HH-AB 1234")
+        XCTAssertEqual(GermanPlateValidator.canonicalize("EU HH-AB 1234"), "HH-AB 1234")
+        XCTAssertEqual(GermanPlateValidator.canonicalize("D AB 1234"), "D-AB 1234")
+        XCTAssertNil(GermanPlateValidator.canonicalize("ABCDEF1234"))
+        XCTAssertFalse(GermanPlateValidator.isValid("HH-AB 1234\n"))
+    }
 }

@@ -34,14 +34,22 @@ public struct PlatePostProcessor: Sendable {
         }
         // Vision often splits a plate into city, series and number observations.
         // Join spatial neighbors instead of dropping a valid multi-part reading.
-        let ordered = observations.sorted {
-            if abs($0.boundingBox.midY - $1.boundingBox.midY) > 0.25 {
-                return $0.boundingBox.midY > $1.boundingBox.midY
-            }
+        let byRow = observations.filter { !$0.string.isEmpty }.sorted {
+            if $0.boundingBox.midY != $1.boundingBox.midY { return $0.boundingBox.midY > $1.boundingBox.midY }
             return $0.boundingBox.minX < $1.boundingBox.minX
         }
+        var rows: [[PlateObservation]] = []
+        for observation in byRow {
+            if let anchor = rows.last?.first, abs(anchor.boundingBox.midY - observation.boundingBox.midY) <= 0.25 {
+                rows[rows.count - 1].append(observation)
+            } else { rows.append([observation]) }
+        }
+        let ordered = rows.flatMap { $0.sorted { $0.boundingBox.minX < $1.boundingBox.minX } }
+        var assembledText: String?
         if ordered.count > 1 {
-            raw.append((ordered.map(\.string).joined(separator: " "),
+            let joined = ordered.map(\.string).joined(separator: " ")
+            assembledText = GermanPlateValidator.canonicalize(joined)
+            raw.append((joined,
                         ordered.map(\.confidence).min() ?? 0))
         }
 
@@ -68,9 +76,13 @@ public struct PlatePostProcessor: Sendable {
             }
         }
 
-        // Prefer format-valid plates; among those, highest confidence.
+        // A complete joined plate takes precedence over a fragment that happens to match the format.
         let validOnes = best.filter { $0.value.valid }
-            .sorted { $0.value.confidence > $1.value.confidence }
+            .sorted {
+                if ($0.key == assembledText) != ($1.key == assembledText) { return $0.key == assembledText }
+                if $0.value.confidence != $1.value.confidence { return $0.value.confidence > $1.value.confidence }
+                return $0.key < $1.key
+            }
         guard let chosen = validOnes.first else { return nil }
 
         let candidates = best.map { PlateCandidate(text: $0.key, confidence: $0.value.confidence) }

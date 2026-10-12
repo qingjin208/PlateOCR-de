@@ -32,10 +32,11 @@ final class CameraController: NSObject {
     private nonisolated let frameGate = FrameGate()
     private let recognizer: LicensePlateRecognizing
     private var didSetup = false
-    private var setupInProgress = false
+    @ObservationIgnored private var configurationTask: Task<Bool, Never>?
     private var waitingForOCR = false
     private var active = false
     private var generation = 0
+    private var analysisIdentifier = 0
     private var lastPrinted: [String: Date] = [:]
     var isAuthorized = false
     var setupFailed = false
@@ -67,6 +68,7 @@ final class CameraController: NSObject {
     @discardableResult
     func setup() async -> Bool {
         active = true
+        let activationGeneration = generation
         let granted: Bool
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized: granted = true
@@ -74,19 +76,27 @@ final class CameraController: NSObject {
         default: granted = false
         }
         isAuthorized = granted
-        guard granted, active else { return false }
-        guard !setupInProgress else { return false }
+        guard granted, active, generation == activationGeneration, !Task.isCancelled else { return false }
         if !didSetup {
-            setupInProgress = true
-            defer { setupInProgress = false }
-            let ok = await withCheckedContinuation { continuation in
-                sessionQueue.async { continuation.resume(returning: self.configureSession()) }
+            let ownsConfiguration = configurationTask == nil
+            if ownsConfiguration {
+                configurationTask = Task {
+                    await withCheckedContinuation { continuation in
+                        sessionQueue.async { continuation.resume(returning: self.configureSession()) }
+                    }
+                }
             }
-            setupFailed = !ok
-            didSetup = ok
+            guard let task = configurationTask else { return false }
+            let ok = await task.value
+            if ownsConfiguration {
+                setupFailed = !ok
+                didSetup = ok
+                configurationTask = nil
+            }
             if !ok { errorMessage = "相机初始化失败"; return false }
         }
-        guard active else { return false }
+        guard active, generation == activationGeneration, !Task.isCancelled else { return false }
+        previewView?.ensurePortraitOrientation()
         sessionQueue.async { if !self.session.isRunning { self.session.startRunning() } }
         return true
     }
@@ -126,13 +136,16 @@ final class CameraController: NSObject {
         guard active, liveEnabled else { return }
         isAnalyzing = true
         waitingForOCR = true
+        analysisIdentifier += 1
+        let frameIdentifier = analysisIdentifier
         let token = generation
         let started = Date()
         do {
             let result = try await recognizer.recognizeFrame(frame.buffer, orientation: .up, mode: mode) {
                 [weak self] detections, size in
                 Task { @MainActor in
-                    guard let self, self.active, self.liveEnabled, self.waitingForOCR, self.generation == token else { return }
+                    guard let self, self.active, self.liveEnabled, self.waitingForOCR,
+                          self.generation == token, self.analysisIdentifier == frameIdentifier else { return }
                     self.liveDetections = detections
                     self.frameSize = size
                     self.previewView?.draw(detections: detections, results: [], imageSize: size)

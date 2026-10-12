@@ -64,10 +64,10 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     private let postProcessor: PlatePostProcessor
     private let context = CIContext(options: [.cacheIntermediates: false])
 
-    /// The default pipeline uses the bundled Paddle Lite plate model and Apple OCR.
+    /// The default pipeline uses the original plate model converted to Core ML and Apple OCR.
     public convenience init() {
         let detector: LicensePlateDetecting
-        do { detector = try PaddleLicensePlateDetector() }
+        do { detector = try CoreMLLicensePlateDetector() }
         catch { detector = CoreMLLicensePlateDetectorFailing(error: error) }
         self.init(detector: detector, recognizer: PlateTextRecognizer())
     }
@@ -170,7 +170,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
                                progress: (@Sendable (Double) -> Void)? = nil) async throws -> [PlateResult] {
         let asset = AVURLAsset(url: url)
         let duration = try await asset.load(.duration).seconds
-        guard duration > 0 else { throw LicensePlateError.invalidInput("视频时长为 0") }
+        guard duration.isFinite, duration > 0 else { throw LicensePlateError.invalidInput("视频时长无效") }
 
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
             throw LicensePlateError.invalidInput("No video track.")
@@ -184,16 +184,18 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         reader.add(output)
         guard reader.startReading() else { throw reader.error ?? LicensePlateError.invalidInput("Cannot start video reader.") }
         defer { reader.cancelReading() }
-        let step = duration / Double(max(1, maxSamples))
+        let sampleLimit = max(1, maxSamples)
+        let step = duration / Double(sampleLimit)
         var collected: [PlateResult] = []
         var seen = 0
         var nextTime = 0.0
-        while let sample = output.copyNextSampleBuffer() {
+        while seen < sampleLimit, let sample = autoreleasepool(invoking: { output.copyNextSampleBuffer() }) {
             try Task.checkCancellation()
             let time = CMSampleBufferGetPresentationTimeStamp(sample).seconds
-            guard time >= nextTime, seen < max(1, maxSamples), let pixel = CMSampleBufferGetImageBuffer(sample) else { continue }
-            let ci = CIImage(cvPixelBuffer: pixel).transformed(by: transform)
-            let buffer = try makePixelBuffer(from: ci)
+            guard time >= nextTime, let pixel = CMSampleBufferGetImageBuffer(sample) else { continue }
+            let buffer = try autoreleasepool {
+                try makePixelBuffer(from: CIImage(cvPixelBuffer: pixel).transformed(by: transform))
+            }
             collected.append(contentsOf: try await recognizeFrame(buffer, mode: mode).plates)
             seen += 1
             nextTime += step

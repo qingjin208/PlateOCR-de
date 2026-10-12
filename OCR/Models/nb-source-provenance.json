@@ -35,5 +35,7 @@
     "letterbox_fill": 114,
     "confidence_threshold": 0.45,
     "nms_iou_threshold": 0.45
-  }
+  },
+  "scope": "Historical provenance for the main NB baseline; its Paddle runtime is not shipped in the Core ML branch.",
+  "conversion_input": "OCR/Models/source/yolo.nb"
 }

@@ -26,6 +26,7 @@ struct CameraPreview: UIViewRepresentable {
     func updateUIView(_ uiView: PreviewView, context: Context) {
         // Keep the session attached in case the controller was recreated.
         uiView.videoPreviewLayer.session = controller.session
+        uiView.ensurePortraitOrientation()
     }
 }
 
@@ -58,8 +59,16 @@ final class PreviewView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        ensurePortraitOrientation()
         overlayLayer.frame = bounds
         renderOverlay()
+    }
+
+    func ensurePortraitOrientation() {
+        if let connection = videoPreviewLayer.connection, connection.isVideoRotationAngleSupported(90),
+           connection.videoRotationAngle != 90 {
+            connection.videoRotationAngle = 90
+        }
     }
 
     /// Draws top-left normalized boxes for an already oriented portrait frame.

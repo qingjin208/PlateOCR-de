@@ -1,0 +1,20 @@
+{
+  "source_nb_sha256": "64dbb06ba96ee2b3552ad8bc4fa167cb0020e2b507f67e96c6427fc60441926a",
+  "generator": "Original NB graph evaluated with PyTorch, not Paddle Lite device runtime",
+  "shape": [
+    1,
+    5,
+    8400
+  ],
+  "storage": "Little-endian FP32, channels-first",
+  "fixtures": {
+    "nb-reference-black": {
+      "gray_pixel": 0,
+      "sha256": "68bf0fac2a8af1df0ee19775fdb184fb075d6b254f7aabda6bba825b38eacda3"
+    },
+    "nb-reference-gray": {
+      "gray_pixel": 114,
+      "sha256": "a40c384888679213e24058acd0764077d02a2e65f1725b62cf9eb0ba740604fa"
+    }
+  }
+}

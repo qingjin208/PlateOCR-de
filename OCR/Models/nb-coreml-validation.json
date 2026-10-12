@@ -1,0 +1,40 @@
+{
+  "source_sha256": "64dbb06ba96ee2b3552ad8bc4fa167cb0020e2b507f67e96c6427fc60441926a",
+  "coreml_sha256": "90037c96f83346f6f395c3be9623ba173c05eb15e3fc7b6454853c5b9643b5bb",
+  "parameter_tensors_verified_bit_for_bit": 129,
+  "comparison": "NB graph evaluated with PyTorch vs serialized Core ML graph evaluated through ONNX Runtime",
+  "cases": [
+    {
+      "name": "black",
+      "shape": [
+        1,
+        5,
+        8400
+      ],
+      "max_coordinate_absolute_error": 0.00164794921875,
+      "max_score_absolute_error": 6.51925802230835e-07
+    },
+    {
+      "name": "letterbox_gray",
+      "shape": [
+        1,
+        5,
+        8400
+      ],
+      "max_coordinate_absolute_error": 0.000457763671875,
+      "max_score_absolute_error": 1.2662593462664518e-07
+    },
+    {
+      "name": "seeded_random",
+      "shape": [
+        1,
+        5,
+        8400
+      ],
+      "max_coordinate_absolute_error": 0.0003662109375,
+      "max_score_absolute_error": 5.21540641784668e-07
+    }
+  ],
+  "apple_runtime_verified": false,
+  "limitations": "Synthetic graph equivalence only. Actual Paddle Lite and Core ML device predictions, accuracy, acceleration and energy remain unverified."
+}

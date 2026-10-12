@@ -19,7 +19,8 @@ public enum GermanPlateValidator {
 
     /// Whether `text` already matches the canonical German plate format.
     public static func isValid(_ text: String) -> Bool {
-        text.range(of: pattern, options: .regularExpression) != nil
+        guard let match = text.range(of: pattern, options: .regularExpression) else { return false }
+        return match == (text.startIndex..<text.endIndex)
     }
 
     /// Turns a raw OCR string into a canonical plate string, or `nil` if it cannot be
@@ -31,6 +32,13 @@ public enum GermanPlateValidator {
     /// 3. Re-insert the separating hyphen at every valid city/series split.
     public static func canonicalize(_ raw: String) -> String? {
         let upper = raw.uppercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        // Remove a separate EU-strip marker only when the remainder is a complete separated plate.
+        // "D AB 1234" is a Dresden plate and must retain its city prefix.
+        if upper.range(of: #"^(?:D|EU)[ ]+[A-ZÄÖÜ]{1,3}[ -]+[A-ZÄÖÜ]{1,2}[ ]*[0-9]{1,4}[A-Z]?$"#,
+                       options: .regularExpression) != nil,
+           let separator = upper.firstIndex(of: " ") {
+            return canonicalize(String(upper[upper.index(after: separator)...]))
+        }
         // Preserve explicit city/series separators before flattening noisy OCR.
         if let range = upper.range(of: #"^[A-ZÄÖÜ]{1,3}[ -]+[A-ZÄÖÜ]{1,2}[ ]*[0-9]{1,4}[A-Z]?$"#,
                                    options: .regularExpression) {
@@ -53,8 +61,8 @@ public enum GermanPlateValidator {
         if let direct = tryAsPlate(alnum) { return direct }
 
         // The blue EU strip shows a "D"; the city seal or reflection sometimes bleeds in.
-        for drop in [2, 1] {
-            let trimmed = String(alnum.dropFirst(drop))
+        for marker in ["EU", "D"] where alnum.hasPrefix(marker) {
+            let trimmed = String(alnum.dropFirst(marker.count))
             if !trimmed.isEmpty, let candidate = tryAsPlate(trimmed) {
                 return candidate
             }
