@@ -14,6 +14,8 @@ import Vision
 
 /// A recognition candidate produced by Vision for a single observation.
 public struct PlateObservation: Sendable {
+    /// Vision's bottom-left normalized box within the cropped plate image.
+    public let boundingBox: CGRect
     /// Top recognized string for the observation.
     public let string: String
     /// Confidence of the top string (0...1).
@@ -76,6 +78,7 @@ public final class PlateTextRecognizer: PlateTextRecognizing {
             let primary = top.first
             let candidates = top.map { (text: $0.string, confidence: Float($0.confidence)) }
             return PlateObservation(
+                boundingBox: obs.boundingBox.cgRect,
                 string: primary?.string ?? "",
                 confidence: Float(primary?.confidence ?? 0),
                 candidates: candidates

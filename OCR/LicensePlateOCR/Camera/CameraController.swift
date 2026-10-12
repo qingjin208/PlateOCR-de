@@ -1,57 +1,61 @@
-/*
- License Plate OCR SDK — Demo App: Camera Controller
-
- Abstract:
- Drives the live camera. Mirrors Apple's "Locating and displaying recognized text"
- sample `Camera` class (AVCaptureSession + AVCapturePhotoOutput), but adds a
- `AVCaptureVideoDataOutput` so we can run the plate pipeline on throttled live
- frames (real-time detection) and on the captured still.
-
- The pipeline used here is the same `LicensePlateRecognizer` the rest of the app
- uses: with the bundled `yolov8n` (COCO) placeholder it detects *cars* and OCRs
- each car region, keeping only German-plate text. Swap in your own model later.
- */
-
-import AVFoundation
+@preconcurrency import AVFoundation
 import SwiftUI
 import CoreImage
-import CoreGraphics
-import VideoToolbox
 
-@Observable
+/// Retains the buffer until asynchronous recognition finishes.
+private struct CameraFrame: @unchecked Sendable { let buffer: CVPixelBuffer }
+
+/// Drops frames while recognition is busy instead of creating a backlog.
+private final class FrameGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var busy = false
+    private var lastStart = Date.distantPast
+    func begin() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !busy, Date().timeIntervalSince(lastStart) >= 0.2 else { return false }
+        busy = true
+        lastStart = Date()
+        return true
+    }
+    func finish() {
+        lock.lock()
+        busy = false
+        lock.unlock()
+    }
+}
+
+@MainActor @Observable
 final class CameraController: NSObject {
-
-    // MARK: Capture session
-
-    let session = AVCaptureSession()
-    private let photoOutput = AVCapturePhotoOutput()
-    private let videoOutput = AVCaptureVideoDataOutput()
-
-    // MARK: State (published for SwiftUI)
-
+    nonisolated let session = AVCaptureSession()
+    private nonisolated let sessionQueue = DispatchQueue(label: "licenseplate.camera.session")
+    private nonisolated let frameGate = FrameGate()
+    private let recognizer: LicensePlateRecognizing
+    private var didSetup = false
+    private var setupInProgress = false
+    private var waitingForOCR = false
+    private var active = false
+    private var generation = 0
+    private var lastPrinted: [String: Date] = [:]
     var isAuthorized = false
     var setupFailed = false
-    /// Live detection boxes, refreshed on a throttle while the camera runs.
     var liveResults: [PlateResult] = []
-    /// Results from the last shutter capture.
-    var capturedResults: [PlateResult] = []
+    var liveDetections: [PlateDetection] = []
+    var frameSize = CGSize.zero
     var isAnalyzing = false
-    /// Toggle real-time analysis of live frames on/off.
-    var liveEnabled = true
-    /// `true` once a still photo has been captured and the preview is frozen.
-    var isFrozen = false
+    var elapsedMilliseconds = 0
     var errorMessage: String?
-    /// Recognition mode; bound to the app's segmented control.
     var mode: RecognitionMode = .fast
-
-    // MARK: Private
-
-    private let recognizer: LicensePlateRecognizing
-    private let ciContext = CIContext()
-    private var lastAnalysis = Date.distantPast
-    private let analysisInterval: TimeInterval = 0.3
-    private var didSetup = false
-    /// Set by `CameraPreview` so analysis results can be drawn onto the preview.
+    var liveEnabled = true {
+        didSet {
+            generation += 1
+            if !liveEnabled {
+                liveResults = []
+                liveDetections = []
+                previewView?.clearOverlay()
+            }
+        }
+    }
     weak var previewView: PreviewView?
 
     init(recognizer: LicensePlateRecognizing, mode: RecognitionMode = .fast) {
@@ -60,184 +64,110 @@ final class CameraController: NSObject {
         super.init()
     }
 
-    // MARK: Authorization & setup
-
-    func checkAuthorization() async -> Bool {
-        switch AVCaptureDevice.authorizationStatus(for: .video) {
-        case .authorized:
-            return true
-        case .notDetermined:
-            return await AVCaptureDevice.requestAccess(for: .video)
-        default:
-            return false
-        }
-    }
-
-    /// Configures the session (on a background thread, since session ops block).
-    /// Safe to call more than once; only configures the session the first time.
-    /// The returned value reflects *setup success*, while `isAuthorized` reflects
-    /// the camera *permission* state (they are intentionally decoupled: a user can
-    /// grant permission but the session may still fail to configure).
     @discardableResult
     func setup() async -> Bool {
-        let granted = await checkAuthorization()
-        await MainActor.run { self.isAuthorized = granted }
-        guard granted else { return false }
-        guard !didSetup else { return !setupFailed }
-        let ok = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
-            Task.detached(priority: .userInitiated) {
-                cont.resume(returning: self.configureSession())
-            }
+        active = true
+        let granted: Bool
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized: granted = true
+        case .notDetermined: granted = await AVCaptureDevice.requestAccess(for: .video)
+        default: granted = false
         }
-        didSetup = true
-        if !ok { await MainActor.run { self.setupFailed = true } }
-        return ok
+        isAuthorized = granted
+        guard granted, active else { return false }
+        guard !setupInProgress else { return false }
+        if !didSetup {
+            setupInProgress = true
+            defer { setupInProgress = false }
+            let ok = await withCheckedContinuation { continuation in
+                sessionQueue.async { continuation.resume(returning: self.configureSession()) }
+            }
+            setupFailed = !ok
+            didSetup = ok
+            if !ok { errorMessage = "相机初始化失败"; return false }
+        }
+        guard active else { return false }
+        sessionQueue.async { if !self.session.isRunning { self.session.startRunning() } }
+        return true
     }
 
-    private func configureSession() -> Bool {
+    private nonisolated func configureSession() -> Bool {
         session.beginConfiguration()
-        session.sessionPreset = .high
-
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera,
-                                                   for: .video, position: .back) else {
-            session.commitConfiguration()
-            return false
-        }
-        guard let input = try? AVCaptureDeviceInput(device: device) else {
-            session.commitConfiguration()
-            return false
-        }
-        guard session.canAddInput(input) else {
-            session.commitConfiguration()
-            return false
-        }
+        defer { session.commitConfiguration() }
+        session.sessionPreset = .hd1920x1080
+        guard let camera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
+              let input = try? AVCaptureDeviceInput(device: camera), session.canAddInput(input) else { return false }
+        let output = AVCaptureVideoDataOutput()
+        output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String:
+            kCVPixelFormatType_420YpCbCr8BiPlanarFullRange]
+        output.alwaysDiscardsLateVideoFrames = true
+        output.setSampleBufferDelegate(self, queue: DispatchQueue(label: "licenseplate.camera.frames"))
+        guard session.canAddOutput(output) else { return false }
         session.addInput(input)
-
-        guard session.canAddOutput(photoOutput) else {
-            session.commitConfiguration()
-            return false
-        }
-        session.addOutput(photoOutput)
-
-        videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
-        videoOutput.alwaysDiscardsLateVideoFrames = true
-        videoOutput.setSampleBufferDelegate(self, queue: DispatchQueue(label: "licenseplate.camera.video"))
-        guard session.canAddOutput(videoOutput) else {
-            session.commitConfiguration()
-            return false
-        }
-        session.addOutput(videoOutput)
-
-        // Display & analyze in portrait.
-        if let conn = videoOutput.connection(with: .video), conn.isVideoOrientationSupported {
-            conn.videoOrientation = .portrait
-        }
-        if let conn = photoOutput.connection(with: .video), conn.isVideoOrientationSupported {
-            conn.videoOrientation = .portrait
-        }
-
-        session.commitConfiguration()
-
-        Task.detached(priority: .background) { [weak self] in
-            self?.session.startRunning()
+        session.addOutput(output)
+        // Physically rotate once; the SDK receives upright portrait frames.
+        if let connection = output.connection(with: .video), connection.isVideoRotationAngleSupported(90) {
+            connection.videoRotationAngle = 90
         }
         return true
     }
 
     func stop() {
-        Task.detached(priority: .background) { [weak self] in
-            self?.session.stopRunning()
-        }
-    }
-
-    // MARK: Shutter
-
-    /// Captures a still and freezes the live preview so the OCR result is stable.
-    /// Pausing `liveEnabled` immediately stops the live frame delegate from
-    /// overwriting the captured result boxes.
-    func capturePhoto() {
-        liveEnabled = false
-        isFrozen = true
-        photoOutput.capturePhoto(with: AVCapturePhotoSettings(), delegate: self)
-    }
-
-    /// Resumes the live preview after inspecting a captured still (retake).
-    func resumeLive() {
-        capturedResults = []
-        errorMessage = nil
+        active = false
+        generation += 1
+        liveResults = []
+        liveDetections = []
         previewView?.clearOverlay()
-        isFrozen = false
-        liveEnabled = true
-        Task.detached(priority: .background) { [weak self] in
-            self?.session.startRunning()
-        }
+        sessionQueue.async { if self.session.isRunning { self.session.stopRunning() } }
     }
 
-    // MARK: Frame -> CGImage
-
-    /// Converts a video frame to a *portrait* CGImage so it matches what the user
-    /// sees in the preview (the raw pixel buffer is landscape). `.right` is correct
-    /// for the rear camera in portrait; flip to `.left` if your preview is rotated.
-    private func portraitCGImage(from buffer: CVPixelBuffer) -> CGImage? {
-        let ci = CIImage(cvPixelBuffer: buffer).oriented(.right)
-        guard let cg = ciContext.createCGImage(ci, from: ci.extent) else { return nil }
-        return cg
-    }
-}
-
-// MARK: - Photo capture delegate
-
-extension CameraController: AVCapturePhotoCaptureDelegate {
-    func photoOutput(_ output: AVCapturePhotoOutput,
-                     didFinishProcessingPhoto photo: AVCapturePhoto,
-                     error: Error?) {
-        guard error == nil, let cg = photo.cgImageRepresentation() else {
-            errorMessage = "拍摄失败"
-            return
-        }
-        // Freeze the live preview so the captured result stays put (the preview
-        // layer keeps showing the last frame after the session stops).
-        stop()
-        Task {
-            do {
-                let results = try await recognizer.recognize(in: cg, mode: mode)
-                await MainActor.run {
-                    capturedResults = results
-                    previewView?.draw(results: results)
+    private func analyze(_ frame: CameraFrame) async {
+        defer { waitingForOCR = false; isAnalyzing = false; frameGate.finish() }
+        guard active, liveEnabled else { return }
+        isAnalyzing = true
+        waitingForOCR = true
+        let token = generation
+        let started = Date()
+        do {
+            let result = try await recognizer.recognizeFrame(frame.buffer, orientation: .up, mode: mode) {
+                [weak self] detections, size in
+                Task { @MainActor in
+                    guard let self, self.active, self.liveEnabled, self.waitingForOCR, self.generation == token else { return }
+                    self.liveDetections = detections
+                    self.frameSize = size
+                    self.previewView?.draw(detections: detections, results: [], imageSize: size)
                 }
-            } catch {
-                await MainActor.run { errorMessage = error.localizedDescription }
             }
+            guard active, liveEnabled, generation == token else { return }
+            waitingForOCR = false
+            elapsedMilliseconds = Int(Date().timeIntervalSince(started) * 1000)
+            liveResults = result.plates
+            liveDetections = result.detections
+            frameSize = result.imageSize
+            errorMessage = nil
+            previewView?.draw(detections: result.detections, results: result.plates, imageSize: result.imageSize)
+            for plate in result.plates {
+                if Date().timeIntervalSince(lastPrinted[plate.text] ?? .distantPast) >= 2 {
+                    print("[PlateOCR] \(plate.text) confidence=\(plate.confidence) box=\(plate.boundingBox) latency=\(elapsedMilliseconds)ms")
+                    lastPrinted[plate.text] = Date()
+                }
+            }
+            lastPrinted = lastPrinted.filter { Date().timeIntervalSince($0.value) < 10 }
+        } catch {
+            guard active, generation == token else { return }
+            errorMessage = error.localizedDescription
+            liveResults = []
+            liveDetections = []
+            previewView?.clearOverlay()
         }
     }
 }
-
-// MARK: - Live video frame delegate
 
 extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
-    func captureOutput(_ output: AVCaptureVideoDataOutput,
-                       didOutput sampleBuffer: CMSampleBuffer,
-                       from connection: AVCaptureConnection) {
-        guard liveEnabled, !isAnalyzing else { return }
-        guard Date().timeIntervalSince(lastAnalysis) >= analysisInterval else { return }
-        guard let pixel = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        guard let cg = portraitCGImage(from: pixel) else { return }
-
-        lastAnalysis = Date()
-        isAnalyzing = true
-
-        Task.detached(priority: .userInitiated) { [weak self] in
-            guard let self else { return }
-            do {
-                let results = try await self.recognizer.recognize(in: cg, mode: self.mode)
-                DispatchQueue.main.async { self.previewView?.draw(results: results) }
-                await MainActor.run {
-                    self.liveResults = results
-                    self.isAnalyzing = false
-                }
-            } catch {
-                await MainActor.run { self.isAnalyzing = false }
-            }
-        }
+    nonisolated func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
+                                   from connection: AVCaptureConnection) {
+        guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer), frameGate.begin() else { return }
+        let frame = CameraFrame(buffer: buffer)
+        Task { @MainActor in await analyze(frame) }
     }
 }

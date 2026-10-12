@@ -23,7 +23,7 @@ public enum LicensePlateError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .modelNotFound(let name):
-            return "找不到车牌检测模型「\(name)」。可运行项目里的脚本生成官方 YOLO 占位模型（需联网）：bash Scripts/download_model.sh；或把你的 .mlpackage 放入 LicensePlateSDK/Resources 并在 Xcode 中引用。"
+            return "找不到车牌检测模型「\(name)」。请确认 LicensePlateSDK/Resources/yolo.nb 已打包到应用中。"
         case .invalidModelOutput(let detail):
             return "YOLO 模型输出格式无法解析：\(detail)"
         case .recognitionFailed(let detail):

@@ -6,7 +6,12 @@
 	objectVersion = 70;
 	objects = {
 
+/* Begin PBXBuildFile section */
+        A10000000000000000000001 /* NativePlateDetector.mm in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
+        A10000000000000000000002 /* NativePlateDetector.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = NativePlateDetector/NativePlateDetector.mm; sourceTree = "<group>"; };
 		5AEB2D0585BE7AA526324265 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		982C93A0335B9D1D599BB87C /* LICENSE.txt */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; path = LICENSE.txt; sourceTree = "<group>"; };
 		D0506ABCA56D588BC7620CAE /* SampleCode.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = SampleCode.xcconfig; path = Configuration/SampleCode.xcconfig; sourceTree = "<group>"; };
@@ -50,6 +55,7 @@
 			children = (
 				5AEB2D0585BE7AA526324265 /* README.md */,
 				LPR0000000000000000000040 /* LicensePlateOCR */,
+                A10000000000000000000002 /* NativePlateDetector.mm */,
 				LPR0000000000000000000020 /* Products */,
 				D68AAFA492903982B7EF2F92 /* Configuration */,
 				D8635552A3AE2ED52E4391F9 /* LICENSE */,
@@ -136,6 +142,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+                A10000000000000000000001 /* NativePlateDetector.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -295,6 +302,12 @@
 				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
+                SWIFT_OBJC_BRIDGING_HEADER = "LicensePlateOCR/LicensePlateOCR-Bridging-Header.h";
+                HEADER_SEARCH_PATHS = ("$(inherited)", "$(PROJECT_DIR)/ThirdParty/PaddleLite/include");
+                LIBRARY_SEARCH_PATHS = ("$(inherited)", "$(PROJECT_DIR)/ThirdParty/PaddleLite/lib");
+                OTHER_LDFLAGS = ("$(inherited)", "-lc++", "-framework", Accelerate);
+                "OTHER_LDFLAGS[sdk=iphoneos*]" = ("$(inherited)", "-lc++", "-framework", Accelerate, "-lpaddle_api_light_bundled");
+                CLANG_CXX_LANGUAGE_STANDARD = "c++17";
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
@@ -331,6 +344,12 @@
 				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
+                SWIFT_OBJC_BRIDGING_HEADER = "LicensePlateOCR/LicensePlateOCR-Bridging-Header.h";
+                HEADER_SEARCH_PATHS = ("$(inherited)", "$(PROJECT_DIR)/ThirdParty/PaddleLite/include");
+                LIBRARY_SEARCH_PATHS = ("$(inherited)", "$(PROJECT_DIR)/ThirdParty/PaddleLite/lib");
+                OTHER_LDFLAGS = ("$(inherited)", "-lc++", "-framework", Accelerate);
+                "OTHER_LDFLAGS[sdk=iphoneos*]" = ("$(inherited)", "-lc++", "-framework", Accelerate, "-lpaddle_api_light_bundled");
+                CLANG_CXX_LANGUAGE_STANDARD = "c++17";
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;

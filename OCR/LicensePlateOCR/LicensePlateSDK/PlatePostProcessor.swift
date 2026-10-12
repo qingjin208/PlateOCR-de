@@ -12,6 +12,8 @@ import Foundation
 import CoreGraphics
 import CoreImage
 
+private let plateOCRContext = CIContext(options: [.cacheIntermediates: false])
+
 public struct PlatePostProcessor: Sendable {
     public init() {}
 
@@ -29,6 +31,18 @@ public struct PlatePostProcessor: Sendable {
         for obs in observations {
             if !obs.string.isEmpty { raw.append((obs.string, obs.confidence)) }
             raw.append(contentsOf: obs.candidates)
+        }
+        // Vision often splits a plate into city, series and number observations.
+        // Join spatial neighbors instead of dropping a valid multi-part reading.
+        let ordered = observations.sorted {
+            if abs($0.boundingBox.midY - $1.boundingBox.midY) > 0.25 {
+                return $0.boundingBox.midY > $1.boundingBox.midY
+            }
+            return $0.boundingBox.minX < $1.boundingBox.minX
+        }
+        if ordered.count > 1 {
+            raw.append((ordered.map(\.string).joined(separator: " "),
+                        ordered.map(\.confidence).min() ?? 0))
         }
 
         // Canonicalize each, tracking validity.
@@ -101,8 +115,7 @@ extension CGImage {
         sharpen.setValue(0.6, forKey: kCIInputSharpnessKey)
 
         guard let output = sharpen.outputImage else { return self }
-        let context = CIContext(options: [.useSoftwareRenderer: false])
-        if let cg = context.createCGImage(output, from: output.extent) { return cg }
+        if let cg = plateOCRContext.createCGImage(output, from: output.extent) { return cg }
         return self
     }
 
@@ -110,13 +123,10 @@ extension CGImage {
     /// top-left origin with 0...1 coordinates.
     func cropRegion(_ normalizedRect: CGRect, padding: CGFloat = 0.05) -> CGImage {
         let w = CGFloat(width), h = CGFloat(height)
-        var x = normalizedRect.origin.x * w - normalizedRect.width * w * padding
-        var y = normalizedRect.origin.y * h - normalizedRect.height * h * padding
-        var cw = normalizedRect.width * w * (1 + 2 * padding)
-        var ch = normalizedRect.height * h * (1 + 2 * padding)
-        x = max(0, x); y = max(0, y)
-        cw = min(w - x, cw); ch = min(h - y, ch)
-        let rect = CGRect(x: x, y: y, width: cw, height: ch)
+        let rect = CGRect(x: normalizedRect.minX * w, y: normalizedRect.minY * h,
+                          width: normalizedRect.width * w, height: normalizedRect.height * h)
+            .insetBy(dx: -normalizedRect.width * w * padding, dy: -normalizedRect.height * h * padding)
+            .intersection(CGRect(x: 0, y: 0, width: w, height: h)).integral
         return cropping(to: rect) ?? self
     }
 }

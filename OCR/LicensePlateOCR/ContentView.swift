@@ -11,20 +11,19 @@ import PhotosUI
 import CoreTransferable
 import CoreGraphics
 import Vision
+import CoreImage
+import UniformTypeIdentifiers
 
 struct ContentView: View {
-    // Placeholder pipeline: official Ultralytics `yolov8n` (COCO) detects *cars*
-    // (class 2); the SDK then OCRs each car region and keeps only German-plate text.
-    // Swap to your own model later with e.g.
-    //   LicensePlateRecognizer(modelName: "license_plate_yolo", config: .germanPlate)
-    private let recognizer: LicensePlateRecognizing
+    // Share the bundled plate detector and Apple OCR across all media sources.
+    private let recognizer: LicensePlateRecognizer
     @State private var source: MediaSource = .image
     @State private var cameraController: CameraController
 
     /// One recognizer is shared by the image/video pipeline and the live camera
     /// so the YOLO model is loaded only once.
     init() {
-        let rec = LicensePlateRecognizer(modelName: "yolov8n", config: .cocoCar)
+        let rec = LicensePlateRecognizer()
         self.recognizer = rec
         _cameraController = State(initialValue: CameraController(recognizer: rec))
     }
@@ -37,6 +36,7 @@ struct ContentView: View {
     @State private var mode: RecognitionMode = .fast   // default = fast
     @State private var results: [PlateResult] = []
     @State private var isBusy = false
+    @State private var videoProgress = 0.0
     @State private var errorMessage: String?
 
     enum MediaSource: String, CaseIterable {
@@ -79,8 +79,11 @@ struct ContentView: View {
                     .padding(.horizontal)
 
                     if isBusy {
-                        ProgressView(source == .video ? "视频识别中…" : "识别中…")
-                            .padding(.horizontal)
+                        if source == .video {
+                            ProgressView("视频识别中…", value: videoProgress).padding(.horizontal)
+                        } else {
+                            ProgressView("识别中…").padding(.horizontal)
+                        }
                     }
 
                     if let errorMessage {
@@ -96,17 +99,23 @@ struct ContentView: View {
                             .resizable()
                             .scaledToFit()
                             .overlay {
-                                ForEach(results) { result in
-                                    ResultBox(rect: result.boundingBox)
-                                        .stroke(.red, lineWidth: 2)
-                                        .overlay(alignment: .topLeading) {
+                                GeometryReader { geometry in
+                                    ForEach(results) { result in
+                                        let box = result.boundingBox
+                                        Rectangle().stroke(.red, lineWidth: 2)
+                                            .frame(width: box.width * geometry.size.width,
+                                                   height: box.height * geometry.size.height)
+                                            .position(x: box.midX * geometry.size.width,
+                                                      y: box.midY * geometry.size.height)
                                             Text(result.text)
                                                 .font(.caption)
                                                 .padding(2)
                                                 .background(.red.opacity(0.8))
                                                 .foregroundStyle(.white)
-                                                .offset(y: -18)
-                                        }
+                                                .fixedSize()
+                                                .position(x: box.midX * geometry.size.width,
+                                                          y: max(10, box.minY * geometry.size.height - 10))
+                                    }
                                 }
                             }
                             .padding(.horizontal)
@@ -161,6 +170,7 @@ struct ContentView: View {
             guard let item = videoItem else { return }
             await runVideo(item)
         }
+        .onChange(of: mode) { _, newMode in cameraController.mode = newMode }
     }
 
     // MARK: - Run
@@ -168,8 +178,8 @@ struct ContentView: View {
     private func runImage(_ item: PhotosPickerItem) async {
         do {
             guard let data = try await item.loadTransferable(type: Data.self),
-                  let uiImage = UIImage(data: data),
-                  let cg = uiImage.cgImage else {
+                  let ci = CIImage(data: data, options: [.applyOrientationProperty: true]),
+                  let cg = CIContext().createCGImage(ci, from: ci.extent) else {
                 errorMessage = "无法读取图片"
                 return
             }
@@ -178,7 +188,8 @@ struct ContentView: View {
             results = []
             errorMessage = nil
             isBusy = true
-            results = try await recognizer.recognize(in: cg, mode: mode)
+            let pixelBuffer = try recognizer.prepareFrame(from: cg)
+            results = try await recognizer.recognizeFrame(pixelBuffer, mode: mode).plates
             isBusy = false
         } catch {
             isBusy = false
@@ -188,30 +199,39 @@ struct ContentView: View {
 
     private func runVideo(_ item: PhotosPickerItem) async {
         do {
-            // Load the picked video as a file URL. `Movie` is not reliably
-            // exposed by PhotosUI on every SDK/iOS slice, so we use `URL.self`
-            // (PhotosUI provides a URL representation for video items) and copy
-            // it to a stable temporary location so the file outlives the transfer.
-            guard let sourceURL = try await item.loadTransferable(type: URL.self) else {
+            // Copy the file during the transfer callback, before Photos releases it.
+            guard let movie = try await item.loadTransferable(type: ImportedMovie.self) else {
                 errorMessage = "无法读取视频"
                 return
             }
-            let dst = FileManager.default.temporaryDirectory
-                .appendingPathComponent(UUID().uuidString)
-                .appendingPathExtension(sourceURL.pathExtension.isEmpty ? "mov" : sourceURL.pathExtension)
-            try? FileManager.default.removeItem(at: dst)
-            try FileManager.default.copyItem(at: sourceURL, to: dst)
+            let dst = movie.url
+            defer { try? FileManager.default.removeItem(at: dst) }
 
             videoURL = dst
             imageData = nil
             results = []
             errorMessage = nil
             isBusy = true
-            results = try await recognizer.recognizeVideo(at: dst, mode: mode, maxSamples: 30, progress: nil)
+            videoProgress = 0
+            results = try await recognizer.recognizeVideo(at: dst, mode: mode, maxSamples: 30) { progress in
+                Task { @MainActor in videoProgress = progress }
+            }
             isBusy = false
         } catch {
             isBusy = false
             errorMessage = error.localizedDescription
+        }
+    }
+}
+
+private struct ImportedMovie: Transferable {
+    let url: URL
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(importedContentType: .movie) { received in
+            let destination = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString).appendingPathExtension("mov")
+            try FileManager.default.copyItem(at: received.file, to: destination)
+            return ImportedMovie(url: destination)
         }
     }
 }

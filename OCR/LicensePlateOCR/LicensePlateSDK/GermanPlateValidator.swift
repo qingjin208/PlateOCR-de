@@ -15,11 +15,11 @@ public enum GermanPlateValidator {
     /// Loose but realistic civilian format:
     /// `<1–3 city letters> - <1–2 series letters> <1–4 digits> <optional 1 letter>`.
     /// Example: `B-AB 1234`, `M-XY 99`, `HH-AB 1234`, `K-AB 123Z`.
-    private static let pattern = #/^[A-ZÄÖÜ]{1,3}-[A-ZÄÖÜ]{1,2}[ ]?[0-9]{1,4}[A-Z]?$/#
+    private static let pattern = "^[A-ZÄÖÜ]{1,3}-[A-ZÄÖÜ]{1,2}[ ]?[0-9]{1,4}[A-Z]?$"
 
     /// Whether `text` already matches the canonical German plate format.
     public static func isValid(_ text: String) -> Bool {
-        text.wholeMatch(of: pattern) != nil
+        text.range(of: pattern, options: .regularExpression) != nil
     }
 
     /// Turns a raw OCR string into a canonical plate string, or `nil` if it cannot be
@@ -30,6 +30,20 @@ public enum GermanPlateValidator {
     /// 2. Drop a leading EU-strip artefact (`D` / `EU`) if that makes the remainder valid.
     /// 3. Re-insert the separating hyphen at every valid city/series split.
     public static func canonicalize(_ raw: String) -> String? {
+        let upper = raw.uppercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        // Preserve explicit city/series separators before flattening noisy OCR.
+        if let range = upper.range(of: #"^[A-ZÄÖÜ]{1,3}[ -]+[A-ZÄÖÜ]{1,2}[ ]*[0-9]{1,4}[A-Z]?$"#,
+                                   options: .regularExpression) {
+            let value = String(upper[range])
+            if let separator = value.firstIndex(where: { $0 == " " || $0 == "-" }) {
+                let city = value[..<separator]
+                let suffix = value[separator...].filter { $0 != " " && $0 != "-" }
+                if let digit = suffix.firstIndex(where: \.isNumber) {
+                    let candidate = "\(city)-\(suffix[..<digit]) \(suffix[digit...])"
+                    if isValid(candidate) { return candidate }
+                }
+            }
+        }
         let alnum = raw.uppercased().unicodeScalars
             .filter { CharacterSet.alphanumerics.contains($0) }
             .map(String.init)
