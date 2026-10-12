@@ -25,6 +25,13 @@ private final class FrameGate: @unchecked Sendable {
     }
 }
 
+struct CameraRecognitionLogEntry: Identifiable {
+    let id = UUID()
+    let date: Date
+    let result: PlateResult
+    let detectionNumber: Int
+}
+
 @MainActor @Observable
 final class CameraController: NSObject {
     nonisolated let session = AVCaptureSession()
@@ -42,6 +49,7 @@ final class CameraController: NSObject {
     var setupFailed = false
     var liveResults: [PlateResult] = []
     var liveDetections: [PlateDetection] = []
+    var recognitionHistory: [CameraRecognitionLogEntry] = []
     var frameSize = CGSize.zero
     var isAnalyzing = false
     var elapsedMilliseconds = 0
@@ -58,6 +66,11 @@ final class CameraController: NSObject {
         }
     }
     weak var previewView: PreviewView?
+
+    func clearRecognitionHistory() {
+        recognitionHistory.removeAll()
+        lastPrinted.removeAll()
+    }
 
     init(recognizer: LicensePlateRecognizing, mode: RecognitionMode = .fast) {
         self.recognizer = recognizer
@@ -160,10 +173,19 @@ final class CameraController: NSObject {
             errorMessage = nil
             previewView?.draw(detections: result.detections, results: result.plates, imageSize: result.imageSize)
             for plate in result.plates {
-                if Date().timeIntervalSince(lastPrinted[plate.text] ?? .distantPast) >= 2 {
+                let now = Date()
+                let locationKey = "\(Int(plate.boundingBox.midX * 10)):\(Int(plate.boundingBox.midY * 10))"
+                let historyKey = "\(plate.text):\(locationKey)"
+                if now.timeIntervalSince(lastPrinted[historyKey] ?? .distantPast) >= 2 {
                     print("[PlateOCR] \(plate.text) confidence=\(plate.confidence) box=\(plate.boundingBox) latency=\(elapsedMilliseconds)ms")
-                    lastPrinted[plate.text] = Date()
+                    lastPrinted[historyKey] = now
+                    let detectionNumber = (result.detections.firstIndex { $0.rect == plate.boundingBox } ?? -1) + 1
+                    recognitionHistory.append(CameraRecognitionLogEntry(date: now, result: plate,
+                                                                          detectionNumber: detectionNumber))
                 }
+            }
+            if recognitionHistory.count > 300 {
+                recognitionHistory.removeFirst(recognitionHistory.count - 300)
             }
             lastPrinted = lastPrinted.filter { Date().timeIntervalSince($0.value) < 10 }
         } catch {

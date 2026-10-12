@@ -38,6 +38,7 @@ final class PreviewView: UIView {
 
     /// Overlay layer used to draw detection boxes; one path, many rects.
     private let overlayLayer = CAShapeLayer()
+    private let recognizedLayer = CAShapeLayer()
 
     override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
 
@@ -50,7 +51,11 @@ final class PreviewView: UIView {
         overlayLayer.fillColor = nil
         overlayLayer.strokeColor = UIColor.systemYellow.cgColor
         overlayLayer.lineWidth = 3
+        recognizedLayer.fillColor = nil
+        recognizedLayer.strokeColor = UIColor.systemGreen.cgColor
+        recognizedLayer.lineWidth = 3
         videoPreviewLayer.addSublayer(overlayLayer)
+        videoPreviewLayer.addSublayer(recognizedLayer)
     }
 
     required init?(coder: NSCoder) {
@@ -61,6 +66,7 @@ final class PreviewView: UIView {
         super.layoutSubviews()
         ensurePortraitOrientation()
         overlayLayer.frame = bounds
+        recognizedLayer.frame = bounds
         renderOverlay()
     }
 
@@ -83,16 +89,25 @@ final class PreviewView: UIView {
         labels.forEach { $0.removeFromSuperlayer() }
         labels = []
         let path = CGMutablePath()
-        guard imageSize.width > 0, imageSize.height > 0 else { overlayLayer.path = nil; return }
-        // Boxes refer to rotated pixels. Map aspect-fill without rotating a second time.
-        let scale = max(bounds.width / imageSize.width, bounds.height / imageSize.height)
-        let offsetX = (bounds.width - imageSize.width * scale) / 2
-        let offsetY = (bounds.height - imageSize.height * scale) / 2
+        let recognizedPath = CGMutablePath()
+        guard imageSize.width > 0, imageSize.height > 0 else {
+            overlayLayer.path = nil
+            recognizedLayer.path = nil
+            return
+        }
         func convert(_ rect: CGRect) -> CGRect {
-            CGRect(x: offsetX + rect.minX * imageSize.width * scale,
-                   y: offsetY + rect.minY * imageSize.height * scale,
-                   width: rect.width * imageSize.width * scale,
-                   height: rect.height * imageSize.height * scale)
+            // AVFoundation applies the active rotation and videoGravity crop here.
+            // SDK boxes describe the physically rotated portrait output. Metadata
+            // coordinates are defined against the unrotated capture image, so map
+            // portrait coordinates back before asking AVFoundation to place them.
+            let metadataRect: CGRect
+            if videoPreviewLayer.connection?.videoRotationAngle == 90 {
+                metadataRect = CGRect(x: rect.minY, y: 1 - rect.maxX,
+                                      width: rect.height, height: rect.width)
+            } else {
+                metadataRect = rect
+            }
+            return videoPreviewLayer.layerRectConverted(fromMetadataOutputRect: metadataRect)
         }
         for detection in detections {
             let box = convert(detection.rect)
@@ -100,12 +115,14 @@ final class PreviewView: UIView {
         }
         for result in results {
             let box = convert(result.boundingBox)
+            recognizedPath.addRect(box)
             let label = CATextLayer()
-            label.string = "\(result.text)  \(Int(result.confidence * 100))%"
+            let detectionNumber = (detections.firstIndex { $0.rect == result.boundingBox } ?? -1) + 1
+            label.string = "#\(detectionNumber) \(result.text)  \(Int(result.confidence * 100))%"
             label.fontSize = 14
             label.contentsScale = traitCollection.displayScale
-            label.foregroundColor = UIColor.black.cgColor
-            label.backgroundColor = UIColor.systemYellow.cgColor
+            label.foregroundColor = UIColor.white.cgColor
+            label.backgroundColor = UIColor.systemGreen.withAlphaComponent(0.95).cgColor
             label.frame = CGRect(x: max(0, box.minX), y: max(0, box.minY - 23),
                                  width: min(bounds.width, max(140, box.width)), height: 23)
             overlayLayer.addSublayer(label)
@@ -114,6 +131,7 @@ final class PreviewView: UIView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         overlayLayer.path = path
+        recognizedLayer.path = recognizedPath
         CATransaction.commit()
     }
 
@@ -123,5 +141,6 @@ final class PreviewView: UIView {
         labels.forEach { $0.removeFromSuperlayer() }
         labels = []
         overlayLayer.path = nil
+        recognizedLayer.path = nil
     }
 }
