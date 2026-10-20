@@ -3,13 +3,22 @@ import CoreGraphics
 import CoreImage
 @preconcurrency import CoreML
 
-/// A plate box in top-left normalized coordinates.
+/// A plate box. When the model is a pose model, `keypoints` carries the plate
+/// corners (e.g. 4 corners for the German-plate pose model) in the same
+/// coordinate space as `rect`: 640-input pixels before `YOLOOutputDecoder.remap`,
+/// normalized 0...1 (top-left origin) after it.
 public struct PlateDetection: Sendable {
     public let rect: CGRect
     public let confidence: Float
     public let label: String
-    public init(rect: CGRect, confidence: Float, label: String) {
+    /// Optional pose keypoints (corner points) mirroring `rect`'s coordinate space.
+    public let keypoints: [CGPoint]?
+    /// Per-keypoint visibility/confidence. YOLO pose uses 0 = absent, 1 = occluded, 2 = visible.
+    public let keypointConfidences: [Float]?
+    public init(rect: CGRect, confidence: Float, label: String,
+                keypoints: [CGPoint]? = nil, keypointConfidences: [Float]? = nil) {
         self.rect = rect; self.confidence = confidence; self.label = label
+        self.keypoints = keypoints; self.keypointConfidences = keypointConfidences
     }
 }
 
@@ -26,6 +35,9 @@ public struct YOLOConfig: Sendable {
     public var iouThreshold: Float
     public var format: OutputFormat
     public var targetClassIndices: [Int]
+    /// Number of pose keypoints per detection (0 for a plain detector model).
+    /// The pose output layout is `[1, 5 + numKeypoints*3, N]`.
+    public var numKeypoints: Int
     public enum OutputFormat: Sendable, Equatable {
         case xywhCenterPixels
         case xywhCenterNormalized
@@ -33,12 +45,22 @@ public struct YOLOConfig: Sendable {
     }
     public init(inputSize: Int = 640, numClasses: Int = 1, classNames: [String] = ["license_plate"],
                 confidenceThreshold: Float = 0.45, iouThreshold: Float = 0.45,
-                format: OutputFormat = .xywhCenterPixels, targetClassIndices: [Int] = [0]) {
+                format: OutputFormat = .xywhCenterPixels, targetClassIndices: [Int] = [0],
+                numKeypoints: Int = 0) {
         self.inputSize = inputSize; self.numClasses = numClasses; self.classNames = classNames
         self.confidenceThreshold = confidenceThreshold; self.iouThreshold = iouThreshold
         self.format = format; self.targetClassIndices = targetClassIndices
+        self.numKeypoints = numKeypoints
     }
     public static var germanPlate: YOLOConfig { YOLOConfig() }
+    /// German-plate keypoint (pose) model: `De-plate-pose-500`. Output is
+    /// `[1, 17, 8400]` = 5 (box + conf) + 4 corners * 3 (x, y, visibility).
+    /// Corner order is fixed by the training config: left_top, right_top, right_bottom, left_bottom.
+    public static var germanPlatePose: YOLOConfig {
+        YOLOConfig(inputSize: 640, numClasses: 1, classNames: ["plate"],
+                   confidenceThreshold: 0.45, iouThreshold: 0.45,
+                   format: .xywhCenterPixels, targetClassIndices: [0], numKeypoints: 4)
+    }
 }
 
 /// Executes the original NB graph and weights through Core ML's eligible compute units.
@@ -78,8 +100,12 @@ public final class CoreMLLicensePlateDetector: LicensePlateDetecting, @unchecked
         inputName = input.key
         guard let output = model.modelDescription.outputDescriptionsByName.first(where: {
             guard let shape = $0.value.multiArrayConstraint?.shape.map(\.intValue) else { return false }
-            return shape.count == 3 && shape[0] == 1 && (shape[1] == 4 + config.numClasses || shape[2] == 4 + config.numClasses)
-        }) else { throw LicensePlateError.invalidModelOutput("Expected raw YOLO box and class output.") }
+            let channels = 4 + config.numClasses
+            let poseChannels = 5 + config.numKeypoints * 3
+            return shape.count == 3 && shape[0] == 1
+                && (shape[1] == channels || shape[2] == channels
+                    || (config.numKeypoints > 0 && (shape[1] == poseChannels || shape[2] == poseChannels)))
+        }) else { throw LicensePlateError.invalidModelOutput("Expected raw YOLO box / pose output.") }
         outputName = output.key
     }
 

@@ -18,9 +18,11 @@ private struct TensorValues {
 
 enum YOLOOutputDecoder {
     static func decode(_ array: MLMultiArray, config: YOLOConfig) throws -> [PlateDetection] {
-        let shape = array.shape.map(\.intValue), channels = 4 + config.numClasses
+        let shape = array.shape.map(\.intValue)
+        // Detection model: 4 (box) + numClasses. Pose model: 5 (box + conf) + numKeypoints*3.
+        let channels = config.numKeypoints > 0 ? (5 + config.numKeypoints * 3) : (4 + config.numClasses)
         guard shape.count == 3, shape[0] == 1, shape[1] == channels || shape[2] == channels else {
-            throw LicensePlateError.invalidModelOutput("Expected [1, C, N] or [1, N, C] YOLO output.")
+            throw LicensePlateError.invalidModelOutput("Expected [1, C, N] or [1, N, C] YOLO output (C=\(channels)).")
         }
         let first = shape[1] == channels
         let count = first ? shape[2] : shape[1]
@@ -52,8 +54,30 @@ enum YOLOOutputDecoder {
                     width: CGFloat(coords[2] - coords[0]) * side, height: CGFloat(coords[3] - coords[1]) * side)
             }
             guard rect.width > 0, rect.height > 0 else { continue }
+
+            // Pose keypoints (corner points) live in the same 640-input pixel space as the box.
+            var keypoints: [CGPoint]? = nil
+            var keypointConfidences: [Float]? = nil
+            if config.numKeypoints > 0 {
+                var pts: [CGPoint] = []
+                var confs: [Float] = []
+                var valid = true
+                for k in 0..<config.numKeypoints {
+                    let base = 5 + k * 3
+                    let kx = CGFloat(read(base)), ky = CGFloat(read(base + 1)), kv = read(base + 2)
+                    guard kx.isFinite, ky.isFinite else { valid = false; break }
+                    pts.append(CGPoint(x: kx, y: ky))
+                    confs.append(kv)
+                }
+                if valid, pts.count == config.numKeypoints {
+                    keypoints = pts
+                    keypointConfidences = confs
+                }
+            }
+
             results.append(PlateDetection(rect: rect, confidence: score,
-                label: config.classNames.indices.contains(classIndex) ? config.classNames[classIndex] : "class \(classIndex)"))
+                label: config.classNames.indices.contains(classIndex) ? config.classNames[classIndex] : "class \(classIndex)",
+                keypoints: keypoints, keypointConfidences: keypointConfidences))
         }
         return results
     }
@@ -64,8 +88,19 @@ enum YOLOOutputDecoder {
         let y1 = max(0, min(1, (detection.rect.minY - padY) / scale / imageSize.height))
         let x2 = max(0, min(1, (detection.rect.maxX - padX) / scale / imageSize.width))
         let y2 = max(0, min(1, (detection.rect.maxY - padY) / scale / imageSize.height))
-        return PlateDetection(rect: CGRect(x: x1, y: y1, width: max(0, x2 - x1), height: max(0, y2 - y1)),
-                              confidence: detection.confidence, label: detection.label)
+        let remappedBox = CGRect(x: x1, y: y1, width: max(0, x2 - x1), height: max(0, y2 - y1))
+
+        // Remap the keypoints into the same normalized, top-left space as the box.
+        var remappedKeypoints: [CGPoint]?
+        if let keypoints = detection.keypoints {
+            remappedKeypoints = keypoints.map { p in
+                let nx = max(0, min(1, (p.x - padX) / scale / imageSize.width))
+                let ny = max(0, min(1, (p.y - padY) / scale / imageSize.height))
+                return CGPoint(x: nx, y: ny)
+            }
+        }
+        return PlateDetection(rect: remappedBox, confidence: detection.confidence, label: detection.label,
+                              keypoints: remappedKeypoints, keypointConfidences: detection.keypointConfidences)
     }
 
     static func suppress(_ proposals: [PlateDetection], threshold: Float) -> [PlateDetection] {

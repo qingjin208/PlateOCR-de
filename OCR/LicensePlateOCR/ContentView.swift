@@ -13,6 +13,7 @@ import CoreGraphics
 import Vision
 import CoreImage
 import UniformTypeIdentifiers
+import UIKit
 
 struct ContentView: View {
     // Share the bundled plate detector and Apple OCR across all media sources.
@@ -23,7 +24,14 @@ struct ContentView: View {
     /// One recognizer is shared by the image/video pipeline and the live camera
     /// so the YOLO model is loaded only once.
     init() {
+        #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc)
+        // ONNX Runtime linked: use the trained German-plate YOLOv8-pose model directly.
+        let rec = LicensePlateRecognizer(poseModelName: "De-plate-pose-500", engine: .appleVision)
+        #else
+        // ONNX Runtime not linked yet: fall back to the legacy Core ML detector until the
+        // pose model + onnxruntime framework are added (see POSE_INTEGRATION.md).
         let rec = LicensePlateRecognizer()
+        #endif
         self.recognizer = rec
         _cameraController = State(initialValue: CameraController(recognizer: rec))
     }
@@ -34,6 +42,7 @@ struct ContentView: View {
     @State private var videoURL: URL?
 
     @State private var mode: RecognitionMode = .fast   // default = fast
+    @State private var ocrEngine: OCREngine = .appleVision   // user-selected OCR engine
     @State private var results: [PlateResult] = []
     @State private var isBusy = false
     @State private var videoProgress = 0.0
@@ -76,6 +85,13 @@ struct ContentView: View {
                     }
                     .pickerStyle(.segmented)
                     .overlay(Capsule().stroke(.blue, lineWidth: 1))
+                    .padding(.horizontal)
+
+                    // OCR engine picker (Apple Vision / PaddleOCR) — user choice is passed to the SDK.
+                    Picker("OCR 引擎", selection: $ocrEngine) {
+                        ForEach(OCREngine.allCases, id: \.self) { Text($0.displayName) }
+                    }
+                    .pickerStyle(.segmented)
                     .padding(.horizontal)
 
                     if isBusy {
@@ -148,6 +164,15 @@ struct ContentView: View {
                                             .font(.caption2)
                                             .foregroundStyle(.tertiary)
                                     }
+                                    if let corrected = result.correctedPlateImage {
+                                        Image(uiImage: UIImage(cgImage: corrected))
+                                            .resizable()
+                                            .scaledToFit()
+                                            .frame(maxHeight: 64)
+                                            .background(Color.black)
+                                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                                            .padding(.top, 4)
+                                    }
                                 }
                                 .padding(8)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -171,6 +196,7 @@ struct ContentView: View {
             await runVideo(item)
         }
         .onChange(of: mode) { _, newMode in cameraController.mode = newMode }
+        .onChange(of: ocrEngine) { _, newEngine in recognizer.ocrEngine = newEngine }
     }
 
     // MARK: - Run

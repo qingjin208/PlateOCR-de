@@ -4,6 +4,12 @@
 // Shared build configuration for the License Plate OCR demo.
 //
 
+// Pull in the CocoaPods-generated settings (framework/search paths for the
+// onnxruntime-mobile-objc pod). Required because this project uses a custom
+// config and CocoaPods could not auto-inject its base configuration.
+// Path is relative to this file (Configuration/ -> ../Pods/...).
+#include "../Pods/Target Support Files/Pods-LicensePlateOCR/Pods-LicensePlateOCR.debug.xcconfig"
+
 // Set DEVELOPMENT_TEAM to your Personal Team ("衿青") in Xcode:
 //   Signing & Capabilities -> Team -> 衿青 (Personal Team)
 // Xcode writes the 10-character Team ID here automatically once selected.

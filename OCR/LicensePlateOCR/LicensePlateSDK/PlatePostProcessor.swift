@@ -22,10 +22,12 @@ public struct PlatePostProcessor: Sendable {
     ///   - observations: Vision observations for the cropped plate region.
     ///   - region: The detection's normalized bounding box (used for overlay).
     ///   - imageSize: Original image size, kept for reference/overlay math.
+    ///   - correctedImage: The rectified plate image fed to OCR, if available.
     /// - Returns: A validated `PlateResult`, or `nil` if no plausible plate was found.
     public func process(observations: [PlateObservation],
                         region: CGRect,
-                        imageSize: CGSize) -> PlateResult? {
+                        imageSize: CGSize,
+                        correctedImage: CGImage? = nil) -> PlateResult? {
         // Collect every candidate string Vision produced (primary + alternatives).
         var raw: [(text: String, confidence: Float)] = []
         for obs in observations {
@@ -92,7 +94,8 @@ public struct PlatePostProcessor: Sendable {
                            confidence: chosen.value.confidence,
                            boundingBox: region,
                            imageSize: imageSize,
-                           candidates: candidates)
+                           candidates: candidates,
+                           correctedPlateImage: correctedImage)
     }
 
     /// De-duplicates plates detected across multiple video frames, keeping the

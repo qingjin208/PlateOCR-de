@@ -1,0 +1,4 @@
+platform :ios, '18.0'
+target 'LicensePlateOCR' do
+  pod 'onnxruntime-mobile-objc', '1.18.0'
+end

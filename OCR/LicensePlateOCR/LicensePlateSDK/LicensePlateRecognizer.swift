@@ -34,6 +34,9 @@ public struct PlateResult: Identifiable, Sendable {
     public let imageSize: CGSize
     /// Top alternative readings (raw OCR candidates, cleaned).
     public let candidates: [PlateCandidate]
+    /// The rectified plate image actually fed to the OCR engine (perspective-corrected
+    /// from the 4 corner keypoints). `nil` when the detector fell back to a box crop.
+    public let correctedPlateImage: CGImage? = nil
 }
 
 /// A single alternative reading of a plate.
@@ -60,24 +63,42 @@ public protocol LicensePlateRecognizing: Sendable {
 public final class LicensePlateRecognizer: LicensePlateRecognizing {
 
     private let detector: LicensePlateDetecting
-    private let recognizer: PlateTextRecognizing
+    private var recognizer: PlateTextRecognizing
     private let postProcessor: PlatePostProcessor
+    private let corrector: PerspectivePlateCorrector
+    private let recognitionLanguages: [Locale.Language]
     private let context = CIContext(options: [.cacheIntermediates: false])
+
+    /// The OCR engine currently in use. Setting it rebuilds the underlying recognizer,
+    /// so the App can let the user switch between Apple Vision and PaddleOCR at runtime.
+    public var ocrEngine: OCREngine {
+        didSet {
+            guard ocrEngine != oldValue else { return }
+            recognizer = ocrEngine.makeRecognizer(languages: recognitionLanguages)
+        }
+    }
 
     /// The default pipeline uses the original plate model converted to Core ML and Apple OCR.
     public convenience init() {
         let detector: LicensePlateDetecting
         do { detector = try CoreMLLicensePlateDetector() }
         catch { detector = CoreMLLicensePlateDetectorFailing(error: error) }
-        self.init(detector: detector, recognizer: PlateTextRecognizer())
+        self.init(detector: detector,
+                  recognizer: OCREngine.appleVision.makeRecognizer(),
+                  recognitionLanguages: [Locale.Language(identifier: "de-DE")])
     }
 
     public init(detector: LicensePlateDetecting,
                 recognizer: PlateTextRecognizing,
+                recognitionLanguages: [Locale.Language] = [Locale.Language(identifier: "de-DE")],
+                ocrEngine: OCREngine = .appleVision,
                 postProcessor: PlatePostProcessor = PlatePostProcessor()) {
         self.detector = detector
         self.recognizer = recognizer
+        self.recognitionLanguages = recognitionLanguages
+        self.ocrEngine = ocrEngine
         self.postProcessor = postProcessor
+        self.corrector = PerspectivePlateCorrector()
     }
 
     /// Convenience initializer for the common setup: Core ML YOLO detector + Vision OCR,
@@ -94,8 +115,29 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         catch { detector = CoreMLLicensePlateDetectorFailing(error: error) }
         self.init(detector: detector,
                   recognizer: PlateTextRecognizer(languages: recognitionLanguages),
+                  recognitionLanguages: recognitionLanguages,
+                  ocrEngine: .appleVision,
                   postProcessor: PlatePostProcessor())
     }
+
+    /// Convenience initializer that wires the trained German-plate YOLOv8-pose model
+    /// (running through ONNX Runtime) with the selected OCR engine.
+    /// Requires the ONNX Runtime framework + `De-plate-pose-500.onnx` in the bundle.
+    #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc)
+    public convenience init(poseModelName: String = "De-plate-pose-500",
+                            config: YOLOConfig = .germanPlatePose,
+                            engine: OCREngine = .appleVision,
+                            recognitionLanguages: [Locale.Language] = [Locale.Language(identifier: "de-DE")]) {
+        let detector: LicensePlateDetecting
+        do { detector = try ONNXPoseLicensePlateDetector(modelName: poseModelName, config: config) }
+        catch { detector = CoreMLLicensePlateDetectorFailing(error: error) }
+        self.init(detector: detector,
+                  recognizer: engine.makeRecognizer(languages: recognitionLanguages),
+                  recognitionLanguages: recognitionLanguages,
+                  ocrEngine: engine,
+                  postProcessor: PlatePostProcessor())
+    }
+    #endif
 
     public func recognize(in image: CGImage, mode: RecognitionMode = .fast) async throws -> [PlateResult] {
         // Still images enter the same external-frame pipeline as video and live capture.
@@ -132,16 +174,24 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
 
         for detection in detections {
             try Task.checkCancellation()
-            // 1. Crop the plate region (with a little margin to include the full plate).
-            let crop = image.cropRegion(detection.rect, padding: 0.05)
-            // 2. Reduce interference (screws, borders, reflections) before OCR.
-            let enhanced = crop.enhancedForOCR()
-            // 3. Read the characters with Vision.
+            // Rectify the plate using its 4 corner keypoints (preferred), else fall back
+            // to a bounding-box crop. The rectified image is what we feed to OCR.
+            let corrected = corrector.correctedPlate(from: image, detection: detection)
+            let ocrSource: CGImage
+            if let corrected {
+                ocrSource = corrected
+            } else {
+                ocrSource = image.cropRegion(detection.rect, padding: 0.05)
+            }
+            // Reduce interference (screws, borders, reflections) before OCR.
+            let enhanced = ocrSource.enhancedForOCR()
+            // Read the characters with the selected OCR engine.
             let observations = try await recognizer.recognize(in: enhanced, mode: mode)
-            // 4. Validate + clean + pick the best candidate.
+            // Validate + clean + pick the best candidate.
             if let result = postProcessor.process(observations: observations,
-                                                   region: detection.rect,
-                                                   imageSize: CGSize(width: image.width, height: image.height)) {
+                                                  region: detection.rect,
+                                                  imageSize: CGSize(width: image.width, height: image.height),
+                                                  correctedImage: corrected) {
                 results.append(result)
             }
         }

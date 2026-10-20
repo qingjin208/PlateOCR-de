@@ -2,6 +2,8 @@
 
 当前 `feature/coreml-plate-detection` 分支使用由原 **`yolo.nb` 计算图和权重转换的 `license_plate_yolo.mlmodel`**，通过 Apple Core ML 执行车牌检测。129 个 FP32 参数张量与原模型逐字节一致，没有替换检测模型。检测后逐个裁剪车牌区域，继续交给 Apple Vision `RecognizeTextRequest` 识别字符。
 
+> **新增：德国车牌关键点（Pose）检测 + 可切换 OCR**。已接入训练好的 `De-plate-pose-500.onnx`（4 角点关键点模型），通过 ONNX Runtime 推理，用 4 角点做透视矫正后再 OCR；App 可在 **Apple Vision / PaddleOCR** 间选择引擎并传入 SDK。详见 [POSE_INTEGRATION.md](POSE_INTEGRATION.md)。默认构建仍走原 Core ML 检测器，链接 `onnxruntime` 后自动改用 pose 模型。
+
 `main` 保留原 Paddle Lite / `.nb` 方案，基准提交为 `9ec6f24`。本分支不链接 Paddle Lite，也不向 App 打包 `.nb`；原 `.nb` 仅保留在 `Models/source/` 作为离线转换输入。
 
 ## 使用

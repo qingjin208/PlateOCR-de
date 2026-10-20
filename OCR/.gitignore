@@ -17,3 +17,7 @@ xcuserdata/
 .venv/
 __pycache__/
 *.pyc
+
+# CocoaPods — regenerated locally with `pod install` (never commit these)
+Pods/
+LicensePlateOCR.xcworkspace/
