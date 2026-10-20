@@ -6,15 +6,32 @@
 	objectVersion = 70;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		04F04279CA2B14773D17F672 /* libPods-LicensePlateOCR.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 44737BEFAC7BC1D1BED5C969 /* libPods-LicensePlateOCR.a */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
+		44737BEFAC7BC1D1BED5C969 /* libPods-LicensePlateOCR.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-LicensePlateOCR.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		5AEB2D0585BE7AA526324265 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		982C93A0335B9D1D599BB87C /* LICENSE.txt */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; path = LICENSE.txt; sourceTree = "<group>"; };
 		D0506ABCA56D588BC7620CAE /* SampleCode.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = SampleCode.xcconfig; path = Configuration/SampleCode.xcconfig; sourceTree = "<group>"; };
+		E5CEE3008D4FCDB9239C0720 /* Pods-LicensePlateOCR.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-LicensePlateOCR.debug.xcconfig"; path = "Target Support Files/Pods-LicensePlateOCR/Pods-LicensePlateOCR.debug.xcconfig"; sourceTree = "<group>"; };
+		E7E80A76A563AE2644F78404 /* Pods-LicensePlateOCR.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-LicensePlateOCR.release.xcconfig"; path = "Target Support Files/Pods-LicensePlateOCR/Pods-LicensePlateOCR.release.xcconfig"; sourceTree = "<group>"; };
 		LPR0000000000000000000060 /* LicensePlateOCR.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LicensePlateOCR.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		LPR0000000000000000000040 /* LicensePlateOCR */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = LicensePlateOCR; sourceTree = "<group>"; };
+		LPR0000000000000000000040 /* LicensePlateOCR */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+			);
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
+			path = LicensePlateOCR;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -22,12 +39,31 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				04F04279CA2B14773D17F672 /* libPods-LicensePlateOCR.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		3C10B1554B03B5886E3D3A1E /* Pods */ = {
+			isa = PBXGroup;
+			children = (
+				E5CEE3008D4FCDB9239C0720 /* Pods-LicensePlateOCR.debug.xcconfig */,
+				E7E80A76A563AE2644F78404 /* Pods-LicensePlateOCR.release.xcconfig */,
+			);
+			name = Pods;
+			path = Pods;
+			sourceTree = "<group>";
+		};
+		57E640F12E5A7D57C896CBE6 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				44737BEFAC7BC1D1BED5C969 /* libPods-LicensePlateOCR.a */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 		D68AAFA492903982B7EF2F92 /* Configuration */ = {
 			isa = PBXGroup;
 			children = (
@@ -53,6 +89,8 @@
 				LPR0000000000000000000020 /* Products */,
 				D68AAFA492903982B7EF2F92 /* Configuration */,
 				D8635552A3AE2ED52E4391F9 /* LICENSE */,
+				3C10B1554B03B5886E3D3A1E /* Pods */,
+				57E640F12E5A7D57C896CBE6 /* Frameworks */,
 			);
 			sourceTree = "<group>";
 		};
@@ -71,6 +109,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = LPR00000000000000000000B0 /* Build configuration list for PBXNativeTarget "LicensePlateOCR" */;
 			buildPhases = (
+				6EC052693C1ABD4570E06A08 /* [CP] Check Pods Manifest.lock */,
 				LPR00000000000000000000C0 /* Sources */,
 				LPR00000000000000000000C1 /* Frameworks */,
 				LPR00000000000000000000C2 /* Resources */,
@@ -130,6 +169,31 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		6EC052693C1ABD4570E06A08 /* [CP] Check Pods Manifest.lock */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"${PODS_PODFILE_DIR_PATH}/Podfile.lock",
+				"${PODS_ROOT}/Manifest.lock",
+			);
+			name = "[CP] Check Pods Manifest.lock";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/Pods-LicensePlateOCR-checkManifestLockResult.txt",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		LPR00000000000000000000C0 /* Sources */ = {
@@ -269,6 +333,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = LicensePlateOCR/PreviewContent;
@@ -295,7 +360,6 @@
 				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
-                CLANG_CXX_LANGUAGE_STANDARD = "c++17";
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
@@ -306,6 +370,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = LicensePlateOCR/PreviewContent;
@@ -332,7 +397,6 @@
 				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
-                CLANG_CXX_LANGUAGE_STANDARD = "c++17";
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;

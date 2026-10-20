@@ -1,0 +1,22 @@
+PODS:
+  - onnxruntime-mobile-c (1.18.0)
+  - onnxruntime-mobile-objc (1.18.0):
+    - onnxruntime-mobile-objc/Core (= 1.18.0)
+  - onnxruntime-mobile-objc/Core (1.18.0):
+    - onnxruntime-mobile-c (= 1.18.0)
+
+DEPENDENCIES:
+  - onnxruntime-mobile-objc (= 1.18.0)
+
+SPEC REPOS:
+  trunk:
+    - onnxruntime-mobile-c
+    - onnxruntime-mobile-objc
+
+SPEC CHECKSUMS:
+  onnxruntime-mobile-c: 612e643a0717ffe35ef1b3e9c3d63a084a5c122b
+  onnxruntime-mobile-objc: f573466890bac314c136f18fcdcf97916fd14812
+
+PODFILE CHECKSUM: 384c18012505bcbd482cc26b585191c5d9022a09
+
+COCOAPODS: 1.17.0

@@ -36,7 +36,25 @@ public struct PlateResult: Identifiable, Sendable {
     public let candidates: [PlateCandidate]
     /// The rectified plate image actually fed to the OCR engine (perspective-corrected
     /// from the 4 corner keypoints). `nil` when the detector fell back to a box crop.
-    public let correctedPlateImage: CGImage? = nil
+    public let correctedPlateImage: CGImage?
+
+    /// - Note: Declared explicitly (instead of relying on the synthesized memberwise
+    ///   initializer) because Swift does not synthesize a parameter for an immutable
+    ///   (`let`) property that carries a default value — `correctedPlateImage` would
+    ///   otherwise be unusable by callers.
+    public init(text: String,
+                confidence: Float,
+                boundingBox: CGRect,
+                imageSize: CGSize,
+                candidates: [PlateCandidate],
+                correctedPlateImage: CGImage? = nil) {
+        self.text = text
+        self.confidence = confidence
+        self.boundingBox = boundingBox
+        self.imageSize = imageSize
+        self.candidates = candidates
+        self.correctedPlateImage = correctedPlateImage
+    }
 }
 
 /// A single alternative reading of a plate.
