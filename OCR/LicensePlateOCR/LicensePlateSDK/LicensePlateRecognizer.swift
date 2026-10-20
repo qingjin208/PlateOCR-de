@@ -205,13 +205,13 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
             let enhanced = ocrSource.enhancedForOCR()
             // Read the characters with the selected OCR engine.
             let observations = try await recognizer.recognize(in: enhanced, mode: mode)
-            // Validate + clean + pick the best candidate.
-            if let result = postProcessor.process(observations: observations,
-                                                  region: detection.rect,
-                                                  imageSize: CGSize(width: image.width, height: image.height),
-                                                  correctedImage: corrected) {
-                results.append(result)
-            }
+            // Validate + clean. One detection crop can contain several plates (e.g. when
+            // the detector merges adjacent plates), so collect every distinct valid result.
+            let plateResults = postProcessor.process(observations: observations,
+                                                     region: detection.rect,
+                                                     imageSize: CGSize(width: image.width, height: image.height),
+                                                     correctedImage: corrected)
+            results.append(contentsOf: plateResults)
         }
         return PlateFrameResult(detections: detections, plates: results, imageSize: imageSize)
     }

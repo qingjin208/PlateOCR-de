@@ -39,6 +39,9 @@ struct ContentView: View {
     @State private var imageItem: PhotosPickerItem?
     @State private var videoItem: PhotosPickerItem?
     @State private var imageData: Data?
+    /// Image actually shown in the overlay. Baked to a physically oriented CGImage so
+    /// its coordinate space matches what the detector/render pipeline uses.
+    @State private var displayImage: UIImage?
     @State private var videoURL: URL?
 
     @State private var mode: RecognitionMode = .fast   // default = fast
@@ -110,7 +113,7 @@ struct ContentView: View {
                     }
 
                     // Preview + overlay (image) or result note (video)
-                    if source == .image, let data = imageData, let uiImage = UIImage(data: data) {
+                    if source == .image, let uiImage = displayImage {
                         Image(uiImage: uiImage)
                             .resizable()
                             .scaledToFit()
@@ -203,18 +206,26 @@ struct ContentView: View {
 
     private func runImage(_ item: PhotosPickerItem) async {
         do {
-            guard let data = try await item.loadTransferable(type: Data.self),
-                  let ci = CIImage(data: data, options: [.applyOrientationProperty: true]),
-                  let cg = CIContext().createCGImage(ci, from: ci.extent) else {
+            guard let data = try await item.loadTransferable(type: Data.self) else {
+                errorMessage = "无法读取图片"
+                return
+            }
+            // Honor EXIF orientation up front and bake it into a CGImage so the image we
+            // display and the image we feed to the detector share one coordinate space.
+            // (Previously the display used UIImage's auto-orientation while detection ran on
+            // the raw, un-rotated pixels, so boxes landed in the wrong place.)
+            guard let uiImage = UIImage(data: data),
+                  let oriented = uiImage.cgImageWithOrientationApplied() else {
                 errorMessage = "无法读取图片"
                 return
             }
             imageData = data
+            displayImage = UIImage(cgImage: oriented)
             videoURL = nil
             results = []
             errorMessage = nil
             isBusy = true
-            let pixelBuffer = try recognizer.prepareFrame(from: cg)
+            let pixelBuffer = try recognizer.prepareFrame(from: oriented)
             results = try await recognizer.recognizeFrame(pixelBuffer, mode: mode).plates
             isBusy = false
         } catch {
@@ -235,6 +246,7 @@ struct ContentView: View {
 
             videoURL = dst
             imageData = nil
+            displayImage = nil
             results = []
             errorMessage = nil
             isBusy = true
@@ -270,5 +282,20 @@ struct ResultBox: Shape {
                                         width: rect.width, height: rect.height)
         let converted = normalized.toImageCoordinates(rect.size, origin: .upperLeft)
         return Path(converted)
+    }
+}
+
+extension UIImage {
+    /// Returns a CGImage whose pixels are physically rotated/flopped to match
+    /// `imageOrientation`, so downstream coordinate math lines up with what SwiftUI
+    /// actually draws. `cgImage` alone ignores the orientation tag.
+    func cgImageWithOrientationApplied() -> CGImage? {
+        let format = UIGraphicsImageRendererFormat.default
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
+        let rendered = renderer.image { _ in
+            draw(in: CGRect(origin: .zero, size: size))
+        }
+        return rendered.cgImage
     }
 }

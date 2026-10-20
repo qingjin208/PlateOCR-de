@@ -95,26 +95,28 @@ final class PreviewView: UIView {
             recognizedLayer.path = nil
             return
         }
-        func convert(_ rect: CGRect) -> CGRect {
-            // AVFoundation applies the active rotation and videoGravity crop here.
-            // SDK boxes describe the physically rotated portrait output. Metadata
-            // coordinates are defined against the unrotated capture image, so map
-            // portrait coordinates back before asking AVFoundation to place them.
-            let metadataRect: CGRect
-            if videoPreviewLayer.connection?.videoRotationAngle == 90 {
-                metadataRect = CGRect(x: rect.minY, y: 1 - rect.maxX,
-                                      width: rect.height, height: rect.width)
-            } else {
-                metadataRect = rect
-            }
-            return videoPreviewLayer.layerRectConverted(fromMetadataOutputRect: metadataRect)
+        // The SDK boxes are normalized (top-left, 0...1) in the *oriented* frame the
+        // preview layer shows (portrait after the connection's videoRotationAngle is
+        // applied). The preview uses videoGravity = .resizeAspectFill, so map the
+        // normalized box to layer points with the same aspect-fill scaling. This avoids
+        // relying on `layerRectConverted(fromMetadataOutputRect:)` orientation semantics
+        // (which previously double-rotated the box and drew it in the wrong place).
+        let scale = max(bounds.width / imageSize.width, bounds.height / imageSize.height)
+        let dispW = imageSize.width * scale
+        let dispH = imageSize.height * scale
+        let offX = (bounds.width - dispW) / 2
+        let offY = (bounds.height - dispH) / 2
+        func toLayer(_ rect: CGRect) -> CGRect {
+            CGRect(x: offX + rect.minX * dispW,
+                   y: offY + rect.minY * dispH,
+                   width: rect.width * dispW,
+                   height: rect.height * dispH)
         }
         for detection in detections {
-            let box = convert(detection.rect)
-            path.addRect(box)
+            path.addRect(toLayer(detection.rect))
         }
         for result in results {
-            let box = convert(result.boundingBox)
+            let box = toLayer(result.boundingBox)
             recognizedPath.addRect(box)
             let label = CATextLayer()
             let detectionNumber = (detections.firstIndex { $0.rect == result.boundingBox } ?? -1) + 1

@@ -57,8 +57,9 @@ final class FramePipelineTests: XCTestCase {
             PlateObservation(boundingBox: CGRect(x: Double(index) / 3, y: 0, width: 0.3, height: 1),
                 string: text, confidence: 0.9, candidates: [])
         }
-        XCTAssertEqual(PlatePostProcessor().process(observations: parts, region: .zero,
-            imageSize: CGSize(width: 100, height: 50))?.text, "HH-AB 1234")
+        let parsed = PlatePostProcessor().process(observations: parts, region: .zero,
+            imageSize: CGSize(width: 100, height: 50))
+        XCTAssertEqual(parsed.first?.text, Optional("HH-AB 1234"))
     }
 
     func testCompletePlateWinsOverHigherConfidenceFragment() {
@@ -67,8 +68,8 @@ final class FramePipelineTests: XCTestCase {
             PlateObservation(boundingBox: CGRect(x: 0.3, y: 0.2, width: 0.6, height: 0.7), string: "AB1234", confidence: 0.99, candidates: [])
         ]
         let result = PlatePostProcessor().process(observations: parts, region: .zero, imageSize: CGSize(width: 100, height: 50))
-        XCTAssertEqual(result?.text, "HH-AB 1234")
-        XCTAssertEqual(result?.confidence ?? 0, 0.8, accuracy: 0.0001)
+        XCTAssertEqual(result.first?.text, Optional("HH-AB 1234"))
+        XCTAssertEqual(result.first?.confidence ?? 0, 0.8, accuracy: 0.0001)
     }
 
     func testEUStripAndDresdenPrefixAreDistinguished() {
@@ -77,5 +78,35 @@ final class FramePipelineTests: XCTestCase {
         XCTAssertEqual(GermanPlateValidator.canonicalize("D AB 1234"), "D-AB 1234")
         XCTAssertNil(GermanPlateValidator.canonicalize("ABCDEF1234"))
         XCTAssertFalse(GermanPlateValidator.isValid("HH-AB 1234\n"))
+    }
+
+    func testProcessReturnsEveryDistinctPlateInOneCrop() {
+        // Two separate plates read from a single detection crop must both be returned,
+        // each with its own sub-box (not collapsed into one result).
+        let parts = [
+            PlateObservation(boundingBox: CGRect(x: 0.05, y: 0.2, width: 0.4, height: 0.6), string: "B-AB 1234", confidence: 0.9, candidates: []),
+            PlateObservation(boundingBox: CGRect(x: 0.55, y: 0.2, width: 0.4, height: 0.6), string: "M-XY 99", confidence: 0.92, candidates: [])
+        ]
+        let results = PlatePostProcessor().process(observations: parts, region: CGRect(x: 0.1, y: 0.1, width: 0.8, height: 0.8),
+                                                  imageSize: CGSize(width: 100, height: 50))
+        XCTAssertEqual(results.count, 2)
+        let texts = results.map(\.text).sorted()
+        XCTAssertEqual(texts, ["B-AB 1234", "M-XY 99"])
+        // Each result gets its own sub-box derived from its observation, not the full region.
+        for r in results {
+            XCTAssertNotEqual(r.boundingBox, CGRect(x: 0.1, y: 0.1, width: 0.8, height: 0.8))
+        }
+    }
+
+    func testProcessDropsFragmentThatIsSubstringOfCompletePlate() {
+        // "HH" + "AB1234" should assemble to "HH-AB 1234"; the fragment "A-B 1234"
+        // must not be emitted alongside it.
+        let parts = [
+            PlateObservation(boundingBox: CGRect(x: 0, y: 0.1, width: 0.2, height: 0.7), string: "HH", confidence: 0.8, candidates: []),
+            PlateObservation(boundingBox: CGRect(x: 0.3, y: 0.2, width: 0.6, height: 0.7), string: "AB1234", confidence: 0.99, candidates: [])
+        ]
+        let results = PlatePostProcessor().process(observations: parts, region: .zero, imageSize: CGSize(width: 100, height: 50))
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results.first?.text, "HH-AB 1234")
     }
 }

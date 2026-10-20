@@ -17,25 +17,37 @@ private let plateOCRContext = CIContext(options: [.cacheIntermediates: false])
 public struct PlatePostProcessor: Sendable {
     public init() {}
 
-    /// Builds a `PlateResult` from the observations of a single detected region.
+    /// Builds one or more `PlateResult`s from the observations of a single detected region.
+    ///
+    /// A detection crop normally holds exactly one plate, so this typically returns a
+    /// single result. But when two plates land in one crop (the detector occasionally
+    /// merges adjacent plates, or the crop padding pulls in a neighbour), Vision may
+    /// read both — this returns every *distinct* valid plate instead of collapsing them
+    /// into one. Single-plate OCR fragments are still joined into one reading.
     /// - Parameters:
     ///   - observations: Vision observations for the cropped plate region.
-    ///   - region: The detection's normalized bounding box (used for overlay).
+    ///   - region: The detection's normalized bounding box (used for overlay / sub-boxing).
     ///   - imageSize: Original image size, kept for reference/overlay math.
     ///   - correctedImage: The rectified plate image fed to OCR, if available.
-    /// - Returns: A validated `PlateResult`, or `nil` if no plausible plate was found.
+    /// - Returns: All validated plates found in the region (empty when none are plausible).
     public func process(observations: [PlateObservation],
                         region: CGRect,
                         imageSize: CGSize,
-                        correctedImage: CGImage? = nil) -> PlateResult? {
-        // Collect every candidate string Vision produced (primary + alternatives).
-        var raw: [(text: String, confidence: Float)] = []
+                        correctedImage: CGImage? = nil) -> [PlateResult] {
+        guard !observations.isEmpty else { return [] }
+
+        // (text, confidence, sourceBoxInCrop). `sourceBoxInCrop` is the observation's
+        // normalized box (bottom-left origin) inside the OCR crop; nil means the whole crop.
+        struct Cand { let text: String; let confidence: Float; let box: CGRect? }
+        var raw: [Cand] = []
         for obs in observations {
-            if !obs.string.isEmpty { raw.append((obs.string, obs.confidence)) }
-            raw.append(contentsOf: obs.candidates)
+            let box = obs.boundingBox
+            if !obs.string.isEmpty { raw.append(Cand(text: obs.string, confidence: obs.confidence, box: box)) }
+            for c in obs.candidates { raw.append(Cand(text: c.text, confidence: c.confidence, box: box)) }
         }
+
         // Vision often splits a plate into city, series and number observations.
-        // Join spatial neighbors instead of dropping a valid multi-part reading.
+        // Join spatial neighbours into one plausible plate (single plate, split across observations).
         let byRow = observations.filter { !$0.string.isEmpty }.sorted {
             if $0.boundingBox.midY != $1.boundingBox.midY { return $0.boundingBox.midY > $1.boundingBox.midY }
             return $0.boundingBox.minX < $1.boundingBox.minX
@@ -48,54 +60,84 @@ public struct PlatePostProcessor: Sendable {
         }
         let ordered = rows.flatMap { $0.sorted { $0.boundingBox.minX < $1.boundingBox.minX } }
         var assembledText: String?
+        var assembledConfidence: Float = 0
         if ordered.count > 1 {
             let joined = ordered.map(\.string).joined(separator: " ")
             assembledText = GermanPlateValidator.canonicalize(joined)
-            raw.append((joined,
-                        ordered.map(\.confidence).min() ?? 0))
+            assembledConfidence = ordered.map(\.confidence).min() ?? 0
         }
 
-        // Canonicalize each, tracking validity.
-        var scored: [(text: String, confidence: Float, valid: Bool)] = []
-        for (text, conf) in raw where !text.isEmpty {
-            if let canon = GermanPlateValidator.canonicalize(text) {
-                scored.append((canon, conf, GermanPlateValidator.isValid(canon)))
-            } else {
-                scored.append((text, conf, false))
+        // Canonicalize every candidate, keeping only format-valid plates.
+        var scored: [(text: String, confidence: Float, box: CGRect?)] = []
+        if let a = assembledText, GermanPlateValidator.isValid(a) {
+            scored.append((a, assembledConfidence, nil))
+        }
+        for cand in raw where !cand.text.isEmpty {
+            if let canon = GermanPlateValidator.canonicalize(cand.text),
+               GermanPlateValidator.isValid(canon) {
+                scored.append((canon, cand.confidence, cand.box))
             }
         }
-        guard !scored.isEmpty else { return nil }
+        guard !scored.isEmpty else { return [] }
 
         // Keep the highest-confidence occurrence of each canonical string.
-        var best: [String: (confidence: Float, valid: Bool)] = [:]
+        var best: [String: (confidence: Float, box: CGRect?)] = [:]
         for item in scored {
             if let existing = best[item.text] {
-                if item.confidence > existing.confidence {
-                    best[item.text] = (item.confidence, item.valid)
-                }
+                if item.confidence > existing.confidence { best[item.text] = (item.confidence, item.box) }
             } else {
-                best[item.text] = (item.confidence, item.valid)
+                best[item.text] = (item.confidence, item.box)
             }
         }
 
-        // A complete joined plate takes precedence over a fragment that happens to match the format.
-        let validOnes = best.filter { $0.value.valid }
-            .sorted {
-                if ($0.key == assembledText) != ($1.key == assembledText) { return $0.key == assembledText }
-                if $0.value.confidence != $1.value.confidence { return $0.value.confidence > $1.value.confidence }
-                return $0.key < $1.key
+        // Prefer the assembled complete plate, then emit other distinct valid plates
+        // (two plates read from one crop) — but skip fragments that are substrings of a
+        // plate we already emitted (e.g. "AB1234" inside "HH-AB 1234").
+        let flatNorm: (String) -> String = {
+            $0.uppercased().replacingOccurrences(of: " ", with: "").replacingOccurrences(of: "-", with: "")
+        }
+        var emitted: [(text: String, confidence: Float, box: CGRect?)] = []
+        if let a = assembledText, let info = best[a] {
+            emitted.append((a, info.confidence, info.box))
+        }
+        let remaining = best
+            .filter { $0.key != assembledText }
+            .sorted { $0.value.confidence > $1.value.confidence }
+        for (text, info) in remaining {
+            let n = flatNorm(text)
+            let redundant = emitted.contains {
+                let e = flatNorm($0.text)
+                return e.contains(n) || n.contains(e)
             }
-        guard let chosen = validOnes.first else { return nil }
+            if !redundant { emitted.append((text, info.confidence, info.box)) }
+        }
+
+        let chosen = Array(emitted.prefix(8))
+        guard !chosen.isEmpty else { return [] }
 
         let candidates = best.map { PlateCandidate(text: $0.key, confidence: $0.value.confidence) }
             .sorted { $0.confidence > $1.confidence }
 
-        return PlateResult(text: chosen.key,
-                           confidence: chosen.value.confidence,
-                           boundingBox: region,
-                           imageSize: imageSize,
-                           candidates: candidates,
-                           correctedPlateImage: correctedImage)
+        return chosen.map { item in
+            let box: CGRect = item.box.map { Self.mapObservationBox($0, into: region) } ?? region
+            return PlateResult(text: item.text,
+                               confidence: item.confidence,
+                               boundingBox: box,
+                               imageSize: imageSize,
+                               candidates: candidates,
+                               correctedPlateImage: correctedImage)
+        }
+    }
+
+    /// Maps a Vision observation box (normalized, bottom-left origin, inside the OCR crop)
+    /// into the detection's normalized region (top-left origin, original frame). This is a
+    /// linear approximation used to give each plate its own sub-box when several share a crop.
+    private static func mapObservationBox(_ obsBox: CGRect, into region: CGRect) -> CGRect {
+        let x = region.minX + obsBox.minX * region.width
+        let y = region.minY + (1 - obsBox.maxY) * region.height
+        return CGRect(x: x, y: y,
+                      width: obsBox.width * region.width,
+                      height: obsBox.height * region.height)
     }
 
     /// De-duplicates plates detected across multiple video frames, keeping the
