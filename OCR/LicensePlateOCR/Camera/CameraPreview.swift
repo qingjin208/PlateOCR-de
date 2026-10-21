@@ -33,7 +33,6 @@ struct CameraPreview: UIViewRepresentable {
 final class PreviewView: UIView {
     private var detections: [PlateDetection] = []
     private var results: [PlateResult] = []
-    private var imageSize = CGSize.zero
     private var labels: [CATextLayer] = []
 
     /// Overlay layer used to draw detection boxes; one path, many rects.
@@ -78,10 +77,11 @@ final class PreviewView: UIView {
     }
 
     /// Draws top-left normalized boxes for an already oriented portrait frame.
+    /// `imageSize` is accepted for API compatibility with the controller; the actual
+    /// on-screen mapping is derived from the preview layer's `videoRect`.
     func draw(detections: [PlateDetection], results: [PlateResult], imageSize: CGSize) {
         self.detections = detections
         self.results = results
-        self.imageSize = imageSize
         renderOverlay()
     }
 
@@ -90,27 +90,23 @@ final class PreviewView: UIView {
         labels = []
         let path = CGMutablePath()
         let recognizedPath = CGMutablePath()
-        guard imageSize.width > 0, imageSize.height > 0 else {
+        // Tie each box to the rectangle where the preview layer *actually* draws the
+        // video. `videoRect` already folds in videoGravity (aspect-fill), the layer's
+        // bounds, and the connection's rotation, so a normalized (top-left, 0...1) box
+        // from the detector maps straight onto the displayed frame. This removes the
+        // dependency on `imageSize`/hand-rolled aspect math, which is what made the box
+        // sit above the plate and creep as the frame size or layout shifted.
+        let videoRect = videoPreviewLayer.videoRect
+        guard !videoRect.isEmpty, videoRect.width > 0, videoRect.height > 0 else {
             overlayLayer.path = nil
             recognizedLayer.path = nil
             return
         }
-        // The SDK boxes are normalized (top-left, 0...1) in the *oriented* frame the
-        // preview layer shows (portrait after the connection's videoRotationAngle is
-        // applied). The preview uses videoGravity = .resizeAspectFill, so map the
-        // normalized box to layer points with the same aspect-fill scaling. This avoids
-        // relying on `layerRectConverted(fromMetadataOutputRect:)` orientation semantics
-        // (which previously double-rotated the box and drew it in the wrong place).
-        let scale = max(bounds.width / imageSize.width, bounds.height / imageSize.height)
-        let dispW = imageSize.width * scale
-        let dispH = imageSize.height * scale
-        let offX = (bounds.width - dispW) / 2
-        let offY = (bounds.height - dispH) / 2
         func toLayer(_ rect: CGRect) -> CGRect {
-            CGRect(x: offX + rect.minX * dispW,
-                   y: offY + rect.minY * dispH,
-                   width: rect.width * dispW,
-                   height: rect.height * dispH)
+            CGRect(x: videoRect.minX + rect.minX * videoRect.width,
+                   y: videoRect.minY + rect.minY * videoRect.height,
+                   width: rect.width * videoRect.width,
+                   height: rect.height * videoRect.height)
         }
         for detection in detections {
             path.addRect(toLayer(detection.rect))
@@ -119,7 +115,9 @@ final class PreviewView: UIView {
             let box = toLayer(result.boundingBox)
             recognizedPath.addRect(box)
             let label = CATextLayer()
-            let detectionNumber = (detections.firstIndex { $0.rect == result.boundingBox } ?? -1) + 1
+            let detectionNumber = (detections.firstIndex { $0.rect.contains(result.boundingBox) }
+                ?? detections.firstIndex { $0.rect.intersects(result.boundingBox) }
+                ?? -1) + 1
             label.string = "#\(detectionNumber) \(result.text)  \(Int(result.confidence * 100))%"
             label.fontSize = 14
             label.contentsScale = traitCollection.displayScale

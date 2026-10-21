@@ -14,6 +14,8 @@ import Vision
 import CoreImage
 import UniformTypeIdentifiers
 import UIKit
+import AVKit
+import AVFoundation
 
 struct ContentView: View {
     // Share the bundled plate detector and Apple OCR across all media sources.
@@ -50,6 +52,9 @@ struct ContentView: View {
     @State private var isBusy = false
     @State private var videoProgress = 0.0
     @State private var errorMessage: String?
+    /// Plays the selected video so the upload has a visible reaction (the SDK samples
+    /// frames for recognition; the player just previews the source clip).
+    @State private var player: AVPlayer?
 
     enum MediaSource: String, CaseIterable {
         case image = "图片"
@@ -138,16 +143,17 @@ struct ContentView: View {
                                 }
                             }
                             .padding(.horizontal)
-                    } else if source == .video, videoURL != nil {
-                        Image(systemName: "film")
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 64, height: 64)
-                            .foregroundStyle(.gray)
+                    } else if source == .video, let player {
+                        VideoPlayer(player: player)
+                            .frame(height: 340)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
                             .overlay(alignment: .bottom) {
-                                Text("视频已选择，点击上方重新选择可再次识别")
+                                Text("视频预览（识别为逐帧采样，结果见下方列表）")
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(.white)
+                                    .padding(6)
+                                    .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
+                                    .padding(8)
                             }
                     }
 
@@ -185,26 +191,48 @@ struct ContentView: View {
                         }
                         .padding(.horizontal)
                     }
+
+                    // Media loaded but nothing recognized → give explicit feedback so it
+                    // does not look like "nothing happened".
+                    if results.isEmpty, !isBusy,
+                       (source == .image && displayImage != nil) || (source == .video && videoURL != nil) {
+                        Text("未识别到车牌。可尝试更换素材、切换识别模式或 OCR 引擎后重试。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal)
+                    }
                 }
                 .padding(.vertical)
             }
             .navigationTitle("德国车牌识别")
         }
-        .task(id: imageItem) {
-            guard let item = imageItem else { return }
-            await runImage(item)
+        .onChange(of: imageItem) { _, newItem in
+            if let newItem { Task { await runImage(newItem) } }
         }
-        .task(id: videoItem) {
-            guard let item = videoItem else { return }
-            await runVideo(item)
+        .onChange(of: videoItem) { _, newItem in
+            if let newItem { Task { await runVideo(newItem) } }
         }
         .onChange(of: mode) { _, newMode in cameraController.mode = newMode }
         .onChange(of: ocrEngine) { _, newEngine in recognizer.ocrEngine = newEngine }
+        .onChange(of: videoURL) { _, newURL in
+            if let newURL {
+                player = AVPlayer(url: newURL)
+            } else {
+                player?.pause()
+                player = nil
+            }
+        }
+        .onChange(of: source) { _, newSource in
+            if newSource != .video { player?.pause() }
+        }
     }
 
     // MARK: - Run
 
     private func runImage(_ item: PhotosPickerItem) async {
+        // Clear the selection once we've consumed it, so re-selecting the same asset
+        // (a common re-test) produces a fresh change and re-triggers recognition.
+        defer { if imageItem == item { imageItem = nil } }
         do {
             guard let data = try await item.loadTransferable(type: Data.self) else {
                 errorMessage = "无法读取图片"
@@ -235,6 +263,9 @@ struct ContentView: View {
     }
 
     private func runVideo(_ item: PhotosPickerItem) async {
+        // Clear the selection once we've consumed it, so re-selecting the same asset
+        // (a common re-test) produces a fresh change and re-triggers recognition.
+        defer { if videoItem == item { videoItem = nil } }
         do {
             // Copy the file during the transfer callback, before Photos releases it.
             guard let movie = try await item.loadTransferable(type: ImportedMovie.self) else {
@@ -242,7 +273,10 @@ struct ContentView: View {
                 return
             }
             let dst = movie.url
-            defer { try? FileManager.default.removeItem(at: dst) }
+            // Keep the new clip for previewing; delete the *previous* temp video instead of
+            // the current one. (Previously `defer { removeItem(dst) }` deleted the file the
+            // instant recognition finished, so the VideoPlayer had nothing left to play.)
+            if let old = videoURL, old != dst { try? FileManager.default.removeItem(at: old) }
 
             videoURL = dst
             imageData = nil

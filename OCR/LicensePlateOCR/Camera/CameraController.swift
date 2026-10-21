@@ -179,7 +179,9 @@ final class CameraController: NSObject {
                 if now.timeIntervalSince(lastPrinted[historyKey] ?? .distantPast) >= 2 {
                     print("[PlateOCR] \(plate.text) confidence=\(plate.confidence) box=\(plate.boundingBox) latency=\(elapsedMilliseconds)ms")
                     lastPrinted[historyKey] = now
-                    let detectionNumber = (result.detections.firstIndex { $0.rect == plate.boundingBox } ?? -1) + 1
+                    let detectionNumber = (result.detections.firstIndex { $0.rect.contains(plate.boundingBox) }
+                        ?? result.detections.firstIndex { $0.rect.intersects(plate.boundingBox) }
+                        ?? -1) + 1
                     recognitionHistory.append(CameraRecognitionLogEntry(date: now, result: plate,
                                                                           detectionNumber: detectionNumber))
                 }
