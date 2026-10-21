@@ -489,7 +489,8 @@ extension UIImage {
     /// `imageOrientation`, so downstream coordinate math lines up with what SwiftUI
     /// actually draws. `cgImage` alone ignores the orientation tag.
     func cgImageWithOrientationApplied() -> CGImage? {
-        let format = UIGraphicsImageRendererFormat.default
+        // `default` is a class function here (imported from `+defaultFormat`), not a property.
+        let format = UIGraphicsImageRendererFormat.default()
         format.scale = 1
         let renderer = UIGraphicsImageRenderer(size: size, format: format)
         let rendered = renderer.image { _ in
