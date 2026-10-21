@@ -7,8 +7,13 @@
 // Pull in the CocoaPods-generated settings (framework/search paths for the
 // onnxruntime-mobile-objc pod). Required because this project uses a custom
 // config and CocoaPods could not auto-inject its base configuration.
-// Path is relative to this file (Configuration/ -> ../Pods/...).
+// Both variants are included because all four project/target configurations
+// (Debug + Release) point at this single file; the paths inside use
+// $(CONFIGURATION) variables, so one file serves both. Including both also
+// silences the "did not set the base configuration" warning during pod install.
+// Paths are relative to this file (Configuration/ -> ../Pods/...).
 #include "../Pods/Target Support Files/Pods-LicensePlateOCR/Pods-LicensePlateOCR.debug.xcconfig"
+#include "../Pods/Target Support Files/Pods-LicensePlateOCR/Pods-LicensePlateOCR.release.xcconfig"
 
 // Set DEVELOPMENT_TEAM to your Personal Team ("衿青") in Xcode:
 //   Signing & Capabilities -> Team -> 衿青 (Personal Team)

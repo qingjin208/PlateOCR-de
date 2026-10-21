@@ -36,6 +36,8 @@ final class PreviewView: UIView {
     private var labels: [CATextLayer] = []
     /// One layer per plate: semi-transparent solid fill + same-colour solid outline.
     private var plateLayers: [CAShapeLayer] = []
+    /// Pixel size of the oriented (portrait) frame the detections are normalized to.
+    private var frameSize: CGSize = .zero
 
     /// Overlay layer used to draw the detection boxes; one path, many rects.
     private let overlayLayer = CAShapeLayer()
@@ -78,12 +80,33 @@ final class PreviewView: UIView {
     }
 
     /// Draws top-left normalized boxes for an already oriented portrait frame.
-    /// `imageSize` is accepted for API compatibility with the controller; the actual
-    /// on-screen mapping is derived from the preview layer's `videoRect`.
+    /// `imageSize` is the pixel size of that oriented frame (portrait, e.g. 1080x1920
+    /// for an `.hd1920x1080` session with the output connection rotated to 90°).
     func draw(detections: [PlateDetection], results: [PlateResult], imageSize: CGSize) {
         self.detections = detections
         self.results = results
+        self.frameSize = imageSize
         renderOverlay()
+    }
+
+    /// The rectangle the preview layer draws the video into, replicating
+    /// `.resizeAspectFill`: scale the frame uniformly to cover the bounds (the
+    /// larger ratio wins), then center it — overflowing edges crop.
+    ///
+    /// `AVCaptureVideoPreviewLayer` has no public `videoRect` (that property exists
+    /// only on `AVPlayerLayer`), so the geometry is derived here from the frame size
+    /// the controller hands us. The output connection and the preview connection use
+    /// the same rotation angle (90°), so the oriented frame maps 1:1 onto the layer.
+    private func videoRect(for imageSize: CGSize) -> CGRect {
+        guard imageSize.width > 0, imageSize.height > 0,
+              bounds.width > 0, bounds.height > 0 else { return .zero }
+        let scale = max(bounds.width / imageSize.width, bounds.height / imageSize.height)
+        let width = imageSize.width * scale
+        let height = imageSize.height * scale
+        return CGRect(x: (bounds.width - width) / 2,
+                      y: (bounds.height - height) / 2,
+                      width: width,
+                      height: height)
     }
 
     private func renderOverlay() {
@@ -95,13 +118,11 @@ final class PreviewView: UIView {
         plateLayers = []
         CATransaction.commit()
         let detectionPath = CGMutablePath()
-        // Tie each box to the rectangle where the preview layer *actually* draws the
-        // video. `videoRect` already folds in videoGravity (aspect-fill), the layer's
-        // bounds, and the connection's rotation, so a normalized (top-left, 0...1) box
-        // from the detector maps straight onto the displayed frame. This removes the
-        // dependency on `imageSize`/hand-rolled aspect math, which is what made the box
-        // sit above the plate and creep as the frame size or layout shifted.
-        let videoRect = videoPreviewLayer.videoRect
+        // Map each normalized (top-left, 0...1) box from the detector onto the rect
+        // where the preview actually draws the video (aspect-fill, centered). This
+        // removes the dependency on hand-rolled per-call math, which is what made the
+        // box sit above the plate and creep as the frame size or layout shifted.
+        let videoRect = videoRect(for: frameSize)
         guard !videoRect.isEmpty, videoRect.width > 0, videoRect.height > 0 else {
             overlayLayer.path = nil
             return
@@ -179,12 +200,13 @@ final class PreviewView: UIView {
 
     /// Text chip anchored to the top edge of the plate quad, tinted with the plate colour.
     private func addLabel(for result: PlateResult, number: Int, color: PlateOverlayColor, quad: [CGPoint]) {
-        let videoRect = videoPreviewLayer.videoRect
+        let videoRect = videoRect(for: frameSize)
+        guard videoRect.width > 0, videoRect.height > 0 else { return }
         let points = quad.map { CGPoint(x: videoRect.minX + $0.x * videoRect.width,
                                         y: videoRect.minY + $0.y * videoRect.height) }
-        let minX = points.map(\.x).min() ?? 0
-        let minY = points.map(\.y).min() ?? 0
-        let maxX = points.map(\.x).max() ?? 0
+        let minX = points.map { $0.x }.min() ?? 0
+        let minY = points.map { $0.y }.min() ?? 0
+        let maxX = points.map { $0.x }.max() ?? 0
         let width = min(bounds.width, max(140, maxX - minX))
         let label = CATextLayer()
         label.string = "#\(number) \(result.text)  \(Int(result.confidence * 100))%"
