@@ -221,6 +221,53 @@ final class PreviewView: UIView {
         labels.append(label)
     }
 
+    /// Diagnostic echo layer (analyzed frame thumbnail + boxes), when enabled.
+    private var debugLayer: CALayer?
+
+    /// Shows the exact frame the SDK analyzed — as-is, with whatever rotation the
+    /// buffer actually has — plus the same normalized detection boxes drawn on it.
+    /// The thumbnail displays the whole buffer 1:1 (no crop), so if a box fits the
+    /// plate here but not on the live preview, the preview mapping is wrong; if the
+    /// thumbnail itself appears sideways, the output rotation was never applied.
+    func showDebugFrame(image: CGImage?, detections: [PlateDetection]) {
+        debugLayer?.removeFromSuperlayer()
+        debugLayer = nil
+        guard let image, bounds.width > 0, bounds.height > 0 else { return }
+        let maxSide: CGFloat = 150
+        let aspect = CGFloat(image.width) / max(CGFloat(image.height), 1)
+        let size = aspect >= 1 ? CGSize(width: maxSide, height: maxSide / aspect)
+                               : CGSize(width: maxSide * aspect, height: maxSide)
+        let container = CALayer()
+        container.frame = CGRect(x: bounds.maxX - size.width - 8,
+                                 y: bounds.maxY - size.height - 8,
+                                 width: size.width, height: size.height)
+        container.backgroundColor = UIColor.black.cgColor
+        container.borderColor = UIColor.white.withAlphaComponent(0.85).cgColor
+        container.borderWidth = 1
+        container.cornerRadius = 4
+        container.masksToBounds = true
+        let imageLayer = CALayer()
+        imageLayer.frame = container.bounds
+        imageLayer.contents = image
+        imageLayer.contentsGravity = .resize
+        container.addSublayer(imageLayer)
+        let boxes = CAShapeLayer()
+        let path = CGMutablePath()
+        for detection in detections {
+            path.addRect(CGRect(x: detection.rect.minX * size.width,
+                                y: detection.rect.minY * size.height,
+                                width: detection.rect.width * size.width,
+                                height: detection.rect.height * size.height))
+        }
+        boxes.path = path
+        boxes.strokeColor = UIColor.systemYellow.cgColor
+        boxes.fillColor = nil
+        boxes.lineWidth = 1.5
+        container.addSublayer(boxes)
+        videoPreviewLayer.addSublayer(container)
+        debugLayer = container
+    }
+
     func clearOverlay() {
         detections = []
         results = []
@@ -229,5 +276,7 @@ final class PreviewView: UIView {
         plateLayers.forEach { $0.removeFromSuperlayer() }
         plateLayers = []
         overlayLayer.path = nil
+        debugLayer?.removeFromSuperlayer()
+        debugLayer = nil
     }
 }

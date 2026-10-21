@@ -25,7 +25,7 @@ struct CameraView: View {
                         .padding(10)
                     }
                     .overlay(alignment: .bottomLeading) {
-                        Text("耗时 \(controller.elapsedMilliseconds) ms")
+                        Text("耗时 \(controller.elapsedMilliseconds) ms · 帧 \(Int(controller.frameSize.width))×\(Int(controller.frameSize.height))")
                             .font(.caption.monospaced())
                             .foregroundStyle(.white)
                             .padding(8)
@@ -98,6 +98,14 @@ struct CameraView: View {
                     Text("彩色区域：已识别车牌")
                         .foregroundStyle(.green)
                     Spacer()
+                    // Diagnostic echo: shows the analyzed buffer as-is with the same
+                    // boxes, so a preview-vs-buffer mismatch is visible on device.
+                    Text("回显")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Toggle("", isOn: $controller.debugEchoEnabled)
+                        .labelsHidden()
+                        .fixedSize()
                     Text("\(controller.elapsedMilliseconds) ms")
                         .foregroundStyle(.secondary)
                 }

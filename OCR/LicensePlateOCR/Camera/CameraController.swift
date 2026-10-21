@@ -66,6 +66,30 @@ final class CameraController: NSObject {
         }
     }
     weak var previewView: PreviewView?
+    /// Diagnostic: echoes the exact frame the SDK analyzed (as-is, rotation included)
+    /// into a corner thumbnail, with the same normalized boxes drawn on it. If the box
+    /// fits the plate on the echo but not on the preview → preview mapping bug; if the
+    /// echo itself is rotated → the output connection's rotation did not apply.
+    var debugEchoEnabled = false {
+        didSet {
+            if !debugEchoEnabled { previewView?.showDebugFrame(image: nil, detections: []) }
+        }
+    }
+
+    /// Shared context for the debug echo (thread-safe; created once).
+    private nonisolated static let debugImageContext = CIContext()
+
+    /// Downscaled CGImage of the analyzed buffer, exactly as the SDK received it.
+    private nonisolated func debugThumbnail(from buffer: CVPixelBuffer) -> CGImage? {
+        let width = CGFloat(CVPixelBufferGetWidth(buffer))
+        let height = CGFloat(CVPixelBufferGetHeight(buffer))
+        guard width > 0, height > 0 else { return nil }
+        let maxDimension: CGFloat = 360
+        let scale = min(maxDimension / width, maxDimension / height, 1)
+        let scaled = CIImage(cvPixelBuffer: buffer)
+            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        return Self.debugImageContext.createCGImage(scaled, from: scaled.extent)
+    }
 
     func clearRecognitionHistory() {
         recognitionHistory.removeAll()
@@ -163,6 +187,12 @@ final class CameraController: NSObject {
                     self.frameSize = size
                     self.previewView?.draw(detections: detections, results: [], imageSize: size)
                 }
+            }
+            // Diagnostic echo: the analyzed buffer as-is + the same boxes, so the
+            // preview-vs-buffer alignment question can be answered on device.
+            if debugEchoEnabled {
+                previewView?.showDebugFrame(image: debugThumbnail(from: frame.buffer),
+                                            detections: result.detections)
             }
             guard active, liveEnabled, generation == token else { return }
             waitingForOCR = false
