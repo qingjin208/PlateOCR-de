@@ -93,9 +93,9 @@ struct CameraView: View {
                 .foregroundStyle(.white)
 
                 HStack(spacing: 12) {
-                    Text("黄框：检测中")
+                    Text("黄框：检测框")
                         .foregroundStyle(.yellow)
-                    Text("绿框：已识别")
+                    Text("彩色区域：已识别车牌")
                         .foregroundStyle(.green)
                     Spacer()
                     Text("\(controller.elapsedMilliseconds) ms")

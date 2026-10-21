@@ -29,11 +29,17 @@ public struct PlatePostProcessor: Sendable {
     ///   - region: The detection's normalized bounding box (used for overlay / sub-boxing).
     ///   - imageSize: Original image size, kept for reference/overlay math.
     ///   - correctedImage: The rectified plate image fed to OCR, if available.
+    ///   - corners: The detection's pose corners (normalized), attached to the plate that
+    ///     owns the whole region so overlays can outline the actual plate quad.
+    ///   - enhancements: Opt-in strengthening (default `.off` = legacy output). See
+    ///     `RecognitionEnhancements`.
     /// - Returns: All validated plates found in the region (empty when none are plausible).
     public func process(observations: [PlateObservation],
                         region: CGRect,
                         imageSize: CGSize,
-                        correctedImage: CGImage? = nil) -> [PlateResult] {
+                        correctedImage: CGImage? = nil,
+                        corners: [CGPoint]? = nil,
+                        enhancements: RecognitionEnhancements = .off) -> [PlateResult] {
         guard !observations.isEmpty else { return [] }
 
         // (text, confidence, sourceBoxInCrop). `sourceBoxInCrop` is the observation's
@@ -63,7 +69,7 @@ public struct PlatePostProcessor: Sendable {
         var assembledConfidence: Float = 0
         if ordered.count > 1 {
             let joined = ordered.map(\.string).joined(separator: " ")
-            assembledText = GermanPlateValidator.canonicalize(joined)
+            assembledText = GermanPlateValidator.canonicalize(joined, enhancements: enhancements)
             assembledConfidence = ordered.map(\.confidence).min() ?? 0
         }
 
@@ -73,7 +79,7 @@ public struct PlatePostProcessor: Sendable {
             scored.append((a, assembledConfidence, nil))
         }
         for cand in raw where !cand.text.isEmpty {
-            if let canon = GermanPlateValidator.canonicalize(cand.text),
+            if let canon = GermanPlateValidator.canonicalize(cand.text, enhancements: enhancements),
                GermanPlateValidator.isValid(canon) {
                 scored.append((canon, cand.confidence, cand.box))
             }
@@ -119,14 +125,43 @@ public struct PlatePostProcessor: Sendable {
             .sorted { $0.confidence > $1.confidence }
 
         return chosen.map { item in
-            let box: CGRect = item.box.map { Self.mapObservationBox($0, into: region) } ?? region
+            // Only the plate that fills the crop can inherit the region's box / corners;
+            // a sub-plate carved out of a shared crop has its own sub-box.
+            let ownsRegion = Self.ownsRegion(item.box)
+            let box: CGRect
+            if enhancements.effectiveKeypointQuads, ownsRegion, correctedImage != nil {
+                // OCR ran on a perspective-corrected image, whose observation coordinates
+                // have no linear relation to the frame — so keep the detection's own box
+                // instead of mapping the observation box back (that mapping is only valid
+                // when OCR ran on a plain box crop).
+                box = region
+            } else {
+                box = item.box.map { Self.mapObservationBox($0, into: region) } ?? region
+            }
+            // Legacy: only an assembled reading (box == nil) carries the pose corners.
+            // Enhanced: any plate that owns the crop does, which is what makes the tinted
+            // outline follow the plate on a still image too.
+            let quad: [CGPoint]?
+            if let corners, enhancements.effectiveKeypointQuads, ownsRegion {
+                quad = corners
+            } else {
+                quad = item.box == nil ? corners : nil
+            }
             return PlateResult(text: item.text,
                                confidence: item.confidence,
                                boundingBox: box,
                                imageSize: imageSize,
                                candidates: candidates,
-                               correctedPlateImage: correctedImage)
+                               correctedPlateImage: correctedImage,
+                               corners: quad)
         }
+    }
+
+    /// Whether an observation box fills (almost) the whole OCR crop. The area threshold
+    /// leaves room for Vision's habit of reporting a slightly inset box around the text.
+    private static func ownsRegion(_ box: CGRect?) -> Bool {
+        guard let box else { return true }
+        return box.width * box.height >= 0.6
     }
 
     /// Maps a Vision observation box (normalized, bottom-left origin, inside the OCR crop)
@@ -152,6 +187,41 @@ public struct PlatePostProcessor: Sendable {
             }
         }
         return best.values.sorted { $0.confidence > $1.confidence }
+    }
+
+    /// Collapses the same plate reported more than once *within one frame*, which happens
+    /// when the detector emits two boxes over one plate (their IoU can stay below the NMS
+    /// threshold) — previously that produced two identical rows and two tinted quads.
+    ///
+    /// Unlike `deduplicate` (text only, across video frames) this also requires the boxes
+    /// to overlap, so two physically distinct plates that happen to read the same text are
+    /// both kept.
+    public static func deduplicateOverlapping(_ results: [PlateResult],
+                                              minimumOverlap: CGFloat = 0.45) -> [PlateResult] {
+        var kept: [PlateResult] = []
+        kept.reserveCapacity(results.count)
+        for candidate in results.sorted(by: { $0.confidence > $1.confidence }) {
+            let isDuplicate = kept.contains { existing in
+                guard existing.text == candidate.text else { return false }
+                return overlapRatio(existing.boundingBox, candidate.boundingBox) >= minimumOverlap
+            }
+            if !isDuplicate { kept.append(candidate) }
+        }
+        // Restore the caller's ordering (detection order drives the overlay numbering).
+        var order: [UUID: Int] = [:]
+        for (index, result) in results.enumerated() { order[result.id] = index }
+        return kept.sorted { (order[$0.id] ?? 0) < (order[$1.id] ?? 0) }
+    }
+
+    /// Intersection over the *smaller* box rather than IoU: a merged detection and the
+    /// single plate inside it have IoU ≈ 0.3 while one box fully contains the other, so
+    /// IoU would fail to recognise them as the same plate.
+    private static func overlapRatio(_ a: CGRect, _ b: CGRect) -> CGFloat {
+        let intersection = a.intersection(b)
+        guard !intersection.isNull, intersection.width > 0, intersection.height > 0 else { return 0 }
+        let area = intersection.width * intersection.height
+        let smaller = min(a.width * a.height, b.width * b.height)
+        return smaller > 0 ? area / smaller : 0
     }
 }
 

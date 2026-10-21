@@ -69,10 +69,12 @@ PaddleOCR-iOS 实际调用（det + rec + cls 模型，通常从 App bundle 读�
 ## 3. 预处理注意事项（真机首次验证必读）
 
 `ONNXPoseLicensePlateDetector` 的预处理：letterbox 到 640×640（114 灰边）、**不翻转**、
-RGB 且 /255（NCHW）。Ultralytics 导出的 ONNX 默认期望这种 OpenCV 风格（左上原点、行0为图顶）。
+RGB 且 /255（NCHW）。Ultralytics 导出并训练时用的就是 RGB（`Image.open(...).convert("RGB")`），
+`Scripts/pose_pipeline_reference.py` 也是按 RGB 复刻的，因此**默认 `useRGB = true`（RGB）**。
 
-- 若真机上检测整体错乱/镜像：把 `ONNXPoseLicensePlateDetector` 的 `useRGB` 改为 `false`
-  （即 BGR）即可，是一行改动。
+- 只有当某个导出确实是在 BGR 流水线上训练/导出时，才把 `useRGB` 切到 `false`（App 内有
+  「输入通道顺序」开关，可运行时切换，无需重编译）。**不要**因为「真机效果差」就盲切 BGR——
+  这类症状更常见的原因是角点/几何或阈值问题。
 - `letterboxedUpright` 与旧 Core ML 检测器用的 `letterboxed`（带 y 翻转）**不同**，
   不可混用——pose 模型需要正向（非翻转）缓冲。
 
@@ -88,22 +90,52 @@ python OCR/Scripts/pose_pipeline_reference.py path/to/german_plate.jpg   # 需 o
 
 如要跑真实推理，请先 `pip install onnxruntime numpy pillow`。
 
-## 5. 真机验证清单
+## 5. 强化模式（Enhanced Mode）
+
+SDK 的默认行为不变（`RecognitionEnhancements.off`）。下列三项改进被打包成一个可选开关，
+由 App 决定是否传给 SDK；子开关用于在真机上单独定位回归。
+
+```swift
+// 建实例时打开
+let recognizer = LicensePlateRecognizer(poseModelName: "De-plate-pose-500", enhancements: .on)
+// 运行时切换（下一次识别即生效，不需要重建模型 / OCR）
+recognizer.enhancements.isEnabled = false
+recognizer.enhancements.foldAwareScoring = false   // 只关其中一项
+```
+
+| 子开关 | 作用 | 关闭（legacy） | 打开 |
+|---|---|---|---|
+| `foldAwareScoring` | 校验器按「折叠次数」扣分，避免把系列字母折进数字 | `B AB 123E` → `B-A 8123E`（错读） | `B-AB 123E` |
+| `strictNumericPart` | 数字段拒绝前导 `0`（FZV §10 号码为 1…9999） | `B-AB 0123` 被接受 | 拒绝该解读 |
+| `keypointQuads` | 占满整块裁剪的车牌继承 pose 角点；矫正图 OCR 后不再线性反算框 | 图片上只画轴对齐框 | 叠加 pose 四边形 |
+
+折叠感知排序修的是确定性错读：系列第 2 字母 ∈ {B, S, Z, G, T, I, O, D, L} 且数字只有
+1~3 位并带 `E`/`H` 时，legacy 打分下「系列 1 字母 + 折叠出的 4 位数字」与正确解读同分，
+而短系列先生成 → 必错（`B AB 1234E` 只因位数刚好凑满 4 位才侥幸正确）。
+
+Demo App 在控制面板提供「强化识别（SDK Enhanced Mode）」总开关 + 三个子开关；
+下方诊断行 `强化模式（SDK 侧）` 打印 SDK 实例真正持有的值，用来确认开关确实到达了 SDK。
+
+## 6. 真机验证清单
 
 - [ ] 在 iPhone（iOS 18+）上用 Xcode 编译，确认 `De-plate-pose-500.onnx` 已打包。
 - [ ] 图片 / 视频 / 相机三种来源都能返回检测框与车牌文本。
 - [ ] 结果卡片显示「矫正图」（透视矫正后的车牌）；角点不可靠时应回退为裁剪图（无矫正图）。
 - [ ] 切换 OCR 引擎 Picker（Apple Vision / PaddleOCR），确认 PaddleOCR 在未接入时回退、接入后生效。
 - [ ] 一帧多车牌、倾斜 / 远处小牌、部分遮挡场景下的框与文本质量。
-- [ ] 若检测异常，先尝试 `useRGB=false`（BGR）。
+- [ ] 打开 / 关闭「强化识别」，确认 `B AB 123E` 类读数与图片上的四边形叠层随之变化。
+- [ ] 若检测异常，先看 UI 上的「检测器」诊断行确认真的走到了 ONNX pose（而非 Core ML 回退）；
+      再看结果里是否有矫正图（没有则角点/几何校验被拒，回退成了框裁剪）。
 
-## 6. 关键文件
+## 7. 关键文件
 
 - `LicensePlateSDK/ONNXPoseLicensePlateDetector.swift` — ONNX Runtime pose 检测器
 - `LicensePlateSDK/PerspectivePlateCorrector.swift` — 4 角点透视矫正
 - `LicensePlateSDK/OCREngine.swift` — OCR 引擎枚举与工厂
 - `LicensePlateSDK/PaddleOCRTextRecognizer.swift` — PaddleOCR 集成缝
 - `LicensePlateSDK/LicensePlateRecognizer.swift` — 管线编排 + `correctedPlateImage` 返回
+- `LicensePlateSDK/RecognitionEnhancements.swift` — 强化模式开关（总开关 + 3 个子开关）
+- `LicensePlateSDK/GermanPlateValidator.swift` — 德国车牌校验 + 折叠感知排序
 - `LicensePlateSDK/LicensePlateDetector.swift` / `YOLOOutputDecoder.swift` — 检测结构与关键点解码
 - `LicensePlateOCR/ContentView.swift` — Demo 的 OCR 引擎选择器与矫正图展示
 - `Scripts/pose_pipeline_reference.py` — 算法参考与数值校验

@@ -21,6 +21,27 @@ public struct PlateFrameResult: Sendable {
     public let imageSize: CGSize
 }
 
+/// One sampled frame of a video, kept so a player overlay can show the plates that were
+/// found at *that* moment (the aggregate result list spans many frames and therefore
+/// cannot be drawn onto a single frame's coordinate space).
+public struct PlateVideoSample: Sendable, Identifiable {
+    public let id: Int
+    /// Presentation timestamp of the sampled frame, in seconds.
+    public let time: Double
+    public let imageSize: CGSize
+    public let detections: [PlateDetection]
+    public let plates: [PlateResult]
+
+    public init(id: Int, time: Double, imageSize: CGSize,
+                detections: [PlateDetection], plates: [PlateResult]) {
+        self.id = id
+        self.time = time
+        self.imageSize = imageSize
+        self.detections = detections
+        self.plates = plates
+    }
+}
+
 /// A recognized plate.
 public struct PlateResult: Identifiable, Sendable {
     public let id = UUID()
@@ -37,6 +58,10 @@ public struct PlateResult: Identifiable, Sendable {
     /// The rectified plate image actually fed to the OCR engine (perspective-corrected
     /// from the 4 corner keypoints). `nil` when the detector fell back to a box crop.
     public let correctedPlateImage: CGImage?
+    /// The plate outline (normalized, top-left origin) taken from the detection's pose
+    /// keypoints. `nil` for sub-boxes carved out of a multi-plate crop, where the corners
+    /// of the shared region would be wrong.
+    public let corners: [CGPoint]?
 
     /// - Note: Declared explicitly (instead of relying on the synthesized memberwise
     ///   initializer) because Swift does not synthesize a parameter for an immutable
@@ -47,13 +72,15 @@ public struct PlateResult: Identifiable, Sendable {
                 boundingBox: CGRect,
                 imageSize: CGSize,
                 candidates: [PlateCandidate],
-                correctedPlateImage: CGImage? = nil) {
+                correctedPlateImage: CGImage? = nil,
+                corners: [CGPoint]? = nil) {
         self.text = text
         self.confidence = confidence
         self.boundingBox = boundingBox
         self.imageSize = imageSize
         self.candidates = candidates
         self.correctedPlateImage = correctedPlateImage
+        self.corners = corners
     }
 }
 
@@ -96,6 +123,27 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         }
     }
 
+    /// Channel order fed to the ONNX detector (RGB vs BGR). Defaults to RGB because that
+    /// is what Ultralytics trains on and what the PC reference implementation feeds
+    /// (`Scripts/pose_pipeline_reference.py`: `Image.open(...).convert("RGB")` → `/255`).
+    /// Exposed so the Demo app can flip it at runtime if a differently trained export
+    /// needs BGR.
+    public var useRGB: Bool = true {
+        didSet {
+            #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc)
+            if let det = detector as? ONNXPoseLicensePlateDetector { det.useRGB = useRGB }
+            #endif
+        }
+    }
+
+    /// Human-readable description of the active detector (on-device diagnostics).
+    public var detectorInfo: String { String(describing: type(of: detector)) }
+
+    /// Opt-in strengthening of the validation / overlay stage. See
+    /// `RecognitionEnhancements`. Toggling it is cheap: the value is read on every
+    /// recognition pass, so nothing has to be rebuilt or reloaded.
+    public var enhancements: RecognitionEnhancements = .off
+
     /// The default pipeline uses the original plate model converted to Core ML and Apple OCR.
     public convenience init() {
         let detector: LicensePlateDetecting
@@ -110,13 +158,15 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
                 recognizer: PlateTextRecognizing,
                 recognitionLanguages: [Locale.Language] = [Locale.Language(identifier: "de-DE")],
                 ocrEngine: OCREngine = .appleVision,
-                postProcessor: PlatePostProcessor = PlatePostProcessor()) {
+                postProcessor: PlatePostProcessor = PlatePostProcessor(),
+                enhancements: RecognitionEnhancements = .off) {
         self.detector = detector
         self.recognizer = recognizer
         self.recognitionLanguages = recognitionLanguages
         self.ocrEngine = ocrEngine
         self.postProcessor = postProcessor
         self.corrector = PerspectivePlateCorrector()
+        self.enhancements = enhancements
     }
 
     /// Convenience initializer for the common setup: Core ML YOLO detector + Vision OCR,
@@ -125,9 +175,11 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     ///   - modelName: Resource name for an explicitly supplied Core ML YOLO model.
     ///   - config: YOLO output layout (default `.germanPlate`).
     ///   - recognitionLanguages: OCR languages (default `[de-DE]`).
+    ///   - enhancements: Opt-in strengthening (default `.off` = legacy behaviour).
     public convenience init(modelName: String,
                             config: YOLOConfig = .germanPlate,
-                            recognitionLanguages: [Locale.Language] = [Locale.Language(identifier: "de-DE")]) {
+                            recognitionLanguages: [Locale.Language] = [Locale.Language(identifier: "de-DE")],
+                            enhancements: RecognitionEnhancements = .off) {
         let detector: LicensePlateDetecting
         do { detector = try CoreMLLicensePlateDetector(modelName: modelName, config: config) }
         catch { detector = CoreMLLicensePlateDetectorFailing(error: error) }
@@ -135,7 +187,8 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
                   recognizer: PlateTextRecognizer(languages: recognitionLanguages),
                   recognitionLanguages: recognitionLanguages,
                   ocrEngine: .appleVision,
-                  postProcessor: PlatePostProcessor())
+                  postProcessor: PlatePostProcessor(),
+                  enhancements: enhancements)
     }
 
     /// Convenience initializer that wires the trained German-plate YOLOv8-pose model
@@ -145,7 +198,8 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     public convenience init(poseModelName: String = "De-plate-pose-500",
                             config: YOLOConfig = .germanPlatePose,
                             engine: OCREngine = .appleVision,
-                            recognitionLanguages: [Locale.Language] = [Locale.Language(identifier: "de-DE")]) {
+                            recognitionLanguages: [Locale.Language] = [Locale.Language(identifier: "de-DE")],
+                            enhancements: RecognitionEnhancements = .off) {
         let detector: LicensePlateDetecting
         do { detector = try ONNXPoseLicensePlateDetector(modelName: poseModelName, config: config) }
         catch { detector = CoreMLLicensePlateDetectorFailing(error: error) }
@@ -153,7 +207,8 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
                   recognizer: engine.makeRecognizer(languages: recognitionLanguages),
                   recognitionLanguages: recognitionLanguages,
                   ocrEngine: engine,
-                  postProcessor: PlatePostProcessor())
+                  postProcessor: PlatePostProcessor(),
+                  enhancements: enhancements)
     }
     #endif
 
@@ -187,32 +242,55 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         let imageSize = CGSize(width: image.width, height: image.height)
         let detections = try await detector.detect(in: image)
         onDetections?(detections, imageSize)
-        var results: [PlateResult] = []
-        results.reserveCapacity(detections.count)
 
-        for detection in detections {
-            try Task.checkCancellation()
-            // Rectify the plate using its 4 corner keypoints (preferred), else fall back
-            // to a bounding-box crop. The rectified image is what we feed to OCR.
-            let corrected = corrector.correctedPlate(from: image, detection: detection)
-            let ocrSource: CGImage
-            if let corrected {
-                ocrSource = corrected
-            } else {
-                ocrSource = image.cropRegion(detection.rect, padding: 0.05)
+        // One frame can hold several plates (car park, traffic scene, forecourt). Each
+        // plate is an independent rectify + OCR job, so they run concurrently — this used
+        // to be a serial `for` loop, which made latency scale linearly with plate count.
+        // Collaborators are captured as locals so each task only touches value types /
+        // Sendable existentials.
+        let corrector = self.corrector
+        let recognizer = self.recognizer
+        let postProcessor = self.postProcessor
+        // Snapshot the opt-in switches: the App may flip them while a pass is in flight.
+        let enhancements = self.enhancements
+        // `CGImage` is immutable and safe to read from several tasks at once; the wrapper
+        // states that explicitly so the task group does not need to copy the frame.
+        let source = SendableImage(image: image)
+
+        let perDetection: [[PlateResult]] = try await withThrowingTaskGroup(
+            of: (offset: Int, plates: [PlateResult]).self
+        ) { group in
+            for (offset, detection) in detections.enumerated() {
+                group.addTask {
+                    try Task.checkCancellation()
+                    // Rectify using this detection's own 4 corner keypoints (preferred),
+                    // else fall back to a padded bounding-box crop.
+                    let corrected = corrector.correctedPlate(from: source.image, detection: detection)
+                    let ocrSource = corrected ?? source.image.cropRegion(detection.rect, padding: 0.05)
+                    // Reduce interference (screws, borders, reflections) before OCR.
+                    let enhanced = ocrSource.enhancedForOCR()
+                    let observations = try await recognizer.recognize(in: enhanced, mode: mode)
+                    // One crop can contain several plates (merged detections / padding
+                    // pulling in a neighbour), so `process` returns every distinct plate.
+                    let plates = postProcessor.process(observations: observations,
+                                                       region: detection.rect,
+                                                       imageSize: imageSize,
+                                                       correctedImage: corrected,
+                                                       corners: detection.keypoints,
+                                                       enhancements: enhancements)
+                    return (offset: offset, plates: plates)
+                }
             }
-            // Reduce interference (screws, borders, reflections) before OCR.
-            let enhanced = ocrSource.enhancedForOCR()
-            // Read the characters with the selected OCR engine.
-            let observations = try await recognizer.recognize(in: enhanced, mode: mode)
-            // Validate + clean. One detection crop can contain several plates (e.g. when
-            // the detector merges adjacent plates), so collect every distinct valid result.
-            let plateResults = postProcessor.process(observations: observations,
-                                                     region: detection.rect,
-                                                     imageSize: CGSize(width: image.width, height: image.height),
-                                                     correctedImage: corrected)
-            results.append(contentsOf: plateResults)
+            // Restore detection order: NMS order is by confidence, and the overlay numbers
+            // plates by that order, so results must not be reaggregated as they complete.
+            var buckets = Array(repeating: [PlateResult](), count: detections.count)
+            for try await item in group { buckets[item.offset] = item.plates }
+            return buckets
         }
+
+        // Two overlapping detections can cover the same physical plate (IoU below the NMS
+        // threshold), which used to yield the same plate twice in the UI. Collapse those.
+        let results = PlatePostProcessor.deduplicateOverlapping(perDetection.flatMap { $0 })
         return PlateFrameResult(detections: detections, plates: results, imageSize: imageSize)
     }
 
@@ -236,6 +314,17 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     public func recognizeVideo(at url: URL, mode: RecognitionMode = .fast,
                                maxSamples: Int = 30,
                                progress: (@Sendable (Double) -> Void)? = nil) async throws -> [PlateResult] {
+        let samples = try await recognizeVideoSamples(at: url, mode: mode,
+                                                      maxSamples: maxSamples, progress: progress)
+        return PlatePostProcessor.deduplicate(samples.flatMap(\.plates))
+    }
+
+    /// Same sampling pass as `recognizeVideo`, but keeps every sampled frame's detections,
+    /// plates and size. A player overlay needs this: the aggregate result list spans many
+    /// frames, so drawing it onto one frame would place boxes in the wrong coordinate space.
+    public func recognizeVideoSamples(at url: URL, mode: RecognitionMode = .fast,
+                                      maxSamples: Int = 30,
+                                      progress: (@Sendable (Double) -> Void)? = nil) async throws -> [PlateVideoSample] {
         let asset = AVURLAsset(url: url)
         let duration = try await asset.load(.duration).seconds
         guard duration.isFinite, duration > 0 else { throw LicensePlateError.invalidInput("视频时长无效") }
@@ -254,7 +343,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         defer { reader.cancelReading() }
         let sampleLimit = max(1, maxSamples)
         let step = duration / Double(sampleLimit)
-        var collected: [PlateResult] = []
+        var samples: [PlateVideoSample] = []
         var seen = 0
         var nextTime = 0.0
         while seen < sampleLimit, let sample = autoreleasepool(invoking: { output.copyNextSampleBuffer() }) {
@@ -264,14 +353,16 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
             let buffer = try autoreleasepool {
                 try makePixelBuffer(from: CIImage(cvPixelBuffer: pixel).transformed(by: transform))
             }
-            collected.append(contentsOf: try await recognizeFrame(buffer, mode: mode).plates)
+            let frame = try await recognizeFrame(buffer, mode: mode)
+            samples.append(PlateVideoSample(id: seen, time: time, imageSize: frame.imageSize,
+                                            detections: frame.detections, plates: frame.plates))
             seen += 1
             nextTime += step
             progress?(min(1, time / duration))
         }
         if reader.status == .failed { throw reader.error ?? LicensePlateError.invalidInput("Video decoding failed.") }
         progress?(1)
-        return PlatePostProcessor.deduplicate(collected)
+        return samples
     }
 }
 
@@ -282,4 +373,11 @@ private final class CoreMLLicensePlateDetectorFailing: LicensePlateDetecting {
     func detect(in image: CGImage) async throws -> [PlateDetection] {
         throw error
     }
+}
+
+/// Carries one immutable frame into the concurrent per-plate tasks. `CGImage` is
+/// immutable, so reading it from several tasks at once is safe; the compiler just
+/// cannot prove it.
+private struct SendableImage: @unchecked Sendable {
+    let image: CGImage
 }

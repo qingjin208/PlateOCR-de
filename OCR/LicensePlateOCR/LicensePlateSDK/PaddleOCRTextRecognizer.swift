@@ -33,7 +33,8 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing {
     /// Runs PaddleOCR on a rectified plate image.
     /// Contract: return the best line's text, its confidence, and alternative candidates.
     /// Replace the body with your PaddleOCR-iOS calls (det + rec + cls models from the bundle).
-    private func runPaddleOCR(on image: CGImage, mode: RecognitionMode) throws -> (String, Float, [(String, Float)]) {
+    private func runPaddleOCR(on image: CGImage, mode: RecognitionMode)
+        throws -> (String, Float, [(text: String, confidence: Float)]) {
         // -------------------------------------------------------------------------
         // EXAMPLE SHAPE (adapt to your PaddleOCR-iOS version — names vary):
         //

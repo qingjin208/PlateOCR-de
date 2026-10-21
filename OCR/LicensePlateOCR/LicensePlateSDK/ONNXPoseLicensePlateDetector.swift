@@ -33,9 +33,14 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
     private let inputName: String
     private let outputName: String
     private let inputSize: Int
-    /// Ultralytics ONNX expects RGB normalized by /255. If detections come out wrong
-    /// on first device run, flip this to `false` (BGR) — a one-line change.
-    private let useRGB: Bool
+    /// Channel order fed to the model. `true` = RGB, which is what Ultralytics trains on
+    /// and what the proven PC reference (`Scripts/pose_pipeline_reference.py`) feeds:
+    /// `img = np.array(Image.open(path).convert("RGB"))` → `/255` → NCHW. A mismatch here
+    /// is the #1 cause of "great on PC, poor on device", so the default follows the
+    /// reference rather than guesswork. Still runtime-settable via
+    /// `LicensePlateRecognizer.useRGB` so a differently trained export can be handled
+    /// without recompiling.
+    var useRGB: Bool
 
     public init(modelName: String = "De-plate-pose-500",
                 config: YOLOConfig = .germanPlatePose,
@@ -72,10 +77,13 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
 
         let prepared = try image.letterboxedUpright(size: inputSize)
         let tensorData = try Self.inputTensorData(from: prepared.buffer, useRGB: useRGB)
+        // `shape` is NSArray<NSNumber*>: build it explicitly instead of relying on an
+        // `[Int] as [NSNumber]` bridging cast.
+        let shape = [1, 3, inputSize, inputSize].map { NSNumber(value: $0) }
         let inputValue = try ORTValue(
             tensorData: tensorData,
             elementType: .float,
-            shape: [1, 3, inputSize, inputSize] as [NSNumber]
+            shape: shape
         )
         let outputs = try session.run(
             withInputs: [inputName: inputValue],
@@ -85,14 +93,14 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
         guard let outValue = outputs[outputName] else {
             throw LicensePlateError.invalidModelOutput("ONNX 推理未返回输出 \(outputName)。")
         }
-        let outData = try outValue.tensorData()
 
-        // Rebuild the [1, 17, 8400] (or [1, 8400, 17]) array as an MLMultiArray so the
-        // shared decoder can read it with real strides/types.
-        let channels = 5 + config.numKeypoints * 3
-        let total = outData.length / MemoryLayout<Float>.size
-        let proposals = total / channels           // N = 8400 for a 640 model
-        let array = try Self.makeMultiArray(data: outData, shape: [1, channels, proposals])
+        // Read the output using its REAL shape and element type. The ONNX export can
+        // lay out proposals as [1, C, N] or [1, N, C]; hard-coding [1, channels, N]
+        // silently scrambles the tensor for the [1, N, C] case — which is exactly the
+        // "great on PC, poor on device" symptom, because the PC reference auto-detects
+        // the layout. `YOLOOutputDecoder` already honors both via tensor strides, so we
+        // just feed the actual shape. Float16 exports are upcast to float32.
+        let array = try Self.outputMultiArray(from: outValue, config: config)
 
         let decoded = try YOLOOutputDecoder.decode(array, config: config)
         let mapped = decoded.map {
@@ -132,10 +140,37 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
         return NSMutableData(bytes: &floats, length: floats.count * MemoryLayout<Float>.size)
     }
 
-    private static func makeMultiArray(data: NSMutableData, shape: [Int]) throws -> MLMultiArray {
-        let array = try MLMultiArray(shape: shape.map { NSNumber(value: $0) }, dataType: .float32)
-        if let src = data.bytes {
-            memcpy(array.dataPointer, src, data.length)
+    /// Builds a float32 `MLMultiArray` from the raw ORT output, honoring its real
+    /// shape and upcasting float16 if the export uses it (otherwise the decoder would
+    /// read the raw bytes as float32 and produce garbage detections).
+    private static func outputMultiArray(from outValue: ORTValue, config: YOLOConfig) throws -> MLMultiArray {
+        let typeInfo = try outValue.tensorTypeAndShapeInfo()
+        let dims = typeInfo.shape.map { $0.intValue }
+        let channels = 5 + config.numKeypoints * 3
+        guard dims.count == 3, dims[0] == 1,
+              (dims[1] == channels || dims[2] == channels) else {
+            throw LicensePlateError.invalidModelOutput(
+                "意外的 ONNX 输出形状 \(dims)（期望 [1, \(channels), N] 或 [1, N, \(channels)]）。")
+        }
+        let rawData = try outValue.tensorData()
+        let elementCount = dims.reduce(1, *)
+
+        // Float16 export → upcast to float32 (length is half of the float32 size).
+        if rawData.length == elementCount * 2 {
+            guard let bytes = rawData.bytes else {
+                throw LicensePlateError.invalidModelOutput("无法读取 ONNX 输出。")
+            }
+            let src = bytes.assumingMemoryBound(to: UInt16.self)
+            var floats = [Float](repeating: 0, count: elementCount)
+            for i in 0..<elementCount { floats[i] = Float(Float16(bitPattern: src[i])) }
+            let array = try MLMultiArray(shape: dims.map { NSNumber(value: $0) }, dataType: .float32)
+            floats.withUnsafeBytes { memcpy(array.dataPointer, $0.baseAddress!, floats.count * MemoryLayout<Float>.size) }
+            return array
+        }
+
+        let array = try MLMultiArray(shape: dims.map { NSNumber(value: $0) }, dataType: .float32)
+        if let src = rawData.bytes {
+            memcpy(array.dataPointer, src, min(rawData.length, array.count * MemoryLayout<Float>.size))
         }
         return array
     }

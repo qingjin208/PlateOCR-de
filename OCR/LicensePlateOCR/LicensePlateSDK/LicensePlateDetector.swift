@@ -13,7 +13,9 @@ public struct PlateDetection: Sendable {
     public let label: String
     /// Optional pose keypoints (corner points) mirroring `rect`'s coordinate space.
     public let keypoints: [CGPoint]?
-    /// Per-keypoint visibility/confidence. YOLO pose uses 0 = absent, 1 = occluded, 2 = visible.
+    /// Per-keypoint visibility/confidence. For the Ultralytics YOLOv8-pose ONNX used here this
+    /// is a Sigmoid output in [0, 1] (verified: max ~0.998), NOT the COCO label convention
+    /// (0 absent / 1 occluded / 2 visible). Do not compare it against values > 1.
     public let keypointConfidences: [Float]?
     public init(rect: CGRect, confidence: Float, label: String,
                 keypoints: [CGPoint]? = nil, keypointConfidences: [Float]? = nil) {
