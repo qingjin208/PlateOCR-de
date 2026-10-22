@@ -63,6 +63,10 @@ struct ContentView: View {
     /// PC reference pipeline; switch to BGR only if an export needs it.
     @State private var useRGB: Bool = true
     @State private var results: [PlateResult] = []
+    /// Number of raw detections last pass (before OCR/validation). Shown in the
+    /// "nothing recognized" state to distinguish "model saw nothing" from
+    /// "model saw plates but OCR/validation rejected them".
+    @State private var lastDetectionCount: Int = 0
     @State private var isBusy = false
     @State private var videoProgress = 0.0
     @State private var errorMessage: String?
@@ -274,10 +278,13 @@ struct ContentView: View {
                     }
 
                     // Media loaded but nothing recognized → give explicit feedback so it
-                    // does not look like "nothing happened".
+                    // does not look like "nothing happened". Show the detection count:
+                    // >0 means the model found candidates but OCR/validation rejected them.
                     if results.isEmpty, !isBusy,
                        (source == .image && displayImage != nil) || (source == .video && videoURL != nil) {
-                        Text("未识别到车牌。可尝试更换素材、切换识别模式或 OCR 引擎后重试。")
+                        Text(lastDetectionCount > 0
+                             ? "未识别到车牌：模型检测到 \(lastDetectionCount) 个候选框，但 OCR 未确认（请尝试切换 OCR 引擎或识别模式）。"
+                             : "未检测到车牌。可尝试更换素材、切换识别模式或 OCR 引擎后重试。")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                             .padding(.horizontal)
@@ -349,10 +356,16 @@ struct ContentView: View {
             videoURL = nil
             videoSamples = []
             results = []
+            lastDetectionCount = 0
             errorMessage = nil
             isBusy = true
             let pixelBuffer = try recognizer.prepareFrame(from: oriented)
-            results = try await recognizer.recognizeFrame(pixelBuffer, mode: mode).plates
+            let frame = try await recognizer.recognizeFrame(pixelBuffer, mode: mode)
+            results = frame.plates
+            // Surface detection vs. OCR outcome so a silent failure is diagnosable:
+            // detections > 0 but plates == 0 means the model saw plates but OCR/OCR
+            // validation rejected them (not a "nothing happened" situation).
+            lastDetectionCount = frame.detections.count
             isBusy = false
         } catch {
             isBusy = false
@@ -381,6 +394,7 @@ struct ContentView: View {
             displayImage = nil
             results = []
             videoSamples = []
+            lastDetectionCount = 0
             errorMessage = nil
             isBusy = true
             videoProgress = 0
@@ -391,6 +405,7 @@ struct ContentView: View {
             }
             videoSamples = samples
             results = PlatePostProcessor.deduplicate(samples.flatMap(\.plates))
+            lastDetectionCount = samples.reduce(0) { $0 + $1.detections.count }
             isBusy = false
         } catch {
             isBusy = false

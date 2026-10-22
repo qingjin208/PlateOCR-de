@@ -76,6 +76,12 @@ final class CameraController: NSObject {
         }
     }
 
+    /// Rotation (degrees) and mirror the data-output connection applies to the delivered
+    /// buffer. Fed to the preview overlay so it can map detector coords through the
+    /// preview layer's native coordinate conversion (no hand-rolled aspect math).
+    private var captureRotationAngle: Double = 0
+    private var captureMirrored: Bool = false
+
     /// Shared context for the debug echo (thread-safe; created once).
     private nonisolated static let debugImageContext = CIContext()
 
@@ -155,6 +161,8 @@ final class CameraController: NSObject {
         // Physically rotate once; the SDK receives upright portrait frames.
         if let connection = output.connection(with: .video), connection.isVideoRotationAngleSupported(90) {
             connection.videoRotationAngle = 90
+            captureRotationAngle = 90
+            captureMirrored = connection.isVideoMirrored
         }
         return true
     }
@@ -185,12 +193,16 @@ final class CameraController: NSObject {
                           self.generation == token, self.analysisIdentifier == frameIdentifier else { return }
                     self.liveDetections = detections
                     self.frameSize = size
+                    self.previewView?.captureRotationAngle = self.captureRotationAngle
+                    self.previewView?.captureMirrored = self.captureMirrored
                     self.previewView?.draw(detections: detections, results: [], imageSize: size)
                 }
             }
             // Diagnostic echo: the analyzed buffer as-is + the same boxes, so the
             // preview-vs-buffer alignment question can be answered on device.
             if debugEchoEnabled {
+                previewView?.captureRotationAngle = captureRotationAngle
+                previewView?.captureMirrored = captureMirrored
                 previewView?.showDebugFrame(image: debugThumbnail(from: frame.buffer),
                                             detections: result.detections)
             }
@@ -201,6 +213,8 @@ final class CameraController: NSObject {
             liveDetections = result.detections
             frameSize = result.imageSize
             errorMessage = nil
+            previewView?.captureRotationAngle = captureRotationAngle
+            previewView?.captureMirrored = captureMirrored
             previewView?.draw(detections: result.detections, results: result.plates, imageSize: result.imageSize)
             for plate in result.plates {
                 let now = Date()
