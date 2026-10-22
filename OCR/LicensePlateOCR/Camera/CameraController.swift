@@ -1,6 +1,7 @@
 @preconcurrency import AVFoundation
 import SwiftUI
 import CoreImage
+import ImageIO
 
 /// Retains the buffer until asynchronous recognition finishes.
 private struct CameraFrame: @unchecked Sendable { let buffer: CVPixelBuffer }
@@ -76,11 +77,9 @@ final class CameraController: NSObject {
         }
     }
 
-    /// Rotation (degrees) and mirror the data-output connection applies to the delivered
-    /// buffer. Fed to the preview overlay so it can map detector coords through the
-    /// preview layer's native coordinate conversion (no hand-rolled aspect math).
-    private var captureRotationAngle: Double = 0
-    private var captureMirrored: Bool = false
+    /// Renders the software-rotated buffers. CIContext is thread-safe for rendering, so
+    /// the per-frame rotation and the debug thumbnail both draw through it.
+    private let ciContext = CIContext(options: [.cacheIntermediates: false])
 
     /// Shared context for the debug echo (thread-safe; created once).
     private nonisolated static let debugImageContext = CIContext()
@@ -95,6 +94,31 @@ final class CameraController: NSObject {
         let scaled = CIImage(cvPixelBuffer: buffer)
             .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         return Self.debugImageContext.createCGImage(scaled, from: scaled.extent)
+    }
+
+    /// Rotates the raw sample buffer (sensor orientation, landscape for a back camera held
+    /// upright) to upright portrait, so the detector and the on-screen overlay share one
+    /// coordinate space. We do this in software rather than trust the data-output
+    /// connection's `videoRotationAngle`, which — per Apple's own behaviour and multiple
+    /// field reports — is not reliably applied: the front camera ignores it, some rear
+    /// configurations do too, and a connection can still deliver landscape buffers after
+    /// 90° was requested. Software rotation makes the mapping deterministic: a portrait
+    /// detection box then maps to screen pixels through the preview layer's native
+    /// conversion with no rotate/mirror math that can drift.
+    ///
+    /// `.right` (90° clockwise) is the rotation that turns the landscape sensor image into
+    /// the upright portrait the user sees, matching the preview connection's 90° rotation.
+    private func rotateToPortrait(_ buffer: CVPixelBuffer) -> CVPixelBuffer? {
+        let ci = CIImage(cvPixelBuffer: buffer).oriented(.right)
+        let width = Int(ci.extent.width), height = Int(ci.extent.height)
+        guard width > 0, height > 0 else { return nil }
+        var out: CVPixelBuffer?
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
+            [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &out)
+        guard status == kCVReturnSuccess, let out else { return nil }
+        ciContext.render(ci, to: out)
+        return out
     }
 
     func clearRecognitionHistory() {
@@ -158,12 +182,14 @@ final class CameraController: NSObject {
         guard session.canAddOutput(output) else { return false }
         session.addInput(input)
         session.addOutput(output)
-        // Physically rotate once; the SDK receives upright portrait frames.
-        if let connection = output.connection(with: .video), connection.isVideoRotationAngleSupported(90) {
-            connection.videoRotationAngle = 90
-            captureRotationAngle = 90
-            captureMirrored = connection.isVideoMirrored
-        }
+        // NOTE: we deliberately do NOT set the data-output connection's `videoRotationAngle`.
+        // That hardware rotation is documented as unreliable — the front camera ignores it,
+        // some rear configurations do too, and a connection can still deliver landscape
+        // buffers even after 90° was requested. Instead we rotate the buffer to upright
+        // portrait in software (see `rotateToPortrait`) so the detector and the on-screen
+        // overlay always share exactly one coordinate space. The *preview* layer keeps its
+        // own portrait rotation (set in `CameraPreview.ensurePortraitOrientation`), which is
+        // a separate, reliable display path.
         return true
     }
 
@@ -185,25 +211,30 @@ final class CameraController: NSObject {
         let frameIdentifier = analysisIdentifier
         let token = generation
         let started = Date()
+        // Rotate the raw buffer to upright portrait so the detector and the overlay agree
+        // on orientation (see `rotateToPortrait`). Falls back to the raw buffer if the
+        // GPU render fails — recognition still runs, only the orientation may be off.
+        let workingBuffer: CVPixelBuffer
+        if let rotated = rotateToPortrait(frame.buffer) {
+            workingBuffer = rotated
+        } else {
+            workingBuffer = frame.buffer
+        }
         do {
-            let result = try await recognizer.recognizeFrame(frame.buffer, orientation: .up, mode: mode) {
+            let result = try await recognizer.recognizeFrame(workingBuffer, orientation: .up, mode: mode) {
                 [weak self] detections, size in
                 Task { @MainActor in
                     guard let self, self.active, self.liveEnabled, self.waitingForOCR,
                           self.generation == token, self.analysisIdentifier == frameIdentifier else { return }
                     self.liveDetections = detections
                     self.frameSize = size
-                    self.previewView?.captureRotationAngle = self.captureRotationAngle
-                    self.previewView?.captureMirrored = self.captureMirrored
                     self.previewView?.draw(detections: detections, results: [], imageSize: size)
                 }
             }
-            // Diagnostic echo: the analyzed buffer as-is + the same boxes, so the
+            // Diagnostic echo: the analyzed (already portrait) buffer + the same boxes, so the
             // preview-vs-buffer alignment question can be answered on device.
             if debugEchoEnabled {
-                previewView?.captureRotationAngle = captureRotationAngle
-                previewView?.captureMirrored = captureMirrored
-                previewView?.showDebugFrame(image: debugThumbnail(from: frame.buffer),
+                previewView?.showDebugFrame(image: debugThumbnail(from: workingBuffer),
                                             detections: result.detections)
             }
             guard active, liveEnabled, generation == token else { return }
@@ -213,8 +244,6 @@ final class CameraController: NSObject {
             liveDetections = result.detections
             frameSize = result.imageSize
             errorMessage = nil
-            previewView?.captureRotationAngle = captureRotationAngle
-            previewView?.captureMirrored = captureMirrored
             previewView?.draw(detections: result.detections, results: result.plates, imageSize: result.imageSize)
             for plate in result.plates {
                 let now = Date()

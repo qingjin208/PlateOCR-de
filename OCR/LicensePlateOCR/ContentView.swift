@@ -96,102 +96,11 @@ struct ContentView: View {
                     .pickerStyle(.segmented)
                     .padding(.horizontal)
 
-                    // Upload control (image / video) or live camera
-                    if source == .image {
-                        PhotosPicker("选择图片", selection: $imageItem, matching: .images)
-                            .buttonStyle(.borderedProminent)
-                    } else if source == .video {
-                        PhotosPicker("选择视频", selection: $videoItem, matching: .videos)
-                            .buttonStyle(.borderedProminent)
-                    } else {
-                        CameraView(controller: cameraController)
-                            .frame(height: 540)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                            .padding(.horizontal)
-                    }
+                    mediaSection
+                    settingsCard
+                    progressSection
 
-                    // Mode picker (fast / accurate)
-                    Picker("识别模式", selection: $mode) {
-                        ForEach(RecognitionMode.allCases, id: \.self) { Text($0.rawValue.capitalized) }
-                    }
-                    .pickerStyle(.segmented)
-                    .overlay(Capsule().stroke(.blue, lineWidth: 1))
-                    .padding(.horizontal)
-
-                    // OCR engine picker (Apple Vision / PaddleOCR) — user choice is passed to the SDK.
-                    Picker("OCR 引擎", selection: $ocrEngine) {
-                        ForEach(OCREngine.allCases, id: \.self) { Text($0.displayName) }
-                    }
-                    .pickerStyle(.segmented)
-                    .padding(.horizontal)
-
-                    // Input channel order for the ONNX detector. RGB matches Ultralytics
-                    // training and the PC reference; BGR is kept as an escape hatch.
-                    Picker("输入通道顺序", selection: $useRGB) {
-                        Text("RGB").tag(true)
-                        Text("BGR").tag(false)
-                    }
-                    .pickerStyle(.segmented)
-                    .padding(.horizontal)
-                    .overlay(alignment: .bottom) {
-                        Text("默认 RGB（与 PC 参考一致）；仅当检测明显错乱时切到 BGR")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .padding(.top, 2)
-                    }
-
-                    // SDK enhancement master switch. The whole struct is handed to the SDK
-                    // on every change; recognition picks it up on the next pass (image,
-                    // video and live camera all share this recognizer).
-                    Toggle(isOn: $enhancements.isEnabled) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("强化识别（SDK Enhanced Mode）")
-                            Text("折叠感知排序 · 数字段严格校验 · 关键点四边形叠层")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(.horizontal)
-
-                    if enhancements.isEnabled {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Toggle("折叠感知排序（修正 3 位数字 + E/H 误读）",
-                                   isOn: $enhancements.foldAwareScoring)
-                            Toggle("数字段严格校验（拒绝前导 0）",
-                                   isOn: $enhancements.strictNumericPart)
-                            Toggle("关键点四边形叠层（用 pose 角点）",
-                                   isOn: $enhancements.keypointQuads)
-                        }
-                        .font(.footnote)
-                        .padding(.horizontal)
-                    }
-
-                    if isBusy {
-                        if source == .video {
-                            ProgressView("视频识别中…", value: videoProgress).padding(.horizontal)
-                        } else {
-                            ProgressView("识别中…").padding(.horizontal)
-                        }
-                    }
-
-                    // On-device diagnostic: confirms the ONNX pose detector actually loaded
-                    // (vs. silently fell back to the legacy Core ML / failing stub), and
-                    // which enhancement flags the SDK itself currently holds.
-                    Text("检测器：\(recognizer.detectorInfo)")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .padding(.horizontal)
-                    Text("强化模式（SDK 侧）：\(recognizer.enhancements.summary)")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .padding(.horizontal)
-
-                    if let errorMessage {
-                        Text(errorMessage)
-                            .foregroundStyle(.red)
-                            .font(.footnote)
-                            .padding(.horizontal)
-                    }
+                    diagnosticsSection
 
                     // Preview + overlay (image) or video player with per-frame plate tint
                     if source == .image, let uiImage = displayImage {
@@ -323,6 +232,135 @@ struct ContentView: View {
                 isPlaying = false
             }
         }
+    }
+
+    // MARK: - Layout sections
+
+    /// Media picker (image / video) or the live camera preview.
+    private var mediaSection: some View {
+        Group {
+            if source == .image {
+                PhotosPicker("选择图片", selection: $imageItem, matching: .images)
+                    .buttonStyle(.borderedProminent)
+            } else if source == .video {
+                PhotosPicker("选择视频", selection: $videoItem, matching: .videos)
+                    .buttonStyle(.borderedProminent)
+            } else {
+                CameraView(controller: cameraController)
+                    .frame(height: 600)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .padding(.horizontal)
+            }
+        }
+    }
+
+    /// Grouped settings card: recognition mode, OCR engine, input channel order and the
+    /// SDK enhancement switches — previously five look-alike segmented pickers stacked
+    /// vertically, now a single titled card with labelled rows.
+    private var settingsCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("识别设置")
+                .font(.subheadline.bold())
+                .foregroundStyle(.secondary)
+                .padding(.bottom, 10)
+            settingRow("识别模式") {
+                Picker("识别模式", selection: $mode) {
+                    ForEach(RecognitionMode.allCases, id: \.self) { Text($0.rawValue.capitalized) }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 190)
+            }
+            Divider().padding(.vertical, 8)
+            settingRow("OCR 引擎") {
+                Picker("OCR 引擎", selection: $ocrEngine) {
+                    ForEach(OCREngine.allCases, id: \.self) { Text($0.displayName) }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 200)
+            }
+            Divider().padding(.vertical, 8)
+            settingRow("输入通道") {
+                Picker("输入通道顺序", selection: $useRGB) {
+                    Text("RGB").tag(true)
+                    Text("BGR").tag(false)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 140)
+            }
+            Text("默认 RGB（与 PC 参考一致）；仅当检测明显错乱时切到 BGR")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.top, 4)
+
+            Divider().padding(.vertical, 8)
+
+            Toggle(isOn: $enhancements.isEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("强化识别（SDK Enhanced Mode）")
+                    Text("折叠感知排序 · 数字段严格校验 · 关键点四边形叠层")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if enhancements.isEnabled {
+                VStack(alignment: .leading, spacing: 6) {
+                    Toggle("折叠感知排序（修正 3 位数字 + E/H 误读）",
+                           isOn: $enhancements.foldAwareScoring)
+                    Toggle("数字段严格校验（拒绝前导 0）",
+                           isOn: $enhancements.strictNumericPart)
+                    Toggle("关键点四边形叠层（用 pose 角点）",
+                           isOn: $enhancements.keypointQuads)
+                }
+                .font(.footnote)
+                .padding(.top, 8)
+            }
+        }
+        .padding(14)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
+        .padding(.horizontal)
+    }
+
+    private func settingRow<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text(title).font(.subheadline)
+            Spacer()
+            content()
+        }
+    }
+
+    private var progressSection: some View {
+        Group {
+            if isBusy {
+                if source == .video {
+                    ProgressView("视频识别中…", value: videoProgress)
+                        .padding(.horizontal)
+                } else {
+                    ProgressView("识别中…")
+                        .padding(.horizontal)
+                }
+            }
+        }
+    }
+
+    /// Subtle on-device diagnostics: the loaded detector, the SDK-side enhancement flags,
+    /// and any error — kept out of the way at the bottom rather than interleaved with controls.
+    private var diagnosticsSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let errorMessage {
+                Text(errorMessage)
+                    .foregroundStyle(.red)
+                    .font(.footnote)
+            }
+            Text("检测器：\(recognizer.detectorInfo)")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            Text("强化模式（SDK 侧）：\(recognizer.enhancements.summary)")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal)
     }
 
     // MARK: - Run

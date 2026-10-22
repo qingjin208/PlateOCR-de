@@ -36,12 +36,10 @@ final class PreviewView: UIView {
     private var labels: [CATextLayer] = []
     /// One layer per plate: semi-transparent solid fill + same-colour solid outline.
     private var plateLayers: [CAShapeLayer] = []
-    /// Rotation (degrees) the data-output connection applies to the delivered buffer,
-    /// and whether it is mirrored. Used to map a buffer-normalized point (after the
-    /// model's rotation) into the preview layer's capture-device space. Set by the
-    /// controller from the actual output connection so the math tracks the runtime.
-    var captureRotationAngle: Double = 0
-    var captureMirrored: Bool = false
+    // Detection points are normalized (top-left, 0..1) in the upright portrait frame the
+    // SDK analyzes. The preview connection is also portrait, so the capture-device
+    // coordinate space already matches — no rotate/mirror math is needed; the native
+    // `layerPointConverted` folds in aspect-fill and the layer bounds.
 
     /// Overlay layer used to draw the detection boxes; one path, many rects.
     private let overlayLayer = CAShapeLayer()
@@ -83,36 +81,24 @@ final class PreviewView: UIView {
         }
     }
 
-    /// Draws top-left normalized boxes for an already oriented portrait frame.
-    /// `imageSize` is the pixel size of that oriented frame (portrait, e.g. 1080x1920
-    /// for an `.hd1920x1080` session with the output connection rotated to 90°).
+    /// Draws top-left normalized boxes for the upright portrait frame the SDK analyzes.
+    /// `imageSize` is the pixel size of that portrait frame (e.g. 1080x1920 for an
+    /// `.hd1920x1080` session after the software rotation in `CameraController`).
     func draw(detections: [PlateDetection], results: [PlateResult], imageSize: CGSize) {
         self.detections = detections
         self.results = results
         renderOverlay()
     }
 
-    /// Maps a detection-space point (normalized, top-left origin, in the buffer that
-    /// already carries the data-output `videoRotationAngle`) onto the preview layer.
-    ///
-    /// Strategy: first rotate/mirror the point back into **capture-device space**
-    /// (0..1, top-left, sensor orientation), then let `AVCaptureVideoPreviewLayer`
-    /// perform the final mapping via its native `layerPointConverted`. This is exact:
-    /// it folds in videoGravity (aspect-fill), the preview connection's own rotation,
-    /// and the current layer bounds — without any hand-rolled aspect math that drifts
-    /// when the frame size or layout shifts. The rotation convention is the standard
-    /// "buffer = source rotated by `videoRotationAngle` clockwise" relation.
+    /// Maps a detection-space point (normalized, top-left origin, in the upright portrait
+    /// frame the SDK analyzes) onto the preview layer. Because the frame is already
+    /// portrait — the camera path software-rotates every buffer to match what the user
+    /// sees, and the preview connection is also portrait — the capture-device coordinate
+    /// space is identical to the frame's space. So we pass the point straight to the
+    /// preview layer's native conversion, which folds in `videoGravity` (aspect-fill) and
+    /// the current layer bounds with no hand-rolled rotate/mirror math that can drift.
     private func toLayer(_ point: CGPoint) -> CGPoint {
-        let u = point.x, v = point.y
-        let (sx, sy): (CGFloat, CGFloat)
-        switch Int(captureRotationAngle) {
-        case 90:  (sx, sy) = (1 - v, u)
-        case 180: (sx, sy) = (1 - u, 1 - v)
-        case 270: (sx, sy) = (v, 1 - u)
-        default:  (sx, sy) = (u, v)
-        }
-        let cx = captureMirrored ? 1 - sx : sx
-        return videoPreviewLayer.layerPointConverted(fromCaptureDevicePoint: CGPoint(x: cx, y: sy))
+        videoPreviewLayer.layerPointConverted(fromCaptureDevicePoint: point)
     }
 
     private func renderOverlay() {
