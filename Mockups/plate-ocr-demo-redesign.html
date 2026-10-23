@@ -1,0 +1,963 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>德国车牌识别 · 界面重设计 Mockup</title>
+<style>
+  /* ============================================================
+     设计令牌 (Design Tokens)
+     纯静态 HTML/CSS/JS 实现，无框架依赖，可直接双击打开。
+     主题：现代 iOS 风，浅色为主，强调色为沉稳蓝。
+     ============================================================ */
+  :root{
+    --bg:#e9edf3;
+    --app-bg:#f5f6fa;
+    --card:#ffffff;
+    --text:#16181d;
+    --text-2:#626b78;
+    --text-3:#9aa3b0;
+    --accent:#2f6bff;
+    --accent-2:#1a4fe0;
+    --accent-soft:rgba(47,107,255,.10);
+    --line:#e7eaf0;
+    --line-2:#eef1f5;
+    --ok:#16b364;
+    --warn:#f5a524;
+    --danger:#ef4444;
+    --radius:18px;
+    --radius-sm:12px;
+    --shadow-lg:0 18px 50px rgba(20,32,64,.18);
+    --shadow-md:0 8px 24px rgba(20,32,64,.10);
+    --shadow-sm:0 2px 8px rgba(20,32,64,.06);
+    --plate-eu:#0a3a91;
+    --plate-eu-star:#ffd400;
+    --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+  }
+
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;padding:0;}
+  body{
+    font-family:var(--font);
+    background:radial-gradient(120% 120% at 50% 0%, #f3f5fa 0%, #dfe4ec 60%, #d3dae4 100%);
+    color:var(--text);
+    min-height:100vh;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    padding:32px 16px 56px;
+    gap:22px;
+  }
+
+  /* 顶部说明 */
+  .page-head{max-width:420px;text-align:center;}
+  .page-head h1{font-size:20px;margin:0 0 6px;letter-spacing:.3px;}
+  .page-head p{margin:0;font-size:13px;color:var(--text-2);line-height:1.6;}
+  .page-head .tag{
+    display:inline-block;margin-top:10px;font-size:11px;color:var(--accent);
+    background:var(--accent-soft);padding:4px 10px;border-radius:999px;font-weight:600;
+  }
+
+  /* 手机外壳 */
+  .phone{
+    width:390px;max-width:100%;
+    background:#0b0d12;
+    border-radius:46px;
+    padding:12px;
+    box-shadow:var(--shadow-lg);
+    position:relative;
+  }
+  .phone::after{ /* 侧边按键 */
+    content:"";position:absolute;right:-3px;top:130px;width:3px;height:64px;
+    background:#0b0d12;border-radius:3px;box-shadow:0 78px 0 #0b0d12,0 150px 0 #0b0d12;
+  }
+  .screen{
+    background:var(--app-bg);
+    border-radius:36px;
+    overflow:hidden;
+    position:relative;
+    height:800px;
+    display:flex;
+    flex-direction:column;
+  }
+
+  /* 状态栏 */
+  .status-bar{
+    height:46px;flex:0 0 auto;
+    display:flex;align-items:center;justify-content:space-between;
+    padding:0 26px;font-size:14px;font-weight:600;color:var(--text);
+    background:var(--app-bg);
+  }
+  .status-bar .icons{display:flex;align-items:center;gap:6px;}
+  .status-bar svg{display:block;}
+
+  /* 应用主体（可滚动） */
+  .app{flex:1 1 auto;overflow-y:auto;overflow-x:hidden;}
+  .app::-webkit-scrollbar{width:0;}
+
+  /* 头部 */
+  .app-header{
+    padding:6px 20px 14px;
+    display:flex;align-items:center;justify-content:space-between;
+  }
+  .app-header .title-wrap .t1{font-size:19px;font-weight:700;letter-spacing:.2px;}
+  .app-header .title-wrap .t2{font-size:11px;color:var(--text-3);margin-top:2px;letter-spacing:.5px;text-transform:uppercase;}
+  .icon-btn{
+    width:38px;height:38px;border-radius:12px;border:none;background:var(--card);
+    box-shadow:var(--shadow-sm);display:grid;place-items:center;cursor:pointer;color:var(--text-2);
+    transition:transform .12s ease;
+  }
+  .icon-btn:active{transform:scale(.92);}
+
+  /* 来源分段控件 */
+  .segment{
+    margin:4px 20px 0;
+    background:#eaeef4;
+    border-radius:14px;
+    padding:4px;
+    display:grid;grid-template-columns:repeat(3,1fr);gap:4px;
+    position:relative;
+  }
+  .segment button{
+    border:none;background:transparent;font-family:inherit;
+    font-size:13.5px;font-weight:600;color:var(--text-2);
+    padding:9px 0;border-radius:11px;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;gap:6px;
+    transition:color .15s ease;position:relative;z-index:1;
+  }
+  .segment button.active{color:var(--text);}
+  .segment .thumb{
+    position:absolute;top:4px;bottom:4px;left:4px;width:calc((100% - 8px)/3);
+    background:var(--card);border-radius:11px;box-shadow:var(--shadow-sm);
+    transition:transform .28s cubic-bezier(.34,1.3,.5,1);z-index:0;
+  }
+  .segment button svg{width:16px;height:16px;}
+
+  /* 模式 + 主操作 行 */
+  .mode-row{
+    margin:16px 20px 0;
+    display:flex;align-items:center;gap:10px;
+  }
+  .pill-group{
+    display:inline-flex;background:#eaeef4;border-radius:12px;padding:3px;gap:2px;
+  }
+  .pill-group button{
+    border:none;background:transparent;font-family:inherit;font-size:12.5px;font-weight:600;
+    color:var(--text-2);padding:7px 14px;border-radius:9px;cursor:pointer;transition:.15s;
+  }
+  .pill-group button.active{background:var(--card);color:var(--accent);box-shadow:var(--shadow-sm);}
+
+  /* 预览区 */
+  .preview{
+    margin:16px 20px 0;
+    border-radius:var(--radius);
+    background:#0e1117;
+    box-shadow:var(--shadow-md);
+    overflow:hidden;
+    position:relative;
+    height:330px;
+  }
+  /* 相机取景器 */
+  .viewfinder{
+    position:absolute;inset:0;
+    background:
+      radial-gradient(120% 80% at 50% 30%, #2a3340 0%, #161b22 55%, #0b0e13 100%);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    color:#cfd6e0;
+  }
+  .viewfinder .grid-lines{position:absolute;inset:22px;border:1px solid rgba(255,255,255,.10);border-radius:14px;}
+  .viewfinder .grid-lines::before,.viewfinder .grid-lines::after{
+    content:"";position:absolute;background:rgba(255,255,255,.10);
+  }
+  .viewfinder .grid-lines::before{left:33.33%;right:33.33%;top:0;bottom:0;}
+  .viewfinder .grid-lines::after{top:33.33%;bottom:33.33%;left:0;right:0;}
+  .guide-frame{
+    position:relative;width:230px;height:120px;border:2px dashed rgba(255,255,255,.55);
+    border-radius:14px;display:flex;align-items:center;justify-content:center;
+  }
+  .guide-frame .corner{position:absolute;width:18px;height:18px;border:3px solid var(--accent);}
+  .guide-frame .c1{top:-2px;left:-2px;border-right:none;border-bottom:none;border-radius:6px 0 0 0;}
+  .guide-frame .c2{top:-2px;right:-2px;border-left:none;border-bottom:none;border-radius:0 6px 0 0;}
+  .guide-frame .c3{bottom:-2px;left:-2px;border-right:none;border-top:none;border-radius:0 0 0 6px;}
+  .guide-frame .c4{bottom:-2px;right:-2px;border-left:none;border-top:none;border-radius:0 0 6px 0;}
+  .guide-frame .tip{position:absolute;bottom:-26px;font-size:12px;color:#aeb6c2;white-space:nowrap;}
+  .shutter{
+    position:absolute;bottom:18px;left:50%;transform:translateX(-50%);
+    width:60px;height:60px;border-radius:50%;border:4px solid rgba(255,255,255,.85);
+    background:rgba(255,255,255,.12);cursor:pointer;display:grid;place-items:center;
+    transition:transform .12s ease;
+  }
+  .shutter:active{transform:translateX(-50%) scale(.92);}
+  .shutter i{width:46px;height:46px;border-radius:50%;background:#fff;display:block;}
+
+  /* 图像/视频场景 */
+  .scene{position:absolute;inset:0;background:linear-gradient(180deg,#cfe3f7 0%,#e9f1fb 46%,#d7e2cf 46%,#c4d3b6 100%);}
+  .scene .car-slot{position:absolute;left:50%;top:50%;transform:translate(-50%,-54%);width:78%;}
+  .scene .car-slot svg{width:100%;height:auto;display:block;filter:drop-shadow(0 10px 16px rgba(0,0,0,.18));}
+  .scene .car-slot.small{width:46%;top:54%;transform:translate(-118%,-52%);}
+  .scene .car-slot.small2{width:46%;top:54%;transform:translate(18%,-52%);}
+
+  /* 叠加检测框 */
+  .ovl{
+    position:absolute;border-radius:6px;
+    border:2.5px solid;pointer-events:none;
+  }
+  .ovl .lbl{
+    position:absolute;top:-22px;left:0;font-size:11px;font-weight:700;color:#fff;
+    padding:2px 7px;border-radius:6px;white-space:nowrap;
+  }
+  .scene .play{
+    position:absolute;inset:0;display:grid;place-items:center;cursor:pointer;
+    background:rgba(8,10,15,.18);
+  }
+  .scene .play .pbtn{
+    width:62px;height:62px;border-radius:50%;background:rgba(255,255,255,.92);
+    display:grid;place-items:center;box-shadow:var(--shadow-md);
+  }
+  .scene .play .pbtn::after{
+    content:"";width:0;height:0;margin-left:5px;
+    border-left:20px solid #1a1d24;border-top:12px solid transparent;border-bottom:12px solid transparent;
+  }
+  .scene .badge-tl{
+    position:absolute;top:10px;left:10px;font-size:11px;color:#fff;background:rgba(0,0,0,.5);
+    padding:4px 9px;border-radius:8px;backdrop-filter:blur(4px);
+  }
+
+  /* ===== 实时检测场景（相机页：实时画面持续识别，非拍照） ===== */
+  .live-scene{
+    position:absolute;inset:0;overflow:hidden;
+    background:radial-gradient(120% 80% at 50% 28%, #2c3744 0%, #181e27 55%, #0b0e13 100%);
+  }
+  .live-scene .road{position:absolute;left:0;right:0;bottom:0;height:40%;
+    background:linear-gradient(180deg,#39414f,#222a35);}
+  .live-scene .road::after{content:"";position:absolute;left:50%;top:0;bottom:0;width:4px;transform:translateX(-50%);
+    background:repeating-linear-gradient(180deg,#f5c542 0 16px,transparent 16px 38px);opacity:.45;}
+  .car-live{position:absolute;left:50%;top:46%;width:60%;transform:translate(-50%,-50%);}
+  .car-live svg{width:100%;height:auto;display:block;filter:drop-shadow(0 12px 20px rgba(0,0,0,.38));}
+  .car-live.enter{animation:carIn 2.4s cubic-bezier(.22,1,.36,1) forwards;}
+  @keyframes carIn{from{left:122%;opacity:0;}to{left:50%;opacity:1;}}
+  .live-scene.paused .car-live{animation-play-state:paused;}
+  /* 扫描光束 */
+  .scan-beam{position:absolute;left:0;right:0;height:3px;top:20%;
+    background:linear-gradient(90deg,transparent,var(--accent),transparent);
+    box-shadow:0 0 14px var(--accent);opacity:.9;animation:scan 2.1s linear infinite;}
+  @keyframes scan{0%{top:18%;}100%{top:76%;}}
+  .live-scene.paused .scan-beam{animation-play-state:paused;}
+  /* LIVE 徽标 */
+  .live-badge{position:absolute;top:12px;left:12px;display:flex;align-items:center;gap:6px;
+    font-size:11px;font-weight:700;color:#fff;background:rgba(0,0,0,.45);padding:5px 10px;border-radius:999px;
+    backdrop-filter:blur(4px);}
+  .live-badge .dot{width:8px;height:8px;border-radius:50%;background:var(--danger);animation:pulse 1.2s infinite;}
+  .live-badge .txt::after{content:"实时检测中";}
+  .live-scene.paused .live-badge .dot{background:#9aa3b0;animation:none;}
+  .live-scene.paused .live-badge .txt::after{content:"已暂停";}
+  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.3;}}
+  /* 检测框：扫描中(虚线脉动) / 锁定(实线) */
+  .ovl.scanning{border-style:dashed;animation:ovpulse .8s ease-in-out infinite;}
+  @keyframes ovpulse{0%,100%{opacity:.55;}50%{opacity:1;}}
+  .ovl.locked{animation:none;}
+  /* 主控制条：开始/暂停 + 保存 */
+  .live-ctrl{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);
+    display:flex;align-items:center;gap:16px;}
+  .live-ctrl .start-btn{width:62px;height:62px;border-radius:50%;border:none;cursor:pointer;
+    background:var(--accent);color:#fff;display:grid;place-items:center;
+    box-shadow:0 8px 22px rgba(47,107,255,.5);transition:transform .12s;}
+  .live-ctrl .start-btn:active{transform:scale(.92);}
+  .live-ctrl .start-btn svg{width:26px;height:26px;}
+  .live-ctrl .save-btn{width:44px;height:44px;border-radius:50%;border:2px solid rgba(255,255,255,.85);
+    background:rgba(255,255,255,.12);color:#fff;display:grid;place-items:center;cursor:pointer;transition:transform .12s;}
+  .live-ctrl .save-btn:active{transform:scale(.9);}
+  .live-ctrl .save-btn svg{width:20px;height:20px;}
+  /* 结果卡片入场动画 */
+  .plate-card.enter{animation:cardIn .35s ease;}
+  @keyframes cardIn{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:none;}}
+  /* 轻提示 toast */
+  .toast{position:absolute;left:50%;bottom:96px;transform:translateX(-50%) translateY(8px);
+    background:rgba(20,24,32,.92);color:#fff;font-size:12.5px;font-weight:600;padding:9px 16px;border-radius:12px;
+    opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:30;white-space:nowrap;}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+
+  /* 上传占位 */
+  .upload-tile{
+    position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:12px;color:#8b94a3;cursor:pointer;background:
+      repeating-linear-gradient(45deg,#f0f2f6,#f0f2f6 12px,#e9edf3 12px,#e9edf3 24px);
+  }
+  .upload-tile .ring{
+    width:56px;height:56px;border-radius:16px;border:2px dashed #b9c2cf;display:grid;place-items:center;color:var(--accent);
+  }
+  .upload-tile .ut-title{font-size:14px;font-weight:600;color:var(--text-2);}
+  .upload-tile .ut-sub{font-size:11.5px;color:var(--text-3);}
+
+  /* 加载遮罩 */
+  .loading{position:absolute;inset:0;background:rgba(10,12,18,.55);display:none;flex-direction:column;
+    align-items:center;justify-content:center;gap:14px;color:#fff;z-index:5;backdrop-filter:blur(2px);}
+  .loading.show{display:flex;}
+  .spinner{width:38px;height:38px;border:4px solid rgba(255,255,255,.25);border-top-color:#fff;border-radius:50%;
+    animation:spin .8s linear infinite;}
+  .loading .lt{font-size:13px;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+
+  /* 结果区 */
+  .results{padding:18px 20px 8px;}
+  .results .rh{display:flex;align-items:center;gap:8px;margin-bottom:12px;}
+  .results .rh .rh-t{font-size:15px;font-weight:700;}
+  .results .rh .rh-n{font-size:12px;color:var(--text-3);background:#eef1f5;padding:2px 9px;border-radius:999px;font-weight:600;}
+  .results .rh .rh-clear{margin-left:auto;font-size:12px;color:var(--accent);background:none;border:none;cursor:pointer;font-weight:600;}
+
+  .plate-card{
+    background:var(--card);border-radius:var(--radius-sm);box-shadow:var(--shadow-sm);
+    padding:12px 14px;margin-bottom:10px;display:flex;align-items:center;gap:12px;
+    border:1px solid var(--line-2);
+  }
+  .plate-card .swatch{width:10px;height:38px;border-radius:4px;flex:0 0 auto;}
+  .plate-card .pc-main{flex:1 1 auto;min-width:0;}
+  .plate-card .pc-top{display:flex;align-items:center;gap:10px;}
+  /* 德国车牌视觉 */
+  .de-plate{
+    display:inline-flex;align-items:stretch;background:#fff;border-radius:6px;overflow:hidden;
+    border:1px solid #c9d0d9;box-shadow:inset 0 0 0 2px #fff, 0 1px 2px rgba(0,0,0,.12);
+    height:30px;
+  }
+  .de-plate .eu{
+    background:var(--plate-eu);width:18px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+  }
+  .de-plate .eu .stars{color:var(--plate-eu-star);font-size:5px;line-height:5px;letter-spacing:0.5px;}
+  .de-plate .eu .d{color:#fff;font-size:8px;font-weight:800;line-height:1;}
+  .de-plate .num{
+    font-family:"Arial Narrow",Arial,sans-serif;font-weight:800;font-size:17px;letter-spacing:1px;
+    color:#111;display:flex;align-items:center;padding:0 9px;
+  }
+  .de-plate .seal{
+    width:18px;align-self:center;margin:0 5px;border-radius:50%;
+    background:conic-gradient(#e23b3b 0 25%,#f0a93b 0 50%,#3b7de2 0 75%,#36b36a 0);
+    box-shadow:inset 0 0 0 2px #fff;
+  }
+  .plate-card .pc-idx{font-size:12px;color:var(--text-3);font-weight:600;}
+  .plate-card .pc-conf{font-size:11.5px;color:var(--text-2);}
+  .conf-bar{height:5px;border-radius:3px;background:#eef1f5;margin-top:7px;overflow:hidden;}
+  .conf-bar i{display:block;height:100%;border-radius:3px;background:linear-gradient(90deg,var(--ok),#3ddc97);transition:width .7s cubic-bezier(.3,1,.4,1);}
+  .plate-card .pc-cands{font-size:11px;color:var(--text-3);margin-top:6px;}
+  .plate-card .pc-cands b{color:var(--text-2);font-weight:600;}
+
+  /* 空状态 */
+  .empty{
+    margin:8px 20px 0;padding:22px 16px;text-align:center;color:var(--text-3);font-size:13px;
+    background:var(--card);border-radius:var(--radius-sm);border:1px dashed var(--line);
+  }
+
+  /* 底部高级设置弹层 */
+  .sheet-mask{
+    position:absolute;inset:0;background:rgba(8,10,15,.4);opacity:0;pointer-events:none;
+    transition:opacity .25s ease;z-index:20;backdrop-filter:blur(2px);
+  }
+  .sheet-mask.show{opacity:1;pointer-events:auto;}
+  .sheet{
+    position:absolute;left:0;right:0;bottom:0;background:var(--app-bg);
+    border-radius:24px 24px 0 0;padding:8px 20px 28px;z-index:21;
+    transform:translateY(110%);transition:transform .32s cubic-bezier(.3,1,.4,1);
+    box-shadow:0 -10px 40px rgba(0,0,0,.2);max-height:80%;
+  }
+  .sheet.show{transform:translateY(0);}
+  .sheet .grab{width:38px;height:5px;border-radius:3px;background:#d4dae2;margin:8px auto 14px;}
+  .sheet h3{font-size:15px;margin:0 0 4px;}
+  .sheet .sub{font-size:12px;color:var(--text-3);margin:0 0 14px;}
+  .srow{
+    background:var(--card);border-radius:14px;padding:13px 14px;margin-bottom:10px;
+    box-shadow:var(--shadow-sm);
+  }
+  .srow .sr-top{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+  .srow .sr-label{font-size:13.5px;font-weight:600;}
+  .srow .sr-desc{font-size:11.5px;color:var(--text-3);margin-top:3px;line-height:1.5;}
+  .srow .seg-mini{display:inline-flex;background:#eaeef4;border-radius:10px;padding:3px;gap:2px;}
+  .srow .seg-mini button{border:none;background:transparent;font-family:inherit;font-size:12px;font-weight:600;
+    color:var(--text-2);padding:6px 12px;border-radius:8px;cursor:pointer;}
+  .srow .seg-mini button.active{background:var(--card);color:var(--accent);box-shadow:var(--shadow-sm);}
+  /* iOS 开关 */
+  .switch{position:relative;width:46px;height:28px;flex:0 0 auto;cursor:pointer;}
+  .switch input{display:none;}
+  .switch .track{position:absolute;inset:0;background:#d7dce3;border-radius:999px;transition:.22s;}
+  .switch .knob{position:absolute;top:3px;left:3px;width:22px;height:22px;background:#fff;border-radius:50%;
+    box-shadow:0 1px 3px rgba(0,0,0,.25);transition:.22s;}
+  .switch input:checked + .track{background:var(--ok);}
+  .switch input:checked + .track + .knob{transform:translateX(18px);}
+  .sub-toggles{margin-top:10px;padding-left:6px;border-left:2px solid var(--line-2);}
+  .sub-toggles .st{display:flex;align-items:center;justify-content:space-between;padding:9px 0;}
+  .sub-toggles .st .st-l{font-size:12.5px;color:var(--text-2);}
+  .sheet .done{width:100%;margin-top:6px;padding:13px;border:none;border-radius:14px;background:var(--accent);
+    color:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;}
+  .sheet .done:active{background:var(--accent-2);}
+
+  /* 设计要点卡片 */
+  .notes{max-width:420px;background:var(--card);border-radius:16px;box-shadow:var(--shadow-md);
+    padding:18px 20px;font-size:13px;color:var(--text-2);line-height:1.7;}
+  .notes h4{margin:0 0 10px;font-size:14px;color:var(--text);}
+  .notes ul{margin:0;padding-left:18px;}
+  .notes li{margin-bottom:6px;}
+  .notes b{color:var(--text);}
+  .notes .k{display:inline-block;background:var(--accent-soft);color:var(--accent);font-weight:700;
+    padding:1px 7px;border-radius:6px;font-size:12px;}
+
+  @media (max-width:430px){
+    body{padding:16px 8px 40px;}
+    .phone{width:100%;border-radius:38px;}
+    .screen{height:78vh;}
+  }
+</style>
+</head>
+<body>
+
+  <div class="page-head">
+    <h1>德国车牌识别 · 界面重设计</h1>
+    <p>此为可交互 Mockup（纯 HTML，双击即可打开）。演示新布局、新视觉与简化后的操作流程，<b>不修改任何现有 Swift 代码</b>。</p>
+    <span class="tag">点击来源 / 开始实时识别 / 设置 体验交互</span>
+  </div>
+
+  <!-- 手机外壳 -->
+  <div class="phone">
+    <div class="screen">
+      <!-- 状态栏 -->
+      <div class="status-bar">
+        <span>9:41</span>
+        <div class="icons">
+          <!-- 信号 -->
+          <svg width="18" height="12" viewBox="0 0 18 12"><g fill="#16181d">
+            <rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="7" rx="1"/>
+            <rect x="10" y="2.5" width="3" height="9.5" rx="1"/><rect x="15" y="0" width="3" height="12" rx="1"/></g></svg>
+          <!-- wifi -->
+          <svg width="17" height="12" viewBox="0 0 17 12"><path d="M8.5 2C5.4 2 2.6 3.2.5 5.2l1.4 1.4C3.6 5 5.9 4 8.5 4s4.9 1 6.6 2.6L16.5 5.2C14.4 3.2 11.6 2 8.5 2z" fill="#16181d"/>
+            <path d="M8.5 6c-1.7 0-3.3.7-4.5 1.8l1.4 1.4C6.3 8.4 7.3 8 8.5 8s2.2.4 3.1 1.2l1.4-1.4C11.8 6.7 10.2 6 8.5 6z" fill="#16181d"/>
+            <circle cx="8.5" cy="10.5" r="1.6" fill="#16181d"/></svg>
+          <!-- 电池 -->
+          <svg width="26" height="12" viewBox="0 0 26 12"><rect x="0.5" y="0.5" width="22" height="11" rx="3" fill="none" stroke="#16181d" stroke-opacity=".4"/><rect x="2.5" y="2.5" width="17" height="7" rx="1.5" fill="#16181d"/><rect x="23.5" y="3.5" width="2" height="5" rx="1" fill="#16181d" fill-opacity=".4"/></svg>
+        </div>
+      </div>
+
+      <!-- 应用主体 -->
+      <div class="app">
+        <div class="app-header">
+          <div class="title-wrap">
+            <div class="t1">车牌识别</div>
+            <div class="t2">Plate OCR SDK Demo</div>
+          </div>
+          <button class="icon-btn" id="openSettings" title="高级设置">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+          </button>
+        </div>
+
+        <!-- 来源 -->
+        <div class="segment" id="segment">
+          <span class="thumb" id="segThumb"></span>
+          <button data-src="camera" class="active">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+            拍照
+          </button>
+          <button data-src="album">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.6-3.6a2 2 0 0 0-2.8 0L6 20"/></svg>
+            相册
+          </button>
+          <button data-src="video">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m10 9 5 3-5 3z" fill="currentColor" stroke="none"/></svg>
+            视频
+          </button>
+        </div>
+
+        <!-- 模式 -->
+        <div class="mode-row">
+          <div class="pill-group" id="modeGroup">
+            <button data-mode="fast" class="active">极速</button>
+            <button data-mode="accurate">精准</button>
+          </div>
+        </div>
+
+        <!-- 预览区 -->
+        <div class="preview" id="preview"><!-- JS 注入 --></div>
+
+        <!-- 结果区 -->
+        <div id="resultsHost"></div>
+      </div>
+
+      <!-- 设置弹层 -->
+      <div class="sheet-mask" id="sheetMask"></div>
+      <div class="sheet" id="sheet">
+        <div class="grab"></div>
+        <h3>高级设置</h3>
+        <p class="sub">常用项已前置，以下为进阶参数（默认即可）</p>
+
+        <div class="srow">
+          <div class="sr-top">
+            <div>
+              <div class="sr-label">OCR 引擎</div>
+              <div class="sr-desc">Apple Vision 系统级、零依赖；PaddleOCR 精度更高</div>
+            </div>
+            <div class="seg-mini" id="ocrGroup">
+              <button data-ocr="appleVision" class="active">Apple</button>
+              <button data-ocr="paddleOCR">Paddle</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="srow">
+          <div class="sr-top">
+            <div>
+              <div class="sr-label">输入通道顺序</div>
+              <div class="sr-desc">默认 RGB（与 PC 参考一致）；仅检测明显错乱时切 BGR</div>
+            </div>
+            <div class="seg-mini" id="rgbGroup">
+              <button data-rgb="true" class="active">RGB</button>
+              <button data-rgb="false">BGR</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="srow">
+          <div class="sr-top">
+            <div>
+              <div class="sr-label">强化识别（SDK Enhanced）</div>
+              <div class="sr-desc">折叠感知排序 · 数字段严格校验 · 关键点四边形叠层</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="enhToggle" checked />
+              <span class="track"></span><span class="knob"></span>
+            </label>
+          </div>
+          <div class="sub-toggles" id="subToggles">
+            <div class="st"><span class="st-l">折叠感知排序（修正 3 位 / E·H 误读）</span>
+              <label class="switch"><input type="checkbox" class="subchk" checked/><span class="track"></span><span class="knob"></span></label></div>
+            <div class="st"><span class="st-l">数字段严格校验（拒绝前导 0）</span>
+              <label class="switch"><input type="checkbox" class="subchk" checked/><span class="track"></span><span class="knob"></span></label></div>
+            <div class="st"><span class="st-l">关键点四边形叠层（用 pose 角点）</span>
+              <label class="switch"><input type="checkbox" class="subchk" checked/><span class="track"></span><span class="knob"></span></label></div>
+          </div>
+        </div>
+
+        <button class="done" id="closeSettings">完成</button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- 设计要点 -->
+  <div class="notes">
+    <h4>重设计要点（对照原版"样式丑 + 操作复杂"）</h4>
+    <ul>
+      <li><b>收敛控制项：</b>原版 5 个分段选择器 + 4 个开关平铺，信息过载；新版把 <span class="k">OCR 引擎 / 通道 / 强化</span> 收进底部「高级设置」弹层，主屏只留来源 + 模式。</li>
+      <li><b>操作路径更短：</b>相机页改为<b>实时画面持续检测</b>（点开始→扫描光束 + 实时叠加框 + 结果流式出现，可暂停/保存）；相册点选即识别、视频点播放即识别，结果自动浮现，无需额外"运行"按钮。</li>
+      <li><b>结果更具可读性：</b>用<b>真实德国车牌视觉</b>（蓝条 D + 黑字 + 年检圆章）渲染每条结果，附色块、置信度条与候选 chips，一扫即懂。</li>
+      <li><b>图像叠加框</b>保留原 SDK 的"每块车牌稳定伪随机纯色"逻辑，叠层与结果列表色块一一对应。</li>
+      <li><b>视觉统一：</b>圆角卡片 + 柔和阴影 + 系统蓝强调色，状态栏/动态岛/底部弹层还原 iOS 质感。</li>
+    </ul>
+  </div>
+
+<script>
+/* ============ 复用：汽车 SVG（含车牌区域，便于叠加框对齐） ============ */
+function carSVG(){
+  // 车牌区域约位于 x:105-195, y:150-184 (viewBox 300x200) → 百分比 35%/75%/30%/17%
+  return `<svg viewBox="0 0 300 200" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#5b8ad6"/><stop offset="1" stop-color="#2f5fae"/>
+      </linearGradient>
+    </defs>
+    <ellipse cx="150" cy="186" rx="120" ry="10" fill="rgba(0,0,0,.18)"/>
+    <path d="M40 120 Q40 70 90 62 L120 40 Q150 30 180 40 L210 62 Q260 70 260 120 L260 150 Q260 160 250 160 L50 160 Q40 160 40 150 Z" fill="url(#body)"/>
+    <path d="M78 110 Q80 78 110 74 L130 60 Q150 55 170 60 L190 74 Q220 78 222 110 L222 118 L78 118 Z" fill="#cfe6ff" opacity=".85"/>
+    <circle cx="78" cy="138" r="20" fill="#1c2230"/><circle cx="78" cy="138" r="9" fill="#3a4658"/>
+    <circle cx="222" cy="138" r="20" fill="#1c2230"/><circle cx="222" cy="138" r="9" fill="#3a4658"/>
+    <rect x="105" y="150" width="90" height="30" rx="4" fill="#f7f7f7" stroke="#cfd4da"/>
+    <text x="150" y="171" font-family="Arial" font-weight="800" font-size="17" fill="#111" text-anchor="middle" letter-spacing="1">ST-AB 1234</text>
+  </svg>`;
+}
+
+/* ============ 叠加检测框颜色（与结果色块一致） ============ */
+const PALETTE = ["#ef4444","#f59e0b","#eab308","#22c55e","#14b8a6","#2f6bff",
+                 "#6366f1","#a855f7","#ec4899","#a16207","#38bdf8","#64748b"];
+
+/* ============ 模拟识别结果 ============ */
+const SAMPLES = {
+  camera: [
+    {text:"ST-AB 1234", conf:0.97, color:0, cands:["ST-AB 1234"]}
+  ],
+  album: [
+    {text:"B-X 99",   conf:0.95, color:5, cands:["B-X 99","B-X 99"]},
+    {text:"M-QR 234", conf:0.91, color:3, cands:["M-QR 234","M-OR 234"]}
+  ],
+  video: [
+    {text:"K-L 1234 E", conf:0.90, color:8, cands:["K-L 1234 E"]},
+    {text:"HH-AB 567",  conf:0.86, color:1, cands:["HH-AB 567","HH-AB 567"]},
+    {text:"F-AB 12",    conf:0.81, color:11, cands:["F-AB 12"]}
+  ]
+};
+
+/* 实时检测：第二辆车（驶入画面后也被识别） */
+const LIVE_SECOND = {text:"M-DE 789", conf:0.88, color:6, cands:["M-DE 789"]};
+
+const state = { source:"camera", mode:"fast", results:null, ocr:"appleVision", rgb:true, enh:true, liveActive:false };
+
+/* 图标 */
+const ICON = {
+  camera:'<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>',
+  pause:'<svg viewBox="0 0 24 24" fill="#fff"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>',
+  play:'<svg viewBox="0 0 24 24" fill="#fff"><path d="M8 5v14l11-7z"/></svg>',
+  save:'<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>'
+};
+
+/* ============ 预览区渲染 ============ */
+function renderPreview(){
+  const p = document.getElementById("preview");
+  if(state.source === "camera"){
+    if(state.liveActive) return; // 实时检测进行中，不重建画面
+    p.innerHTML = cameraIdleHTML();
+    document.getElementById("startLiveBtn").onclick = startLive;
+  } else if(state.source === "album"){
+    p.innerHTML = `
+      <div class="upload-tile" id="uploadTile">
+        <div class="ring">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        </div>
+        <div class="ut-title">点击选择图片</div>
+        <div class="ut-sub">从相册选取一张含车牌的照片</div>
+      </div>`;
+    document.getElementById("uploadTile").onclick = ()=> run("album");
+  } else {
+    p.innerHTML = `
+      <div class="scene">
+        <div class="car-slot small">${carSVG()}</div>
+        <div class="car-slot small2">${carSVG()}</div>
+        <div class="badge-tl">示例视频 · 00:12</div>
+        <div class="play" id="playBtn"><div class="pbtn"></div></div>
+      </div>`;
+    document.getElementById("playBtn").onclick = ()=> run("video");
+  }
+}
+
+/* ============ 运行识别（模拟） ============ */
+function run(src){
+  if(src === "camera"){ startLive(); return; } // 相机走实时检测，不由本函数处理
+  const p = document.getElementById("preview");
+  let loading = document.createElement("div");
+  loading.className = "loading show";
+  loading.innerHTML = `<div class="spinner"></div><div class="lt">${src==="video"?"视频识别中…":"识别中…"}</div>`;
+  p.appendChild(loading);
+
+  setTimeout(()=>{
+    loading.remove();
+    state.results = SAMPLES[src];
+    if(src === "album"){
+      const slot = document.createElement("div");
+      slot.className = "scene";
+      slot.innerHTML = `<div class="car-slot">${carSVG()}</div>`;
+      p.innerHTML = "";
+      p.appendChild(slot);
+      state.results.forEach(r=> addOverlay(slot.querySelector(".car-slot"), r, true));
+    } else {
+      const slots = p.querySelectorAll(".car-slot");
+      slots.forEach((s,i)=> addOverlay(s, state.results[i]));
+    }
+    renderResults();
+  }, src==="video"?1100:750);
+}
+
+function addOverlay(slot, r, stacked){
+  const ov = document.createElement("div");
+  ov.className = "ovl";
+  ov.style.borderColor = PALETTE[r.color];
+  ov.style.background = PALETTE[r.color] + "47";
+  ov.style.left = "35%"; ov.style.top = "75%";
+  ov.style.width = "30%"; ov.style.height = "17%";
+  ov.innerHTML = `<span class="lbl" style="background:${PALETTE[r.color]}">${r.text}</span>`;
+  slot.appendChild(ov);
+}
+
+/* ============ 德国车牌视觉片段（复用） ============ */
+function dePlateHTML(text, seal){
+  return `<span class="de-plate">
+    <span class="eu"><span class="stars">★ ★ ★<br>★ ★ ★<br>★ ★ ★<br>★ ★</span><span class="d">D</span></span>
+    <span class="num">${text}</span>${seal}
+  </span>`;
+}
+function plateSeal(text){ return (text.endsWith("E")||text.endsWith("H"))?`<span class="seal"></span>`:""; }
+
+/* ============ 相机：实时检测空闲态（点击开始） ============ */
+function cameraIdleHTML(){
+  return `
+    <div class="viewfinder" style="justify-content:flex-start;padding-top:54px;">
+      <div class="grid-lines"></div>
+      <div class="guide-frame">
+        <span class="corner c1"></span><span class="corner c2"></span>
+        <span class="corner c3"></span><span class="corner c4"></span>
+        <span class="tip">将车牌放入框内</span>
+      </div>
+      <div class="live-ctrl" style="flex-direction:column;gap:10px;bottom:30px;">
+        <button class="start-btn" id="startLiveBtn">${ICON.camera}</button>
+        <span style="font-size:12px;color:#aeb6c2;font-weight:600;">开始实时识别</span>
+      </div>
+    </div>`;
+}
+
+/* ============ 相机：实时检测控制 ============ */
+let liveToken = 0;     // 每次开始/停止自增，用于取消旧的定时链
+let liveIndex = 0;
+let livePaused = false;
+
+function startLive(){
+  state.liveActive = true; state.results = []; liveIndex = 0; livePaused = false; liveToken++;
+  const token = liveToken;
+  const p = document.getElementById("preview");
+  p.innerHTML = `
+    <div class="live-scene" id="liveScene">
+      <div class="road"></div>
+      <div class="car-live" id="car1" style="opacity:0">${carSVG()}</div>
+      <div class="scan-beam"></div>
+      <div class="live-badge"><span class="dot"></span><span class="txt"></span></div>
+      <div class="live-ctrl">
+        <button class="save-btn" id="saveBtn" title="保存快照">${ICON.save}</button>
+        <button class="start-btn" id="liveToggle">${ICON.pause}</button>
+      </div>
+    </div>`;
+  requestAnimationFrame(()=>{ const c=document.getElementById("car1"); c.classList.add("enter"); c.style.opacity=1; });
+  document.getElementById("resultsHost").innerHTML =
+    `<div class="empty">实时检测中…将车牌移入画面即可自动识别</div>`;
+  bindLiveControls();
+  runLiveSteps(token);
+}
+
+function stopLive(){
+  liveToken++; state.liveActive = false; livePaused = false;
+  renderPreview(); renderResults();
+}
+
+function bindLiveControls(){
+  const toggle = document.getElementById("liveToggle");
+  if(toggle) toggle.onclick = ()=>{
+    livePaused = !livePaused;
+    const sc = document.getElementById("liveScene"); if(sc) sc.classList.toggle("paused", livePaused);
+    toggle.innerHTML = livePaused ? ICON.play : ICON.pause;
+  };
+  const save = document.getElementById("saveBtn");
+  if(save) save.onclick = ()=> toast("✓ 快照已保存");
+}
+
+/* 实时检测时间线：模拟持续识别（车牌驶入→扫描→锁定→第二辆车…） */
+function runLiveSteps(token){
+  if(token !== liveToken) return;
+  if(liveIndex >= LIVE_STEPS.length) return;
+  const step = LIVE_STEPS[liveIndex];
+  if(livePaused){ setTimeout(()=>runLiveSteps(token), 200); return; }
+  setTimeout(()=>{
+    if(token !== liveToken) return;
+    if(livePaused){ setTimeout(()=>runLiveSteps(token), 200); return; }
+    step.fn();
+    liveIndex++;
+    runLiveSteps(token);
+  }, step.t);
+}
+
+const LIVE_STEPS = [
+  { t: 700,  fn: ()=> addLiveBox("car1") },
+  { t: 1500, fn: ()=> lockLiveBox("car1", SAMPLES.camera[0]) },
+  { t: 3300, fn: ()=> enterCar2() },
+  { t: 4300, fn: ()=> addLiveBox("car2") },
+  { t: 5100, fn: ()=> lockLiveBox("car2", LIVE_SECOND) }
+];
+
+function addLiveBox(id){
+  const car = document.getElementById(id); if(!car) return;
+  const ov = document.createElement("div");
+  ov.className = "ovl scanning";
+  ov.style.borderColor = "#2f6bff";
+  ov.style.background = "rgba(47,107,255,.18)";
+  ov.style.left="35%"; ov.style.top="75%"; ov.style.width="30%"; ov.style.height="17%";
+  ov.innerHTML = `<span class="lbl" style="background:#2f6bff">检测中…</span>`;
+  car.appendChild(ov);
+}
+
+function lockLiveBox(id, result){
+  const car = document.getElementById(id); if(!car) return;
+  const ov = car.querySelector(".ovl");
+  if(ov){
+    ov.className = "ovl locked";
+    ov.style.borderColor = PALETTE[result.color];
+    ov.style.background = PALETTE[result.color] + "47";
+    const lbl = ov.querySelector(".lbl");
+    lbl.style.background = PALETTE[result.color];
+    lbl.textContent = result.text;
+  }
+  if(!state.results) state.results = [];
+  state.results.push(result);
+  appendLiveCard(result, state.results.length);
+}
+
+function enterCar2(){
+  const scene = document.getElementById("liveScene"); if(!scene) return;
+  const c2 = document.createElement("div");
+  c2.className = "car-live enter"; c2.id = "car2";
+  c2.style.left = "122%"; c2.style.top = "38%"; c2.style.width = "48%";
+  c2.innerHTML = carSVG();
+  scene.insertBefore(c2, scene.querySelector(".scan-beam"));
+}
+
+/* ============ 结果卡片（相册/视频：整体重建） ============ */
+function renderResults(){
+  const host = document.getElementById("resultsHost");
+  if(!state.results || state.results.length === 0){
+    if(state.source === "camera" && state.liveActive){
+      host.innerHTML = `<div class="empty">实时检测中…将车牌移入画面即可自动识别</div>`;
+    } else if(!state.results){
+      host.innerHTML = `<div class="empty">尚未识别。选择来源后开始实时识别 / 选图 / 播放即可自动识别。</div>`;
+    } else {
+      host.innerHTML = `<div class="empty">未检测到车牌。可尝试更换素材、切换模式或 OCR 引擎后重试。</div>`;
+    }
+    return;
+  }
+
+  let cards = state.results.map((r,i)=>{
+    const seal = plateSeal(r.text);
+    return `
+    <div class="plate-card">
+      <div class="swatch" style="background:${PALETTE[r.color]}"></div>
+      <div class="pc-main">
+        <div class="pc-top">
+          ${dePlateHTML(r.text, seal)}
+          <span class="pc-idx">#${i+1}</span>
+          <span class="pc-conf">${(r.conf*100).toFixed(0)}%</span>
+        </div>
+        <div class="conf-bar"><i style="width:${r.conf*100}%"></i></div>
+        ${r.cands.length>1?`<div class="pc-cands">候选：<b>${r.cands.join("</b> / <b>")}</b></div>`:""}
+      </div>
+    </div>`;
+  }).join("");
+
+  host.innerHTML = `
+    <div class="results">
+      <div class="rh">
+        <span class="rh-t">${state.source==="camera"?"实时结果":"识别结果"}</span>
+        <span class="rh-n">${state.results.length}</span>
+        <button class="rh-clear" id="clearBtn">清除</button>
+      </div>
+      ${cards}
+    </div>`;
+  bindClear();
+}
+
+/* 实时检测：增量追加单张卡片（带入场动画 + 置信度补间） */
+function appendLiveCard(result, idx){
+  let host = document.getElementById("resultsHost");
+  let list = host.querySelector("#liveList");
+  if(!list){
+    host.innerHTML = `
+      <div class="results">
+        <div class="rh">
+          <span class="rh-t">实时结果</span>
+          <span class="rh-n" id="liveCount">0</span>
+          <button class="rh-clear" id="clearBtn">清除</button>
+        </div>
+        <div id="liveList"></div>
+      </div>`;
+    list = host.querySelector("#liveList");
+    bindClear();
+  }
+  const seal = plateSeal(result.text);
+  const card = document.createElement("div");
+  card.className = "plate-card enter";
+  card.innerHTML = `
+    <div class="swatch" style="background:${PALETTE[result.color]}"></div>
+    <div class="pc-main">
+      <div class="pc-top">
+        ${dePlateHTML(result.text, seal)}
+        <span class="pc-idx">#${idx}</span>
+        <span class="pc-conf">0%</span>
+      </div>
+      <div class="conf-bar"><i style="width:0%"></i></div>
+    </div>`;
+  list.appendChild(card);
+
+  const confEl = card.querySelector(".pc-conf");
+  const bar = card.querySelector(".conf-bar i");
+  const target = result.conf * 100;
+  let v = 0; const inc = Math.max(2, target/24);
+  const tw = setInterval(()=>{
+    v += inc; if(v >= target){ v = target; clearInterval(tw); }
+    confEl.textContent = v.toFixed(0) + "%";
+    bar.style.width = v + "%";
+  }, 24);
+
+  const cnt = document.getElementById("liveCount");
+  if(cnt) cnt.textContent = parseInt(cnt.textContent, 10) + 1;
+}
+
+function bindClear(){
+  const b = document.getElementById("clearBtn");
+  if(!b) return;
+  b.onclick = ()=>{
+    if(state.source === "camera" && state.liveActive){ stopLive(); return; }
+    state.results = null;
+    renderResults();
+    if(state.source !== "camera") renderPreview();
+  };
+}
+
+/* 轻提示 */
+let toastTimer = null;
+function toast(msg){
+  let t = document.getElementById("toast");
+  if(!t){ t = document.createElement("div"); t.id = "toast"; t.className = "toast"; document.querySelector(".screen").appendChild(t); }
+  t.textContent = msg; t.classList.add("show");
+  clearTimeout(toastTimer); toastTimer = setTimeout(()=> t.classList.remove("show"), 1600);
+}
+
+/* ============ 来源切换 ============ */
+const seg = document.getElementById("segment");
+const thumb = document.getElementById("segThumb");
+function moveThumb(idx){ thumb.style.transform = `translateX(${idx*100}%)`; }
+seg.querySelectorAll("button").forEach((b,idx)=>{
+  b.onclick = ()=>{
+    seg.querySelectorAll("button").forEach(x=>x.classList.remove("active"));
+    b.classList.add("active"); moveThumb(idx);
+    if(state.liveActive){ liveToken++; state.liveActive = false; livePaused = false; }
+    state.source = b.dataset.src; state.results=null;
+    renderPreview(); renderResults();
+  };
+});
+moveThumb(0);
+
+/* ============ 模式切换 ============ */
+const modeGroup = document.getElementById("modeGroup");
+modeGroup.querySelectorAll("button").forEach(b=>{
+  b.onclick = ()=>{
+    modeGroup.querySelectorAll("button").forEach(x=>x.classList.remove("active"));
+    b.classList.add("active"); state.mode = b.dataset.mode;
+  };
+});
+
+/* ============ 设置弹层 ============ */
+const sheet = document.getElementById("sheet");
+const mask = document.getElementById("sheetMask");
+function openSheet(){ sheet.classList.add("show"); mask.classList.add("show"); }
+function closeSheet(){ sheet.classList.remove("show"); mask.classList.remove("show"); }
+document.getElementById("openSettings").onclick = openSheet;
+document.getElementById("closeSettings").onclick = closeSheet;
+mask.onclick = closeSheet;
+
+document.getElementById("ocrGroup").querySelectorAll("button").forEach(b=>{
+  b.onclick = ()=>{ document.querySelectorAll("#ocrGroup button").forEach(x=>x.classList.remove("active"));
+    b.classList.add("active"); state.ocr=b.dataset.ocr; };
+});
+document.getElementById("rgbGroup").querySelectorAll("button").forEach(b=>{
+  b.onclick = ()=>{ document.querySelectorAll("#rgbGroup button").forEach(x=>x.classList.remove("active"));
+    b.classList.add("active"); state.rgb=b.dataset.rgb==="true"; };
+});
+document.getElementById("enhToggle").onchange = (e)=>{
+  state.enh = e.target.checked;
+  document.getElementById("subToggles").style.display = state.enh ? "block" : "none";
+};
+
+/* ============ 初始化 ============ */
+renderPreview();
+renderResults();
+</script>
+</body>
+</html>
