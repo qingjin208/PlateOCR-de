@@ -17,6 +17,7 @@
  */
 
 import SwiftUI
+import Combine
 import PhotosUI
 import CoreTransferable
 import CoreGraphics
@@ -100,13 +101,15 @@ struct ContentView: View {
     /// Bottom-sheet for advanced controls (OCR engine / input channel / enhancement).
     @State private var showSettings = false
 
+    /// Drives the camera session lifecycle from the app's foreground/background state so
+    /// it is no longer tied to the `CameraView`'s mount/unmount (which caused the black
+    /// flash when switching media sources).
+    @Environment(\.scenePhase) private var scenePhase
+
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
                 header
-                SourceSegment(selection: $source)
-                    .padding(.horizontal)
-                modeRow
                 mediaPreview
                 resultsSection
                 if let message = errorMessage {
@@ -121,7 +124,8 @@ struct ContentView: View {
                     Color.black.opacity(0.4)
                         .ignoresSafeArea()
                         .onTapGesture { withAnimation { showSettings = false } }
-                    SettingsSheet(ocrEngine: $ocrEngine,
+                    SettingsSheet(mode: $mode,
+                                  ocrEngine: $ocrEngine,
                                   useRGB: $useRGB,
                                   enhancements: $enhancements) { withAnimation { showSettings = false } }
                         .padding(.horizontal, 4)
@@ -158,18 +162,34 @@ struct ContentView: View {
                 player?.pause()
                 isPlaying = false
             }
+            // Camera session follows the selected source: (re)start on the camera tab,
+            // suspend when leaving it. Keeps the preview layer mounted (no black flash).
+            if newSource == .camera {
+                Task { await cameraController.setup() }
+            } else {
+                cameraController.suspendSession()
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background {
+                cameraController.suspendSession()
+            } else if phase == .active {
+                if source == .camera { Task { await cameraController.setup() } }
+            }
+        }
+        .task {
+            // Kick the camera session once at launch when we open on the camera tab.
+            if source == .camera { await cameraController.setup() }
         }
     }
 
     // MARK: - Header
 
     private var header: some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("车牌识别").font(.title3.bold())
-                Text("PLATE OCR SDK DEMO")
-                    .font(.caption2).foregroundStyle(.tertiary).tracking(1.2)
-            }
+        HStack(alignment: .center, spacing: 10) {
+            Text("车牌识别").font(.headline.bold())
+            SourceSegment(selection: $source)
+                .frame(width: 198)
             Spacer(minLength: 0)
             Button {
                 withAnimation { showSettings = true }
@@ -185,35 +205,26 @@ struct ContentView: View {
         .padding(.top, 8)
     }
 
-    // MARK: - Mode
-
-    private var modeRow: some View {
-        HStack(spacing: 10) {
-            Picker("识别模式", selection: $mode) {
-                Text("极速").tag(RecognitionMode.fast)
-                Text("精准").tag(RecognitionMode.accurate)
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 180)
-            .tint(appAccent)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal)
-    }
-
     // MARK: - Media preview
 
     @ViewBuilder
     private var mediaPreview: some View {
-        if source == .image {
-            imagePreview
-        } else if source == .video {
-            videoPreview
-        } else {
+        VStack(spacing: 0) {
+            // The camera view stays mounted across media-source switches so its
+            // AVCaptureVideoPreviewLayer (and the configured session) are never torn down
+            // and rebuilt — that rebuild was the source of the black flash on return. When
+            // another source is selected it collapses to zero height and is hidden, and the
+            // session is suspended (so the green camera indicator goes away). Lifecycle is
+            // driven by the `source` / `scenePhase` observers below, not by this view's
+            // mount/unmount.
             CameraView(controller: cameraController)
-                .frame(height: 360)
+                .frame(height: source == .camera ? 470 : 0)
+                .opacity(source == .camera ? 1 : 0)
+                .allowsHitTesting(source == .camera)
                 .clipShape(RoundedRectangle(cornerRadius: 16))
                 .padding(.horizontal)
+            if source == .image { imagePreview }
+            if source == .video { videoPreview }
         }
     }
 
@@ -252,8 +263,20 @@ struct ContentView: View {
                             .padding(8)
                     }
                 Button {
-                    if player.rate == 0 { player.play(); isPlaying = true }
-                    else { player.pause(); isPlaying = false }
+                    guard let player else { return }
+                    if player.rate == 0 {
+                        // Parked at the end (or not yet started): rewind, then play.
+                        if let item = player.currentItem,
+                           item.duration.flags.contains(.valid),
+                           CMTimeCompare(item.currentTime(), item.duration) >= 0 {
+                            player.seek(to: .zero)
+                        }
+                        player.play()
+                        isPlaying = true
+                    } else {
+                        player.pause()
+                        isPlaying = false
+                    }
                 } label: {
                     Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
                         .font(.system(size: 30))
@@ -263,6 +286,12 @@ struct ContentView: View {
                 .padding(10)
             }
             .padding(.horizontal)
+            .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { note in
+                // Keep the transport icon in sync when the clip finishes on its own.
+                if let player, (note.object as? AVPlayerItem) == player.currentItem {
+                    isPlaying = false
+                }
+            }
         } else {
             PhotosPicker(selection: $videoItem, matching: .videos) {
                 uploadTile(title: "点击选择视频", subtitle: "从相册选取一段含车牌的短片")
@@ -298,9 +327,9 @@ struct ContentView: View {
         } else if !results.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
-                    Text("识别结果（\(results.count)）").font(.headline)
+                    Text("共识别到 \(results.count) 块车牌").font(.headline)
                     Spacer(minLength: 0)
-                    Button("清除") { clearResults() }
+                    Button("重新选择") { clearResults() }
                         .font(.subheadline).foregroundStyle(appAccent)
                 }
                 .padding(.horizontal)
@@ -324,6 +353,9 @@ struct ContentView: View {
     }
 
     private func clearResults() {
+        // Remove the temp copy the video import created so repeated selections don't
+        // accumulate .mov files in the system temporary directory.
+        if let url = videoURL { try? FileManager.default.removeItem(at: url) }
         results = []
         imageData = nil
         displayImage = nil
@@ -456,10 +488,15 @@ private struct SourceSegment: View {
 // MARK: - Bottom settings sheet
 
 private struct SettingsSheet: View {
+    @Binding var mode: RecognitionMode
     @Binding var ocrEngine: OCREngine
     @Binding var useRGB: Bool
     @Binding var enhancements: RecognitionEnhancements
     var onDone: () -> Void
+
+    /// Debug-only options (RGB/BGR channel order) are collapsed by default so the sheet's
+    /// first screen stays focused on the controls a normal user needs.
+    @State private var showDebug = false
 
     var body: some View {
         VStack(spacing: 12) {
@@ -468,9 +505,19 @@ private struct SettingsSheet: View {
                 .padding(.top, 8)
             Text("高级设置").font(.headline)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Text("常用项已前置，以下为进阶参数（默认即可）")
+            Text("常用参数已前置，其余为进阶选项（默认即可）")
                 .font(.caption).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
+
+            settingRow(title: "识别模式", subtitle: "极速响应更快；精准更稳（默认极速）") {
+                Picker("识别模式", selection: $mode) {
+                    Text("极速").tag(RecognitionMode.fast)
+                    Text("精准").tag(RecognitionMode.accurate)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 180)
+                .tint(appAccent)
+            }
 
             settingRow(title: "OCR 引擎", subtitle: "Apple Vision 系统级、零依赖；PaddleOCR 精度更高") {
                 Picker("OCR 引擎", selection: $ocrEngine) {
@@ -481,16 +528,21 @@ private struct SettingsSheet: View {
                 .tint(appAccent)
             }
 
-            settingRow(title: "输入通道顺序", subtitle: "默认 RGB（与 PC 参考一致）；仅当检测明显错乱时切 BGR") {
-                Picker("输入通道", selection: $useRGB) {
-                    Text("RGB").tag(true)
-                    Text("BGR").tag(false)
+            DisclosureGroup("调试选项", isExpanded: $showDebug) {
+                settingRow(title: "输入通道顺序", subtitle: "默认 RGB（与 PC 参考一致）；仅当检测明显错乱时切 BGR") {
+                    Picker("输入通道", selection: $useRGB) {
+                        Text("RGB").tag(true)
+                        Text("BGR").tag(false)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 130)
+                    .tint(appAccent)
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 130)
-                .tint(appAccent)
             }
-
+            .tint(.secondary)
+            .font(.subheadline)
+            .padding(14)
+            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
             VStack(alignment: .leading, spacing: 8) {
                 Toggle(isOn: $enhancements.isEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -648,13 +700,8 @@ struct CameraResultsView: View {
         } else {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
-                    Text("实时结果（\(controller.liveResults.count)）").font(.headline)
+                    Text("实时识别 \(controller.liveResults.count) 块车牌").font(.headline)
                     Spacer(minLength: 0)
-                    Button("清除") {
-                        controller.liveResults = []
-                        controller.clearRecognitionHistory()
-                    }
-                    .font(.subheadline).foregroundStyle(appAccent)
                 }
                 .padding(.horizontal)
                 ForEach(Array(controller.liveResults.enumerated()), id: \.element.id) { pair in
@@ -688,15 +735,7 @@ struct PlateQuadOverlay: View {
             ForEach(Array(results.enumerated()), id: \.element.id) { pair in
                 let index = pair.offset
                 let result = pair.element
-                let box = result.boundingBox
                 let tint = Color(cgColor: Self.color(for: result).cgColor)
-
-                Rectangle()
-                    .stroke(.red, lineWidth: 2)
-                    .frame(width: box.width * geometry.size.width,
-                           height: box.height * geometry.size.height)
-                    .position(x: box.midX * geometry.size.width,
-                              y: box.midY * geometry.size.height)
 
                 PlateQuadShape(quad: result.plateQuad)
                     .fill(tint.opacity(PlateOverlayPalette.fillAlpha))

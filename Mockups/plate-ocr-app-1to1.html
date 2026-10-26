@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Plate OCR Demo · 1:1 Mockup</title>
+<style>
+  :root{
+    /* iOS 浅色主题（与 SwiftUI system 颜色对齐） */
+    --accent:#2f6bff;
+    --bg:#f2f2f7;          /* grouped background */
+    --card:#ffffff;        /* systemBackground / 卡片 */
+    --surface:#e9e9ee;     /* secondarySystemBackground（分段外框/行底） */
+    --surface2:#f2f2f7;    /* tertiarySystemBackground */
+    --text:#1c1c1e;
+    --text2:#8a8a8e;       /* secondary */
+    --text3:#b0b0b5;       /* tertiary */
+    --sep:#e3e3e8;
+    --green:#1fc16b;
+    --yellow:#ffcc00;
+    --danger:#ff3b30;
+    --eu:#0a3a8f;          /* 车牌蓝条 */
+    --shadow:0 1px 3px rgba(0,0,0,.08);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;height:100%;}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+    background:radial-gradient(120% 120% at 50% 0%,#dfe3ea 0%,#c7ccd6 100%);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    min-height:100vh;padding:24px;gap:14px;color:var(--text);
+  }
+
+  /* ---------- 手机外壳 ---------- */
+  .phone{
+    width:390px;height:844px;border-radius:54px;
+    background:#0b0b0d;padding:12px;
+    box-shadow:0 30px 70px rgba(0,0,0,.45), inset 0 0 2px rgba(255,255,255,.25);
+    position:relative;
+  }
+  .screen{
+    width:100%;height:100%;border-radius:42px;overflow:hidden;background:var(--bg);
+    position:relative;display:flex;flex-direction:column;
+  }
+  .notch{position:absolute;top:0;left:50%;transform:translateX(-50%);
+    width:120px;height:30px;background:#0b0b0d;border-radius:0 0 18px 18px;z-index:50;}
+  .statusbar{
+    height:54px;flex:0 0 auto;display:flex;align-items:flex-end;justify-content:space-between;
+    padding:0 28px 6px;font-size:13px;font-weight:600;color:var(--text);z-index:40;
+  }
+  .statusbar .right{display:flex;gap:6px;align-items:center;}
+  .signal{display:flex;gap:2px;align-items:flex-end;height:11px;}
+  .signal i{width:3px;background:var(--text);border-radius:1px;}
+  .signal i:nth-child(1){height:4px}.signal i:nth-child(2){height:6px}
+  .signal i:nth-child(3){height:8px}.signal i:nth-child(4){height:11px}
+  .battery{width:24px;height:12px;border:1.5px solid var(--text);border-radius:3px;position:relative;padding:1.5px;}
+  .battery::after{content:"";position:absolute;right:-3px;top:3px;width:2px;height:5px;background:var(--text);border-radius:0 1px 1px 0;}
+  .battery i{display:block;height:100%;width:80%;background:var(--text);border-radius:1px;}
+
+  /* ---------- 可滚动内容 ---------- */
+  .app{flex:1 1 auto;overflow-y:auto;padding:8px 0 24px;}
+  .app::-webkit-scrollbar{width:0}
+
+  /* Header（单行：标题 + 来源分段 + 设置，导航栏压到设置左侧，画面更大） */
+  .header{display:flex;align-items:center;gap:10px;padding:8px 14px 2px;}
+  .header .title{font-size:17px;font-weight:700;line-height:1.1;flex:0 0 auto;}
+  .header .gear{margin-left:auto;}
+  .gear{width:38px;height:38px;border-radius:12px;background:var(--surface);
+    display:flex;align-items:center;justify-content:center;color:var(--text2);font-size:18px;
+    border:none;cursor:pointer;}
+  .segment.compact{margin:0;height:36px;flex:0 0 auto;width:188px;}
+  .segment.compact .seg-thumb{height:28px;top:4px;width:calc((100% - 8px)/3);}
+  .segment.compact .seg-row button{font-size:12.5px;gap:4px;}
+
+  /* 来源分段控件 */
+  .segment{position:relative;height:44px;margin:14px 16px 0;border-radius:14px;background:var(--surface2);}
+  .seg-thumb{position:absolute;top:4px;left:4px;width:calc((100% - 8px)/3);height:36px;border-radius:11px;
+    background:var(--card);box-shadow:var(--shadow);transition:transform .3s cubic-bezier(.3,1.2,.5,1);}
+  .seg-row{position:absolute;inset:0;display:flex;}
+  .seg-row button{flex:1;border:none;background:none;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;gap:6px;
+    font-size:13.5px;font-weight:600;color:var(--text2);z-index:2;}
+  .seg-row button.active{color:var(--accent);}
+  .seg-row button svg{width:16px;height:16px;}
+
+  /* 媒体预览 */
+  .media{padding:16px 16px 0;}
+  .preview{position:relative;width:100%;height:420px;border-radius:16px;overflow:hidden;background:#000;}
+
+  /* 相机场景 SVG */
+  .cam-svg{position:absolute;inset:0;width:100%;height:100%;}
+  .beam{position:absolute;left:0;right:0;height:3px;
+    background:linear-gradient(90deg,transparent,var(--accent),transparent);
+    box-shadow:0 0 8px var(--accent);opacity:.9;}
+  .beam.run{animation:sweep 1.8s ease-in-out infinite alternate;}
+  @keyframes sweep{from{top:8%}to{top:84%}}
+
+  /* 待机引导（虚线框，仅提示放车牌，非按钮） */
+  .guide{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;}
+  .guide .frame{width:220px;height:120px;border:2px dashed rgba(255,255,255,.5);border-radius:14px;}
+
+  /* 画面两角的状态胶囊（轻量遥测，不额外占一行高度） */
+  .pill{position:absolute;display:flex;align-items:center;gap:5px;padding:5px 9px;border-radius:999px;
+    background:rgba(0,0,0,.45);color:#fff;font-size:11px;font-family:ui-monospace,Menlo,monospace;
+    font-weight:600;white-space:nowrap;}
+  .pill.tl{top:10px;left:10px;} .pill.tr{top:10px;right:10px;}
+  .pill .dot{width:6px;height:6px;border-radius:50%;}
+  .pill .dot.green{background:var(--green);} .pill .dot.yellow{background:var(--yellow);}
+  .pill .sub{font-weight:400;color:rgba(255,255,255,.72);}
+  /* 预览下方的控制区（压缩成小胶囊，把高度还给画面） */
+  .cam-controls{padding:8px 16px 2px;}
+  .ctrl-row{display:flex;justify-content:center;gap:10px;}
+  .ctrl-pill{display:flex;align-items:center;justify-content:center;gap:5px;height:34px;padding:0 18px;
+    border-radius:999px;color:#fff;cursor:pointer;border:none;font-size:13px;font-weight:600;}
+  .ctrl-pill.pause{background:rgba(255,255,255,.16);}
+  .ctrl-pill.stop{background:var(--accent);}
+  .ctrl-pill svg{width:11px;height:11px;}
+  .start-cta{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;height:50px;
+    border-radius:14px;background:var(--accent);color:#fff;font-size:16px;font-weight:600;border:none;cursor:pointer;}
+
+  /* 上传占位 */
+  .tile{height:200px;border:2px dashed #b9b9c0;border-radius:16px;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:10px;cursor:pointer;color:var(--text2);background:var(--card);}
+  .tile .ic{font-size:30px;color:var(--accent);}
+  .tile .t1{font-size:14px;font-weight:600;color:var(--text2);}
+  .tile .t2{font-size:12px;color:var(--text3);}
+
+  /* 视频预览 */
+  .video-wrap{position:relative;height:340px;border-radius:16px;overflow:hidden;background:#111;}
+  .video-cap{position:absolute;bottom:8px;left:8px;right:8px;font-size:10.5px;color:#fff;
+    background:rgba(0,0,0,.6);border-radius:8px;padding:6px;text-align:center;}
+  .play-btn{position:absolute;top:10px;right:10px;font-size:30px;color:#fff;cursor:pointer;
+    filter:drop-shadow(0 1px 2px rgba(0,0,0,.5));}
+
+  /* 结果区 */
+  .results{padding:18px 16px 0;}
+  .res-head{display:flex;align-items:center;justify-content:space-between;}
+  .res-head h3{font-size:16px;margin:0;font-weight:700;}
+  .res-head .relink{font-size:13px;color:var(--accent);background:none;border:none;cursor:pointer;}
+  .res-empty{font-size:12px;color:var(--text2);padding:8px 0;}
+  .busy{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text2);padding:6px 0;}
+  .spinner{width:16px;height:16px;border:2px solid var(--sep);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  /* 德国车牌卡片 */
+  .card{display:flex;align-items:center;gap:12px;background:var(--card);border-radius:12px;
+    padding:12px;margin-top:10px;box-shadow:var(--shadow);}
+  .card .swatch{width:8px;height:38px;border-radius:4px;flex:0 0 auto;}
+  .card .body{flex:1 1 auto;min-width:0;}
+  .card .top{display:flex;align-items:center;gap:10px;}
+  .card .top .meta{margin-left:auto;display:flex;gap:8px;font-size:12px;color:var(--text2);}
+  .card .conf{height:5px;border-radius:999px;background:#e0e0e5;overflow:hidden;margin-top:6px;}
+  .card .conf i{display:block;height:100%;background:var(--green);}
+  .card .cands{font-size:11px;color:var(--text3);margin-top:4px;}
+
+  /* 德国车牌视觉 */
+  .plate{display:inline-flex;align-items:stretch;height:30px;border-radius:6px;overflow:hidden;
+    border:1px solid rgba(0,0,0,.18);background:#fff;}
+  .plate .eu{width:18px;background:var(--eu);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;padding:1px 0;}
+  .plate .eu .stars{color:#ffd24d;font-size:4px;line-height:4px;letter-spacing:.5px;}
+  .plate .eu .d{color:#fff;font-size:9px;font-weight:700;line-height:1;}
+  .plate .num{display:flex;align-items:center;font-size:17px;font-weight:700;color:#111;padding:0 8px;}
+  .plate .seal{width:16px;height:16px;border-radius:50%;margin:auto 5px auto 0;
+    background:conic-gradient(red,orange,blue,green,red);border:2px solid #fff;}
+
+  /* 图片检测结果标签（与相机叠加一致：#N 车牌 置信度%） */
+  .chip{position:absolute;left:0;top:0;font-size:12px;color:#fff;background:rgba(0,0,0,.92);
+    padding:2px 6px;border-radius:4px;white-space:nowrap;transform:translate(-50%,-100%);}
+
+  /* ---------- 设置底部弹层 ---------- */
+  .backdrop{position:absolute;inset:0;background:rgba(0,0,0,.4);z-index:60;opacity:0;pointer-events:none;transition:opacity .3s;}
+  .backdrop.show{opacity:1;pointer-events:auto;}
+  .sheet{position:absolute;left:0;right:0;bottom:0;z-index:70;background:var(--card);
+    border-radius:24px 24px 0 0;padding:20px;transform:translateY(110%);transition:transform .3s ease;
+    box-shadow:0 -8px 20px rgba(0,0,0,.2);max-height:84%;overflow-y:auto;}
+  .sheet.show{transform:translateY(0);}
+  .sheet .handle{width:38px;height:5px;border-radius:999px;background:#c7c7cc;margin:0 auto 10px;}
+  .sheet h2{font-size:17px;font-weight:700;margin:0 0 4px;}
+  .sheet .hint{font-size:11px;color:var(--text2);margin:0 0 12px;}
+  .row{background:var(--surface);border-radius:14px;padding:14px;margin-bottom:12px;}
+  .row .r-top{display:flex;align-items:center;gap:12px;}
+  .row .r-title{font-size:14px;font-weight:600;}
+  .row .r-sub{font-size:10.5px;color:var(--text2);margin-top:2px;}
+  .row .r-body{margin-left:auto;}
+  /* segmented in sheet */
+  .seg-inline{display:inline-flex;background:#d9d9e0;border-radius:9px;padding:2px;}
+  .seg-inline button{border:none;background:none;font-size:12px;font-weight:600;color:var(--text2);
+    padding:6px 12px;border-radius:7px;cursor:pointer;}
+  .seg-inline button.active{background:#fff;color:var(--accent);box-shadow:var(--shadow);}
+  .disclosure{background:var(--surface);border-radius:14px;padding:6px 14px;margin-bottom:12px;}
+  .disc-head{display:flex;align-items:center;justify-content:space-between;font-size:14px;font-weight:600;padding:8px 0;cursor:pointer;}
+  .disc-head .chev{transition:transform .2s;color:var(--text2);}
+  .disc-head.open .chev{transform:rotate(90deg);}
+  .disc-body{padding:4px 0 8px;}
+  /* switch */
+  .switch{position:relative;width:51px;height:31px;border-radius:999px;background:#e4e4ea;cursor:pointer;flex:0 0 auto;transition:background .2s;}
+  .switch.on{background:var(--green);}
+  .switch i{position:absolute;top:2px;left:2px;width:27px;height:27px;border-radius:50%;background:#fff;
+    box-shadow:0 2px 4px rgba(0,0,0,.2);transition:left .2s;}
+  .switch.on i{left:22px;}
+  .toggle-row{display:flex;align-items:center;justify-content:space-between;font-size:13px;padding:9px 0;border-top:1px solid var(--sep);}
+  .toggle-row:first-child{border-top:none;}
+  .done{width:100%;border:none;background:var(--accent);color:#fff;font-size:16px;font-weight:700;
+    padding:14px;border-radius:14px;cursor:pointer;margin-top:2px;}
+
+  .caption{font-size:12px;color:#5b606b;max-width:390px;text-align:center;line-height:1.5;}
+</style>
+</head>
+<body>
+
+<div class="phone">
+  <div class="screen">
+    <div class="notch"></div>
+    <div class="statusbar">
+      <span>9:41</span>
+      <div class="right">
+        <div class="signal"><i></i><i></i><i></i><i></i></div>
+        <span style="font-size:11px">5G</span>
+        <div class="battery"><i></i></div>
+      </div>
+    </div>
+
+    <div class="app" id="app">
+      <!-- Header（单行：标题 + 来源分段 + 设置，导航栏压到设置左侧，画面更大） -->
+      <div class="header">
+        <div class="title">车牌识别</div>
+        <div class="segment compact">
+          <div class="seg-thumb" id="segThumb"></div>
+          <div class="seg-row" id="segRow">
+            <button data-src="camera">
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6Zm9-3h-3.2l-1.8-2.2A2 2 0 0 0 14.3 3H9.7a2 2 0 0 0-1.7 1L6.2 6H3a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h18a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2Z"/></svg>
+              拍照
+            </button>
+            <button data-src="image">
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 5h11l2 2h3a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Zm8 4a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z"/></svg>
+              相册
+            </button>
+            <button data-src="video">
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2H4Zm12 5.5v3l-4-1.5 4-1.5Z"/></svg>
+              视频
+            </button>
+          </div>
+        </div>
+        <button class="gear" id="gearBtn" title="高级设置">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm9.4 4a7.4 7.4 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7.3 7.3 0 0 0-2-1.2l-.4-2.6H9.5l-.4 2.6a7.3 7.3 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6a7.4 7.4 0 0 0 0 2.4l-2 1.6 2 3.4 2.4-1a7.3 7.3 0 0 0 2 1.2l.4 2.6h4.9l.4-2.6a7.3 7.3 0 0 0 2-1.2l2.4 1 2-3.4-2-1.6c.06-.4.1-.8.1-1.2Z"/></svg>
+        </button>
+      </div>
+
+      <!-- 媒体预览 -->
+      <div class="media" id="media"></div>
+
+      <!-- 结果 -->
+      <div class="results" id="results"></div>
+    </div>
+
+    <!-- 设置弹层 -->
+    <div class="backdrop" id="backdrop"></div>
+    <div class="sheet" id="sheet">
+      <div class="handle"></div>
+      <h2>高级设置</h2>
+      <p class="hint">常用参数已前置，其余为进阶选项（默认即可）</p>
+
+      <div class="row">
+        <div class="r-top">
+          <div>
+            <div class="r-title">识别模式</div>
+            <div class="r-sub">极速响应更快；精准更稳（默认极速）</div>
+          </div>
+          <div class="r-body">
+            <div class="seg-inline" data-group="mode">
+              <button data-v="fast" class="active">极速</button>
+              <button data-v="accurate">精准</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="r-top">
+          <div>
+            <div class="r-title">OCR 引擎</div>
+            <div class="r-sub">Apple Vision 系统级、零依赖；PaddleOCR 精度更高</div>
+          </div>
+          <div class="r-body">
+            <div class="seg-inline" data-group="ocr">
+              <button data-v="appleVision" class="active">Apple Vision</button>
+              <button data-v="paddleOCR">PaddleOCR</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="disclosure">
+        <div class="disc-head" id="discHead">
+          <span>调试选项</span>
+          <span class="chev">›</span>
+        </div>
+        <div class="disc-body" id="discBody" style="display:none">
+          <div class="row" style="margin-bottom:0">
+            <div class="r-top">
+              <div>
+                <div class="r-title">输入通道顺序</div>
+                <div class="r-sub">默认 RGB（与 PC 参考一致）；仅当检测明显错乱时切 BGR</div>
+              </div>
+              <div class="r-body">
+                <div class="seg-inline" data-group="rgb">
+                  <button data-v="true" class="active">RGB</button>
+                  <button data-v="false">BGR</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="r-top">
+          <div>
+            <div class="r-title">强化识别（SDK Enhanced Mode）</div>
+            <div class="r-sub">折叠感知排序 · 数字段严格校验 · 关键点四边形叠层</div>
+          </div>
+          <div class="r-body">
+            <div class="switch on" id="enhSwitch"><i></i></div>
+          </div>
+        </div>
+        <div id="enhSubs" style="display:block">
+          <div class="toggle-row"><span>折叠感知排序（修正 3 位 / E·H 误读）</span><div class="switch on" data-sub="fold"><i></i></div></div>
+          <div class="toggle-row"><span>数字段严格校验（拒绝前导 0）</span><div class="switch on" data-sub="strict"><i></i></div></div>
+          <div class="toggle-row"><span>关键点四边形叠层（用 pose 角点）</span><div class="switch on" data-sub="quad"><i></i></div></div>
+        </div>
+      </div>
+
+      <button class="done" id="doneBtn">完成</button>
+    </div>
+
+  </div>
+</div>
+
+<div class="caption">Mockup 一比一还原当前 iOS 代码：导航栏压到设置按钮左侧、相机画面更大；实时状态遥测（实时检测中 / 框 N · 牌 M / 耗时）以小胶囊贴在画面<strong>左上角与右上角</strong>，不再单独占一行；「暂停 / 停止」两个<strong>按钮</strong>压成小胶囊放在预览下方，绝不压在画面上；实时检测持续运行、一帧可识别多块车牌，仅「停止」时结束。相机与图片的检测框用与 App 相同的 toLayer aspect-fill 数学贴到车牌上，框↔车牌严格对齐。</div>
+
+<script>
+/* ===== 与 Swift 一致的取色（FNV-1a → 12 色调色板） ===== */
+const PALETTE=[[0.95,0.20,0.26],[1.00,0.52,0.06],[0.98,0.78,0.10],[0.55,0.84,0.12],
+ [0.13,0.78,0.40],[0.04,0.76,0.70],[0.09,0.70,0.95],[0.20,0.45,0.98],
+ [0.44,0.36,0.96],[0.66,0.34,0.95],[0.90,0.27,0.84],[0.98,0.36,0.60]];
+function fnv1a(str){let h=0xcbf29ce484222325n;for(const b of new TextEncoder().encode(str)){h^=BigInt(b);h=(h*0x100000001b3n)&0xffffffffffffffffn;}return h;}
+function plateColor(text){return PALETTE[Number(fnv1a("text:"+text)%BigInt(PALETTE.length))];}
+function rgb(c,a){return `rgba(${Math.round(c[0]*255)},${Math.round(c[1]*255)},${Math.round(c[2]*255)},${a==null?1:a})`;}
+
+/* ===== 与 Swift PreviewView.toLayer 完全一致的 aspect-fill 映射 ===== */
+function toLayer(p,W,H,iw,ih){
+  const scale=Math.max(W/iw,H/ih);
+  const cw=iw*scale, ch=ih*scale;
+  const ox=(W-cw)/2, oy=(H-ch)/2;
+  return {x:ox+p.x*cw, y:oy+p.y*ch};
+}
+const IW=1080, IH=1920;           // 相机/图片分析用的 upright portrait imageSize
+const CAMW=358, CAMH=360;          // 预览容器像素尺寸（390 屏 - 32 边距）
+
+/* 相机里绘制的"车牌"——两组归一化四角点（演示一帧多车牌 + 四关键点贴合） */
+const camPlates=[
+  [{x:0.28,y:0.60},{x:0.72,y:0.585},{x:0.725,y:0.745},{x:0.275,y:0.76}],   // 主车车牌（近）
+  [{x:0.52,y:0.40},{x:0.88,y:0.39},{x:0.885,y:0.50},{x:0.515,y:0.51}]    // 远处第二辆车牌
+];
+function quadPoints(quad){
+  const L=quad.map(p=>toLayer(p,CAMW,CAMH,IW,IH));
+  return {L, pts:L.map(p=>`${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" "),
+    minX:Math.min(...L.map(p=>p.x)), minY:Math.min(...L.map(p=>p.y))};
+}
+
+/* ===== 状态 ===== */
+const state={
+  source:"camera",
+  showSettings:false,
+  // 相机
+  liveEnabled:false, paused:false, analyzing:false, lat:0, camResults:[],
+  // 相册
+  imagePicked:false, imageBusy:false, imageResults:[],
+  // 视频
+  videoPicked:false, videoBusy:false, videoPlaying:false, videoResults:[],
+  // 设置
+  mode:"fast", ocr:"appleVision", useRGB:true,
+  enhance:true, subFold:true, subStrict:true, subQuad:true, debugOpen:false
+};
+
+/* ===== 样例数据（德国车牌，含 E/H 后缀演示年检圆章） ===== */
+const SAMPLE={
+  camera:[{text:"B-XX 1234",conf:0.95,cands:["B-XX 1234"]},
+          {text:"K-XY 88",conf:0.89,cands:["K-XY 88"]}],
+  image:[{text:"M-AB 789",conf:0.93,cands:["M-AB 789"]},
+         {text:"K-XY 42E",conf:0.88,cands:["K-XY 42E"]}],
+  video:[{text:"F-AB 12",conf:0.81,cands:["F-AB 12"]},
+         {text:"HH-XY 345",conf:0.90,cands:["HH-XY 345"]}]
+};
+
+/* ===== 渲染：德国车牌视觉 ===== */
+function germanPlate(text){
+  const hasSeal=text.endsWith("E")||text.endsWith("H");
+  return `<span class="plate"><span class="eu"><span class="stars">★★★★★<br>★★★★★</span><span class="d">D</span></span>`+
+    `<span class="num">${text}</span>${hasSeal?'<span class="seal"></span>':''}</span>`;
+}
+function plateCard(r,i){
+  const c=plateColor(r.text);
+  const cands=r.cands&&r.cands.length>1
+    ? `<div class="cands">候选: ${r.cands.slice(0,3).map(x=>x.text).join(" / ")}</div>`:"";
+  return `<div class="card">
+    <div class="swatch" style="background:${rgb(c)}"></div>
+    <div class="body">
+      <div class="top">${germanPlate(r.text)}
+        <div class="meta"><span>#${i}</span><span>${Math.round(r.conf*100)}%</span></div>
+      </div>
+      <div class="conf"><i style="width:${Math.round(r.conf*100)}%"></i></div>
+      ${cands}
+    </div></div>`;
+}
+
+/* ===== 渲染：相机预览（仅画面 + 检测框，控制/状态移到预览下方） ===== */
+function camSVG(){
+  const detected=state.camResults.length>0;
+  let cars=`<svg class="cam-svg" viewBox="0 0 358 360" preserveAspectRatio="xMidYMid slice">
+    <defs><linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#bcd3ef"/><stop offset="1" stop-color="#dfe7ee"/></linearGradient></defs>
+    <rect width="358" height="360" fill="url(#sky)"/>
+    <rect y="250" width="358" height="110" fill="#5b6470"/>
+    <rect y="250" width="358" height="6" fill="#747d89"/>
+    <path d="M40 360 L60 250 Q70 232 110 228 L248 228 Q288 232 298 250 L318 360 Z" fill="#2b2f36"/>
+    <rect x="80" y="248" width="198" height="40" rx="8" fill="#1d2026"/>
+    <path d="M252 300 L264 252 Q268 242 288 240 L330 240 Q352 242 356 254 L364 300 Z" fill="#3a3f47"/>
+  </svg>`;
+  // 白底车牌（场景的一部分；检测框叠加时同坐标覆盖，证明对齐）
+  let base="", overlay="";
+  camPlates.forEach(q=>{ const {pts}=quadPoints(q); base+=`<polygon points="${pts}" fill="#ffffff" stroke="#c9c9c9" stroke-width="1.5"/>`; });
+  if(detected){
+    camPlates.forEach((q,i)=>{
+      const r=state.camResults[i]; if(!r) return;
+      const c=plateColor(r.text);
+      const {pts,minX,minY}=quadPoints(q);
+      const lx=Math.max(2,Math.min(CAMW-150,minX)), ly=Math.max(2,minY-23);
+      overlay+=`<polygon points="${pts}" fill="${rgb(c,0.28)}" stroke="${rgb(c,1)}" stroke-width="2.5" stroke-linejoin="round"/>`;
+      overlay+=`<rect x="${lx}" y="${ly}" width="150" height="23" rx="3" fill="${rgb(c,0.95)}"/>`;
+      overlay+=`<text x="${lx+6}" y="${ly+16}" fill="#fff" font-size="12" font-family="ui-monospace,Menlo,monospace">#${i+1} ${r.text}  ${Math.round(r.conf*100)}%</text>`;
+    });
+  }
+  return cars+base+overlay;
+}
+
+function renderCamera(){
+  const beam=(state.liveEnabled&&state.analyzing&&!state.paused)?`<div class="beam run"></div>`:"";
+  // 待机：居中虚线引导框（仅提示放车牌，非按钮）
+  const guide=state.liveEnabled?"":`<div class="guide"><div class="frame"></div></div>`;
+  // 状态遥测贴在画面两角（左：状态+框/牌，右：耗时），不额外占一行高度
+  let pills="";
+  if(state.liveEnabled){
+    const dot=state.analyzing?"yellow":"green";
+    const txt=state.paused?"已暂停":(state.analyzing?"实时检测中":"实时检测");
+    const det=state.camResults.length?camPlates.length:0, pl=state.camResults.length;
+    pills=`<div class="pill tl"><span class="dot ${dot}"></span>${txt}<span class="sub">框 ${det} · 牌 ${pl}</span></div>
+      <div class="pill tr">${state.lat} ms</div>`;
+  }
+  const preview=`<div class="preview">${camSVG()}${guide}${beam}${pills}</div>`;
+  // 控制按钮在预览下方，压成小胶囊，把高度还给画面
+  let controls="";
+  if(state.liveEnabled){
+    controls=`<div class="cam-controls">
+      <div class="ctrl-row">
+        <button class="ctrl-pill pause" id="pauseBtn">
+          <svg viewBox="0 0 24 24" fill="currentColor">${state.paused?'<path d="M8 5v14l11-7z"/>':'<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>'}</svg>
+          ${state.paused?'继续':'暂停'}
+        </button>
+        <button class="ctrl-pill stop" id="stopBtn">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h12v12H6z"/></svg>
+          停止
+        </button>
+      </div>
+    </div>`;
+  } else {
+    controls=`<div class="cam-controls">
+      <button class="start-cta" id="startBtn">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6Zm9-3h-3.2l-1.8-2.2A2 2 0 0 0 14.3 3H9.7a2 2 0 0 0-1.7 1L6.2 6H3a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h18a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2Z"/></svg>
+        开始实时识别
+      </button>
+    </div>`;
+  }
+  return preview+controls;
+}
+
+/* ===== 渲染：相册 ===== */
+function renderImage(){
+  if(!state.imagePicked){
+    return `<div class="tile" id="imgTile">
+      <div class="ic">🖼️</div><div class="t1">点击选择图片</div>
+      <div class="t2">从相册选取一张含车牌的照片</div></div>`;
+  }
+  // 显示"图片" + PlateQuadOverlay（四角点四边形 + 标签，与相机同一数学）
+  const r=state.imageResults;
+  let overlays="";
+  if(r.length){
+    // 用归一化四角点（轻微倾斜）演示
+    const quad=[{x:0.26,y:0.55},{x:0.74,y:0.53},{x:0.75,y:0.72},{x:0.25,y:0.74}];
+    const L=quad.map(p=>toLayer(p,358,200,IW,IH)); // 图片容器高 200
+    const pts=L.map(p=>`${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+    const minX=Math.min(...L.map(p=>p.x)), minY=Math.min(...L.map(p=>p.y));
+    r.forEach((res,i)=>{
+      const c=plateColor(res.text);
+      overlays+=`<polygon points="${pts}" fill="${rgb(c,0.28)}" stroke="${rgb(c,1)}" stroke-width="2.5" stroke-linejoin="round"/>`;
+      overlays+=`<div class="chip" style="left:${minX}px;top:${minY}px">#${i+1} ${res.text}  ${Math.round(res.conf*100)}%</div>`;
+    });
+  }
+  return `<div class="preview" style="height:200px;background:linear-gradient(135deg,#cfe0f3,#eef2f6)">
+    <svg viewBox="0 0 358 200" preserveAspectRatio="xMidYMid slice" style="position:absolute;inset:0;width:100%;height:100%">
+      <rect width="358" height="200" fill="#cdd8e2"/>
+      <rect y="120" width="358" height="80" fill="#6b7682"/>
+      <path d="M20 200 L45 120 Q52 104 90 100 L268 100 Q306 104 313 120 L338 200 Z" fill="#33373e"/>
+    </svg>
+    ${overlays}
+  </div>`;
+}
+
+/* ===== 渲染：视频 ===== */
+function renderVideo(){
+  if(!state.videoPicked){
+    return `<div class="tile" id="vidTile">
+      <div class="ic">🎬</div><div class="t1">点击选择视频</div>
+      <div class="t2">从相册选取一段含车牌的短片</div></div>`;
+  }
+  const r=state.videoResults;
+  let overlays="";
+  if(r.length){
+    const quad=[{x:0.24,y:0.50},{x:0.76,y:0.49},{x:0.77,y:0.70},{x:0.23,y:0.71}];
+    const L=quad.map(p=>toLayer(p,358,340,IW,IH));
+    const pts=L.map(p=>`${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+    const minX=Math.min(...L.map(p=>p.x)), minY=Math.min(...L.map(p=>p.y));
+    r.forEach((res,i)=>{
+      const c=plateColor(res.text);
+      overlays+=`<polygon points="${pts}" fill="${rgb(c,0.28)}" stroke="${rgb(c,1)}" stroke-width="2.5" stroke-linejoin="round"/>`;
+      overlays+=`<div class="chip" style="left:${minX}px;top:${minY}px">#${i+1} ${res.text}  ${Math.round(res.conf*100)}%</div>`;
+    });
+  }
+  return `<div class="video-wrap">
+    <div style="position:absolute;inset:0;background:linear-gradient(135deg,#1b2733,#2c3a47)"></div>
+    <svg viewBox="0 0 358 340" preserveAspectRatio="xMidYMid slice" style="position:absolute;inset:0;width:100%;height:100%">
+      <rect width="358" height="340" fill="#22303c"/>
+      <rect y="210" width="358" height="130" fill="#3a4651"/>
+      <path d="M20 340 L50 210 Q58 188 100 184 L258 184 Q300 188 308 210 L338 340 Z" fill="#161b21"/>
+    </svg>
+    ${overlays}
+    <div class="play-btn" id="vidPlay">${state.videoPlaying?'⏸':'▶'}</div>
+    <div class="video-cap">视频预览（彩色区域为采样帧识别到的车牌，结果见下方列表）</div>
+  </div>`;
+}
+
+/* ===== 渲染：结果区 ===== */
+function renderResults(){
+  let h="";
+  if(state.source==="camera"){
+    if(state.camResults.length){
+      h+=`<div class="res-head"><h3>实时识别 ${state.camResults.length} 块车牌</h3></div>`;
+      state.camResults.forEach((r,i)=>h+=plateCard(r,i+1));
+    }else if(state.liveEnabled){
+      h+=`<div class="res-empty">实时识别中…等待画面中出现车牌</div>`;
+    }
+  } else if(state.source==="image"||state.source==="video"){
+    const res=state.source==="image"?state.imageResults:state.videoResults;
+    if(state.imageBusy||state.videoBusy){
+      h+=`<div class="busy"><span class="spinner"></span>${state.source==="video"?'视频识别中…':'识别中…'}</div>`;
+    } else if(res.length){
+      h+=`<div class="res-head"><h3>共识别到 ${res.length} 块车牌</h3>
+        <button class="relink" id="rePick">重新选择</button></div>`;
+      res.forEach((r,i)=>h+=plateCard(r,i+1));
+    } else if(state[state.source==="image"?"imagePicked":"videoPicked"]){
+      h+=`<div class="res-empty">未检测到车牌。可尝试更换素材、切换识别模式或 OCR 引擎后重试。</div>`;
+    }
+  }
+  return h;
+}
+
+/* ===== 总渲染 ===== */
+function render(){
+  // 来源分段动画
+  const idx={camera:0,image:1,video:2}[state.source];
+  document.getElementById("segThumb").style.transform=`translateX(${idx*100}%)`;
+  document.querySelectorAll("#segRow button").forEach(b=>{
+    b.classList.toggle("active",b.dataset.src===state.source);
+  });
+  // 媒体
+  let m="";
+  if(state.source==="camera") m=renderCamera();
+  else if(state.source==="image") m=renderImage();
+  else m=renderVideo();
+  document.getElementById("media").innerHTML=m;
+  document.getElementById("results").innerHTML=renderResults();
+  bindMediaEvents();
+}
+
+/* ===== 事件绑定 ===== */
+function bindMediaEvents(){
+  const start=document.getElementById("startBtn");
+  if(start) start.onclick=()=>{
+    state.liveEnabled=true; state.paused=false; state.analyzing=true; state.camResults=[];
+    render();
+    setTimeout(()=>{
+      state.analyzing=false; state.lat=96; state.camResults=SAMPLE.camera.slice();
+      render();
+    },1300);
+  };
+  const pause=document.getElementById("pauseBtn");
+  if(pause) pause.onclick=()=>{ state.paused=!state.paused; render(); };
+  const stop=document.getElementById("stopBtn");
+  if(stop) stop.onclick=()=>{ state.liveEnabled=false; state.camResults=[]; state.analyzing=false; render(); };
+  const imgTile=document.getElementById("imgTile");
+  if(imgTile) imgTile.onclick=()=>{
+    state.imagePicked=true; state.imageBusy=true; render();
+    setTimeout(()=>{ state.imageBusy=false; state.imageResults=SAMPLE.image.slice(); render(); },900);
+  };
+  const vidTile=document.getElementById("vidTile");
+  if(vidTile) vidTile.onclick=()=>{
+    state.videoPicked=true; state.videoBusy=true; render();
+    setTimeout(()=>{ state.videoBusy=false; state.videoResults=SAMPLE.video.slice(); state.videoPlaying=true; render(); },900);
+  };
+  const vidPlay=document.getElementById("vidPlay");
+  if(vidPlay) vidPlay.onclick=()=>{ state.videoPlaying=!state.videoPlaying; render(); };
+  const rePick=document.getElementById("rePick");
+  if(rePick) rePick.onclick=()=>{
+    if(state.source==="image"){ state.imagePicked=false; state.imageResults=[]; }
+    else { state.videoPicked=false; state.videoResults=[]; state.videoPlaying=false; }
+    render();
+  };
+}
+
+/* 来源切换 */
+document.querySelectorAll("#segRow button").forEach(b=>{
+  b.onclick=()=>{ state.source=b.dataset.src; render(); };
+});
+
+/* 设置弹层 */
+const sheet=document.getElementById("sheet"), backdrop=document.getElementById("backdrop");
+function openSheet(){ state.showSettings=true; sheet.classList.add("show"); backdrop.classList.add("show"); }
+function closeSheet(){ state.showSettings=false; sheet.classList.remove("show"); backdrop.classList.remove("show"); }
+document.getElementById("gearBtn").onclick=openSheet;
+backdrop.onclick=closeSheet;
+document.getElementById("doneBtn").onclick=closeSheet;
+
+/* 设置：分段 */
+document.querySelectorAll(".seg-inline").forEach(g=>{
+  g.querySelectorAll("button").forEach(b=>{
+    b.onclick=()=>{
+      g.querySelectorAll("button").forEach(x=>x.classList.remove("active"));
+      b.classList.add("active");
+      const v=b.dataset.v;
+      if(g.dataset.group==="mode") state.mode=v;
+      else if(g.dataset.group==="ocr") state.ocr=v;
+      else if(g.dataset.group==="rgb") state.useRGB=(v==="true");
+    };
+  });
+});
+/* 调试折叠 */
+const discHead=document.getElementById("discHead"), discBody=document.getElementById("discBody");
+discHead.onclick=()=>{ state.debugOpen=!state.debugOpen; discHead.classList.toggle("open",state.debugOpen);
+  discBody.style.display=state.debugOpen?"block":"none"; };
+/* 强化总开关 */
+const enhSwitch=document.getElementById("enhSwitch");
+enhSwitch.onclick=()=>{ state.enhance=!state.enhance; enhSwitch.classList.toggle("on",state.enhance);
+  document.getElementById("enhSubs").style.display=state.enhance?"block":"none"; };
+/* 三个子开关 */
+document.querySelectorAll("[data-sub]").forEach(s=>{
+  s.onclick=()=>{ const on=s.classList.toggle("on"); const k=s.dataset.sub;
+    if(k==="fold")state.subFold=on; if(k==="strict")state.subStrict=on; if(k==="quad")state.subQuad=on; };
+});
+
+/* 初始化 */
+render();
+</script>
+</body>
+</html>

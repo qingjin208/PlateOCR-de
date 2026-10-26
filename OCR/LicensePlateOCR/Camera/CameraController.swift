@@ -62,10 +62,16 @@ final class CameraController: NSObject {
             if !liveEnabled {
                 liveResults = []
                 liveDetections = []
+                isAnalyzing = false
+                waitingForOCR = false
                 previewView?.clearOverlay()
             }
         }
     }
+    /// When true, analysis is halted (frozen) but the camera keeps showing the last frame,
+    /// and results + overlay stay on screen. Toggled by the pause button — distinct from
+    /// `liveEnabled`, which fully stops the live feature and clears everything.
+    var paused = false
     weak var previewView: PreviewView?
     /// Diagnostic: echoes the exact frame the SDK analyzed (as-is, rotation included)
     /// into a corner thumbnail, with the same normalized boxes drawn on it. If the box
@@ -78,8 +84,9 @@ final class CameraController: NSObject {
     }
 
     /// Renders the software-rotated buffers. CIContext is thread-safe for rendering, so
-    /// the per-frame rotation and the debug thumbnail both draw through it.
-    private let ciContext = CIContext(options: [.cacheIntermediates: false])
+    /// the per-frame rotation and the debug thumbnail both draw through it. Declared
+    /// `nonisolated static` so the off-main analysis task can use it without hopping.
+    private nonisolated static let ciContext = CIContext(options: [.cacheIntermediates: false])
 
     /// Shared context for the debug echo (thread-safe; created once).
     private nonisolated static let debugImageContext = CIContext()
@@ -108,7 +115,7 @@ final class CameraController: NSObject {
     ///
     /// `.right` (90° clockwise) is the rotation that turns the landscape sensor image into
     /// the upright portrait the user sees, matching the preview connection's 90° rotation.
-    private func rotateToPortrait(_ buffer: CVPixelBuffer) -> CVPixelBuffer? {
+    private nonisolated func rotateToPortrait(_ buffer: CVPixelBuffer) -> CVPixelBuffer? {
         let ci = CIImage(cvPixelBuffer: buffer).oriented(.right)
         let width = Int(ci.extent.width), height = Int(ci.extent.height)
         guard width > 0, height > 0 else { return nil }
@@ -117,7 +124,7 @@ final class CameraController: NSObject {
             kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
             [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &out)
         guard status == kCVReturnSuccess, let out else { return nil }
-        ciContext.render(ci, to: out)
+        Self.ciContext.render(ci, to: out)
         return out
     }
 
@@ -193,83 +200,93 @@ final class CameraController: NSObject {
         return true
     }
 
-    func stop() {
+    /// Halts the capture session and cancels in-flight analysis, but keeps `liveResults`
+    /// so the result cards can be shown again when the camera tab returns. Used when
+    /// switching to another media source or when the app is backgrounded — this is the
+    /// "pause the hardware" path, distinct from a full teardown that would also wipe the
+    /// recognition history. Keeping the controller (and its `AVCaptureVideoPreviewLayer`)
+    /// mounted across tab switches avoids the black flash caused by tearing the preview
+    /// layer down and rebuilding it.
+    func suspendSession() {
         active = false
         generation += 1
-        liveResults = []
-        liveDetections = []
         previewView?.clearOverlay()
         sessionQueue.async { if self.session.isRunning { self.session.stopRunning() } }
     }
 
-    private func analyze(_ frame: CameraFrame) async {
-        defer { waitingForOCR = false; isAnalyzing = false; frameGate.finish() }
-        guard active, liveEnabled else { return }
-        isAnalyzing = true
-        waitingForOCR = true
-        analysisIdentifier += 1
-        let frameIdentifier = analysisIdentifier
-        let token = generation
+    // MARK: - Frame analysis (off the main actor)
+
+    /// Heavy recognition runs on a detached background task so the UI thread is never
+    /// blocked by ONNX inference + OCR. All state/overlay writes hop back to the main
+    /// actor explicitly (see `captureOutput`). The detection overlay mapping
+    /// (`PreviewView.toLayer`, aspect-fill) is untouched — only the scheduling changed.
+    private nonisolated func performAnalysis(frame: CameraFrame, token: Int, frameIdentifier: Int,
+                                             mode: RecognitionMode,
+                                             recognizer: LicensePlateRecognizing) async {
         let started = Date()
         // Rotate the raw buffer to upright portrait so the detector and the overlay agree
         // on orientation (see `rotateToPortrait`). Falls back to the raw buffer if the
         // GPU render fails — recognition still runs, only the orientation may be off.
-        let workingBuffer: CVPixelBuffer
-        if let rotated = rotateToPortrait(frame.buffer) {
-            workingBuffer = rotated
-        } else {
-            workingBuffer = frame.buffer
-        }
+        let workingBuffer = rotateToPortrait(frame.buffer) ?? frame.buffer
         do {
             let result = try await recognizer.recognizeFrame(workingBuffer, orientation: .up, mode: mode) {
                 [weak self] detections, size in
                 Task { @MainActor in
-                    guard let self, self.active, self.liveEnabled, self.waitingForOCR,
+                    guard let self, self.active, self.liveEnabled, !self.paused,
                           self.generation == token, self.analysisIdentifier == frameIdentifier else { return }
                     self.liveDetections = detections
                     self.frameSize = size
                     self.previewView?.draw(detections: detections, results: [], imageSize: size)
                 }
             }
-            // Diagnostic echo: the analyzed (already portrait) buffer + the same boxes, so the
-            // preview-vs-buffer alignment question can be answered on device.
-            if debugEchoEnabled {
-                previewView?.showDebugFrame(image: debugThumbnail(from: workingBuffer),
-                                            detections: result.detections)
-            }
-            guard active, liveEnabled, generation == token else { return }
-            waitingForOCR = false
-            elapsedMilliseconds = Int(Date().timeIntervalSince(started) * 1000)
-            liveResults = result.plates
-            liveDetections = result.detections
-            frameSize = result.imageSize
-            errorMessage = nil
-            previewView?.draw(detections: result.detections, results: result.plates, imageSize: result.imageSize)
-            for plate in result.plates {
-                let now = Date()
-                let locationKey = "\(Int(plate.boundingBox.midX * 10)):\(Int(plate.boundingBox.midY * 10))"
-                let historyKey = "\(plate.text):\(locationKey)"
-                if now.timeIntervalSince(lastPrinted[historyKey] ?? .distantPast) >= 2 {
-                    print("[PlateOCR] \(plate.text) confidence=\(plate.confidence) box=\(plate.boundingBox) latency=\(elapsedMilliseconds)ms")
-                    lastPrinted[historyKey] = now
-                    let detectionNumber = (result.detections.firstIndex { $0.rect.contains(plate.boundingBox) }
-                        ?? result.detections.firstIndex { $0.rect.intersects(plate.boundingBox) }
-                        ?? -1) + 1
-                    recognitionHistory.append(CameraRecognitionLogEntry(date: now, result: plate,
-                                                                          detectionNumber: detectionNumber))
+            let latency = Int(Date().timeIntervalSince(started) * 1000)
+            await MainActor.run { [weak self] in
+                guard let self, self.active, self.liveEnabled, !self.paused, self.generation == token else { return }
+                self.waitingForOCR = false
+                self.isAnalyzing = false
+                self.elapsedMilliseconds = latency
+                self.liveResults = result.plates
+                self.liveDetections = result.detections
+                self.frameSize = result.imageSize
+                self.errorMessage = nil
+                self.previewView?.draw(detections: result.detections, results: result.plates, imageSize: result.imageSize)
+                // Diagnostic echo: the analyzed (already portrait) buffer + the same boxes, so the
+                // preview-vs-buffer alignment question can be answered on device.
+                if self.debugEchoEnabled {
+                    self.previewView?.showDebugFrame(image: self.debugThumbnail(from: workingBuffer),
+                                                    detections: result.detections)
                 }
+                for plate in result.plates {
+                    let now = Date()
+                    let locationKey = "\(Int(plate.boundingBox.midX * 10)):\(Int(plate.boundingBox.midY * 10))"
+                    let historyKey = "\(plate.text):\(locationKey)"
+                    if now.timeIntervalSince(self.lastPrinted[historyKey] ?? .distantPast) >= 2 {
+                        print("[PlateOCR] \(plate.text) confidence=\(plate.confidence) box=\(plate.boundingBox) latency=\(latency)ms")
+                        self.lastPrinted[historyKey] = now
+                        let detectionNumber = (result.detections.firstIndex { $0.rect.contains(plate.boundingBox) }
+                            ?? result.detections.firstIndex { $0.rect.intersects(plate.boundingBox) }
+                            ?? -1) + 1
+                        self.recognitionHistory.append(CameraRecognitionLogEntry(date: now, result: plate,
+                                                                                 detectionNumber: detectionNumber))
+                    }
+                }
+                if self.recognitionHistory.count > 300 {
+                    self.recognitionHistory.removeFirst(self.recognitionHistory.count - 300)
+                }
+                self.lastPrinted = self.lastPrinted.filter { Date().timeIntervalSince($0.value) < 10 }
             }
-            if recognitionHistory.count > 300 {
-                recognitionHistory.removeFirst(recognitionHistory.count - 300)
-            }
-            lastPrinted = lastPrinted.filter { Date().timeIntervalSince($0.value) < 10 }
         } catch {
-            guard active, generation == token else { return }
-            errorMessage = error.localizedDescription
-            liveResults = []
-            liveDetections = []
-            previewView?.clearOverlay()
+            await MainActor.run { [weak self] in
+                guard let self, self.active, self.generation == token else { return }
+                self.waitingForOCR = false
+                self.isAnalyzing = false
+                self.errorMessage = error.localizedDescription
+                self.liveResults = []
+                self.liveDetections = []
+                self.previewView?.clearOverlay()
+            }
         }
+        frameGate.finish()
     }
 }
 
@@ -278,6 +295,22 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
                                    from connection: AVCaptureConnection) {
         guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer), frameGate.begin() else { return }
         let frame = CameraFrame(buffer: buffer)
-        Task { @MainActor in await analyze(frame) }
+        // Mint the generation token and check gating on the main actor (cheap), then run the
+        // heavy recognition off the main actor so the scan beam, controls and latency never
+        // stall. Final state/overlay writes happen back on the main actor.
+        Task { @MainActor in
+            guard self.active, self.liveEnabled, !self.paused else { self.frameGate.finish(); return }
+            self.analysisIdentifier += 1
+            let token = self.generation
+            let frameIdentifier = self.analysisIdentifier
+            self.isAnalyzing = true
+            self.waitingForOCR = true
+            let mode = self.mode
+            let recognizer = self.recognizer
+            Task.detached(priority: .userInitiated) { [weak self] in
+                await self?.performAnalysis(frame: frame, token: token, frameIdentifier: frameIdentifier,
+                                           mode: mode, recognizer: recognizer)
+            }
+        }
     }
 }

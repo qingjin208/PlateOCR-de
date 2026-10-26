@@ -2,99 +2,112 @@ import SwiftUI
 import UIKit
 
 /// Camera tab, redesigned to match the HTML mockup's live-detection flow:
-///   • idle (detection off): guide frame + "开始实时识别" button over the live feed
-///   • active (detection on): LIVE badge, a scanning beam while analysing, and a bottom
-///     control bar with save + pause/play.
+///   • idle (detection off): a clean live feed with a dashed guide frame, and the
+///     "开始实时识别" button placed BELOW the preview (not overlaid on the video).
+///   • active (detection on): the feed carries only lightweight telemetry pills in its two
+///     corners — status + plate count top-left, latency top-right — plus the detection
+///     boxes/labels (the actual recognition output) and a decorative scanning beam.
+///     Every *control* (pause/stop) stays BELOW the preview so no button covers the
+///     picture. Detection runs continuously and renders all plates seen in a frame; it
+///     only ends when the user taps 停止.
 ///
 /// The detection overlay itself is drawn by `PreviewView` (inside `CameraPreview`) and
 /// keeps its aspect-fill mapping onto the upright portrait frame, so boxes stay glued to
 /// the plates — this view only changes the surrounding chrome.
 struct CameraView: View {
     @Bindable var controller: CameraController
-    @Environment(\.scenePhase) private var scenePhase
-
-    @State private var toast: String?
 
     var body: some View {
         VStack(spacing: 0) {
             if controller.isAuthorized && !controller.setupFailed {
                 CameraPreview(controller: controller)
-                    .overlay(alignment: .topLeading) { liveBadge }
-                    .overlay(alignment: .topTrailing) { latencyPill }
+                    // Scanning beam is detection visualisation, not a control — keep on feed.
                     .overlay(alignment: .top) { scanBeam }
-                    .overlay(alignment: .center) { idleGuide }
-                    .overlay(alignment: .bottom) { controlBar }
-                    .overlay(alignment: .bottom) { toastView }
+                    // Dashed guide frame is a placement hint, not a button — keep on feed.
+                    .overlay(alignment: .center) { guideFrame }
+                    // Live telemetry: tiny pills pinned to the two top corners, so the
+                    // numbers stay visible without stealing a whole row of height.
+                    .overlay(alignment: .topLeading) { statusPill }
+                    .overlay(alignment: .topTrailing) { latencyPill }
                     .frame(maxHeight: .infinity)
-
-                CameraResultsView(controller: controller)
-                    .padding(.top, 10)
             } else {
                 ContentUnavailableView("相机不可用", systemImage: "camera",
                     description: Text(controller.setupFailed ? "相机初始化失败，请检查设备。" : "请允许相机访问权限。"))
             }
+
+            // Controls sit BELOW the video, never on top of it.
+            if controller.liveEnabled {
+                controlBar
+                    .padding(.top, 8)
+                    .padding(.bottom, 10)
+            } else {
+                startButton
+                    .padding(.top, 12)
+                    .padding(.bottom, 14)
+            }
+
             if let message = controller.errorMessage {
                 Text(message).font(.footnote).foregroundStyle(.red).padding(8)
             }
         }
         .background(Color.black)
         .clipShape(RoundedRectangle(cornerRadius: 16))
-        .task { await controller.setup() }
-        .onDisappear { controller.stop() }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active { Task { await controller.setup() } }
-            else { controller.stop() }
-        }
     }
 
-    // MARK: - Idle guide (shown when detection is off)
+    // MARK: - Idle guide frame (dashed hint on the feed, no button)
 
     @ViewBuilder
-    private var idleGuide: some View {
+    private var guideFrame: some View {
         if !controller.liveEnabled {
-            ZStack {
-                RoundedRectangle(cornerRadius: 14)
-                    .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [6]))
-                    .foregroundStyle(.white.opacity(0.5))
-                    .frame(width: 220, height: 120)
-                VStack(spacing: 14) {
-                    Button {
-                        controller.liveEnabled = true
-                    } label: {
-                        Image(systemName: "camera.fill")
-                            .font(.system(size: 22))
-                            .foregroundStyle(.white)
-                            .frame(width: 56, height: 56)
-                            .background(appAccent, in: Circle())
-                            .scaleEffect(1)
-                    }
-                    Text("开始实时识别")
-                        .font(.subheadline.bold())
-                        .foregroundStyle(.white)
-                }
-            }
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [6]))
+                .foregroundStyle(.white.opacity(0.5))
+                .frame(width: 220, height: 120)
         }
     }
 
-    // MARK: - Active chrome
+    // MARK: - Start button (below the feed, idle state)
 
     @ViewBuilder
-    private var liveBadge: some View {
-        if controller.liveEnabled {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(controller.isAnalyzing ? .yellow : .green)
-                    .frame(width: 8, height: 8)
-                Text(controller.isAnalyzing ? "实时检测中" : "实时检测")
-                    .font(.caption.monospaced())
-                Text("框 \(controller.liveDetections.count) · 牌 \(controller.liveResults.count)")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
+    private var startButton: some View {
+        Button {
+            controller.liveEnabled = true
+            controller.paused = false
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "camera.fill")
+                Text("开始实时识别")
+                    .font(.headline)
             }
             .foregroundStyle(.white)
-            .padding(8)
-            .background(.black.opacity(0.6), in: Capsule())
-            .padding(10)
+            .frame(maxWidth: .infinity)
+            .frame(height: 50)
+            .background(appAccent, in: RoundedRectangle(cornerRadius: 14))
+        }
+        .padding(.horizontal, 16)
+    }
+
+    // MARK: - Live telemetry pills (pinned to the two top corners of the feed)
+
+    @ViewBuilder
+    private var statusPill: some View {
+        if controller.liveEnabled {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(controller.isAnalyzing ? .yellow : .green)
+                    .frame(width: 6, height: 6)
+                Text(controller.paused ? "已暂停" : (controller.isAnalyzing ? "实时检测中" : "实时检测"))
+                    .fontWeight(.semibold)
+                Text("框 \(controller.liveDetections.count) · 牌 \(controller.liveResults.count)")
+                    .foregroundStyle(.white.opacity(0.72))
+            }
+            .font(.system(size: 11, design: .monospaced))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(.black.opacity(0.45), in: Capsule())
+            .padding(.leading, 10)
+            .padding(.top, 10)
         }
     }
 
@@ -102,87 +115,86 @@ struct CameraView: View {
     private var latencyPill: some View {
         if controller.liveEnabled {
             Text("\(controller.elapsedMilliseconds) ms")
-                .font(.caption.monospaced())
-                .foregroundStyle(.white)
-                .padding(8)
-                .background(.black.opacity(0.6), in: Capsule())
-                .padding(10)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.88))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(.black.opacity(0.45), in: Capsule())
+                .padding(.trailing, 10)
+                .padding(.top, 10)
         }
     }
+
+    // MARK: - Active control bar (below the feed, compact capsules)
 
     @ViewBuilder
     private var controlBar: some View {
-        if controller.liveEnabled {
-            HStack(spacing: 16) {
-                Button {
-                    showToast("✓ 快照已保存")
-                } label: {
-                    Image(systemName: "square.and.arrow.down")
-                        .font(.system(size: 18))
-                        .foregroundStyle(.white)
-                        .frame(width: 44, height: 44)
-                        .background(.ultraThinMaterial, in: Circle())
-                        .overlay(Circle().stroke(.white.opacity(0.8), lineWidth: 2))
+        HStack(spacing: 10) {
+            Button {
+                controller.paused.toggle()
+                if controller.paused { controller.isAnalyzing = false }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: controller.paused ? "play.fill" : "pause.fill")
+                        .font(.system(size: 11, weight: .bold))
+                    Text(controller.paused ? "继续" : "暂停")
+                        .font(.system(size: 13, weight: .semibold))
                 }
-                Button {
-                    controller.liveEnabled.toggle()
-                } label: {
-                    Image(systemName: controller.isAnalyzing ? "pause.fill" : "play.fill")
-                        .font(.system(size: 22))
-                        .foregroundStyle(.white)
-                        .frame(width: 62, height: 62)
-                        .background(appAccent, in: Circle())
-                        .shadow(color: appAccent.opacity(0.5), radius: 10, y: 4)
-                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 18)
+                .frame(height: 34)
+                .background(Color.white.opacity(0.16), in: Capsule())
             }
-            .padding(.bottom, 18)
+
+            Button {
+                controller.liveEnabled = false
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 10, weight: .bold))
+                    Text("停止")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 18)
+                .frame(height: 34)
+                .background(appAccent, in: Capsule())
+            }
         }
     }
+
+    // MARK: - Scanning beam (detection visualisation, kept on the feed)
 
     @ViewBuilder
     private var scanBeam: some View {
-        if controller.liveEnabled && controller.isAnalyzing {
+        if controller.liveEnabled && !controller.paused && controller.isAnalyzing {
             ScanBeam()
-        }
-    }
-
-    @ViewBuilder
-    private var toastView: some View {
-        if let toast {
-            Text(toast)
-                .font(.subheadline.bold())
-                .foregroundStyle(.white)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 9)
-                .background(.black.opacity(0.9), in: RoundedRectangle(cornerRadius: 12))
-                .padding(.bottom, 96)
-        }
-    }
-
-    private func showToast(_ message: String) {
-        toast = message
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
-            if toast == message { toast = nil }
         }
     }
 }
 
 /// Thin accent line that sweeps down the preview while analysis is running, echoing the
 /// HTML mockup's scanning beam. Purely decorative — it does not affect the overlay boxes.
+/// The sweep distance is derived from the actual preview height so the beam stays centred
+/// even if the preview container is resized (the previous hard-coded 160 drifted off-centre).
 private struct ScanBeam: View {
     @State private var offset: CGFloat = 0
+    @State private var maxOffset: CGFloat = 150
 
     var body: some View {
-        Rectangle()
-            .fill(LinearGradient(colors: [.clear, appAccent, .clear],
-                                startPoint: .leading, endPoint: .trailing))
-            .frame(height: 3)
-            .shadow(color: appAccent, radius: 6)
-            .offset(y: offset)
-            .onAppear {
-                withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true)) {
-                    offset = 160
+        GeometryReader { geo in
+            Rectangle()
+                .fill(LinearGradient(colors: [.clear, appAccent, .clear],
+                                    startPoint: .leading, endPoint: .trailing))
+                .frame(height: 3)
+                .shadow(color: appAccent, radius: 6)
+                .offset(y: offset)
+                .onAppear {
+                    maxOffset = max(40, geo.size.height * 0.42)
+                    withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true)) {
+                        offset = maxOffset
+                    }
                 }
-            }
+        }
     }
 }
