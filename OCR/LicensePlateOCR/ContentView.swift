@@ -106,81 +106,126 @@ struct ContentView: View {
     /// flash when switching media sources).
     @Environment(\.scenePhase) private var scenePhase
 
+    // The body is split into small, explicitly typed pieces: the full modifier chain used
+    // to blow past the compiler's type-check budget ("unable to type-check this expression
+    // in reasonable time"). Each concern now lives in its own property / method below.
     var body: some View {
+        scrollContent
+            .overlay { settingsOverlay }
+            .animation(.easeInOut(duration: 0.3), value: showSettings)
+            .onChange(of: imageItem) { _, newItem in handleImageItemChange(newItem) }
+            .onChange(of: videoItem) { _, newItem in handleVideoItemChange(newItem) }
+            .onChange(of: mode) { _, newMode in handleModeChange(newMode) }
+            .onChange(of: ocrEngine) { _, newEngine in handleOCREngineChange(newEngine) }
+            .onChange(of: useRGB) { _, newValue in handleUseRGBChange(newValue) }
+            .onChange(of: enhancements) { _, newValue in handleEnhancementsChange(newValue) }
+            .onChange(of: videoURL) { _, newURL in handleVideoURLChange(newURL) }
+            .onChange(of: source) { _, newSource in handleSourceChange(newSource) }
+            .onChange(of: scenePhase) { _, phase in handleScenePhaseChange(phase) }
+            .task { await initialSetup() }
+    }
+
+    private var scrollContent: some View {
         ScrollView {
             VStack(spacing: 16) {
                 header
                 mediaPreview
                 resultsSection
-                if let message = errorMessage {
-                    Text(message).font(.footnote).foregroundStyle(.red).padding(.horizontal)
-                }
+                errorText
             }
             .padding(.vertical)
         }
-        .overlay {
-            if showSettings {
-                ZStack(alignment: .bottom) {
-                    Color.black.opacity(0.4)
-                        .ignoresSafeArea()
-                        .onTapGesture { withAnimation { showSettings = false } }
-                    SettingsSheet(mode: $mode,
-                                  ocrEngine: $ocrEngine,
-                                  useRGB: $useRGB,
-                                  enhancements: $enhancements) { withAnimation { showSettings = false } }
-                        .padding(.horizontal, 4)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
+    }
+
+    @ViewBuilder
+    private var errorText: some View {
+        if let message = errorMessage {
+            Text(message).font(.footnote).foregroundStyle(.red).padding(.horizontal)
+        }
+    }
+
+    @ViewBuilder
+    private var settingsOverlay: some View {
+        if showSettings {
+            ZStack(alignment: .bottom) {
+                Color.black.opacity(0.4)
+                    .ignoresSafeArea()
+                    .onTapGesture { withAnimation { showSettings = false } }
+                SettingsSheet(mode: $mode,
+                              ocrEngine: $ocrEngine,
+                              useRGB: $useRGB,
+                              enhancements: $enhancements) { withAnimation { showSettings = false } }
+                    .padding(.horizontal, 4)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .animation(.easeInOut(duration: 0.3), value: showSettings)
-        .onChange(of: imageItem) { _, newItem in
-            if let newItem { Task { await runImage(newItem) } }
+    }
+
+    // MARK: - Change handlers
+
+    private func handleImageItemChange(_ newItem: PhotosPickerItem?) {
+        guard let newItem else { return }
+        Task { await runImage(newItem) }
+    }
+
+    private func handleVideoItemChange(_ newItem: PhotosPickerItem?) {
+        guard let newItem else { return }
+        Task { await runVideo(newItem) }
+    }
+
+    private func handleModeChange(_ newMode: RecognitionMode) {
+        cameraController.mode = newMode
+    }
+
+    private func handleOCREngineChange(_ newEngine: OCREngine) {
+        recognizer.ocrEngine = newEngine
+    }
+
+    private func handleUseRGBChange(_ newValue: Bool) {
+        recognizer.useRGB = newValue
+    }
+
+    /// Push the enhancement switches into the SDK: the live camera shares this same
+    /// recognizer instance, so one assignment covers image, video and camera.
+    private func handleEnhancementsChange(_ newValue: RecognitionEnhancements) {
+        recognizer.enhancements = newValue
+    }
+
+    private func handleVideoURLChange(_ newURL: URL?) {
+        player?.pause()
+        isPlaying = false
+        if let newURL {
+            player = AVPlayer(url: newURL)
+        } else {
+            player = nil
         }
-        .onChange(of: videoItem) { _, newItem in
-            if let newItem { Task { await runVideo(newItem) } }
+    }
+
+    private func handleSourceChange(_ newSource: MediaSource) {
+        if newSource != .video {
+            player?.pause()
+            isPlaying = false
         }
-        .onChange(of: mode) { _, newMode in cameraController.mode = newMode }
-        .onChange(of: ocrEngine) { _, newEngine in recognizer.ocrEngine = newEngine }
-        .onChange(of: useRGB) { _, newValue in recognizer.useRGB = newValue }
-        // Push the enhancement switches into the SDK: the live camera shares this same
-        // recognizer instance, so one assignment covers image, video and camera.
-        .onChange(of: enhancements) { _, newValue in recognizer.enhancements = newValue }
-        .onChange(of: videoURL) { _, newURL in
-            if let newURL {
-                player?.pause()
-                player = AVPlayer(url: newURL)
-                isPlaying = false
-            } else {
-                player?.pause()
-                player = nil
-                isPlaying = false
-            }
+        // Camera session follows the selected source: (re)start on the camera tab,
+        // suspend when leaving it. Keeps the preview layer mounted (no black flash).
+        if newSource == .camera {
+            Task { await cameraController.setup() }
+        } else {
+            cameraController.suspendSession()
         }
-        .onChange(of: source) { _, newSource in
-            if newSource != .video {
-                player?.pause()
-                isPlaying = false
-            }
-            // Camera session follows the selected source: (re)start on the camera tab,
-            // suspend when leaving it. Keeps the preview layer mounted (no black flash).
-            if newSource == .camera {
-                Task { await cameraController.setup() }
-            } else {
-                cameraController.suspendSession()
-            }
+    }
+
+    private func handleScenePhaseChange(_ phase: ScenePhase) {
+        if phase == .background {
+            cameraController.suspendSession()
+        } else if phase == .active {
+            if source == .camera { Task { await cameraController.setup() } }
         }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .background {
-                cameraController.suspendSession()
-            } else if phase == .active {
-                if source == .camera { Task { await cameraController.setup() } }
-            }
-        }
-        .task {
-            // Kick the camera session once at launch when we open on the camera tab.
-            if source == .camera { await cameraController.setup() }
-        }
+    }
+
+    private func initialSetup() async {
+        // Kick the camera session once at launch when we open on the camera tab.
+        if source == .camera { await cameraController.setup() }
     }
 
     // MARK: - Header
@@ -250,9 +295,33 @@ struct ContentView: View {
 
     @ViewBuilder
     private var videoPreview: some View {
-        if let player {
+        if let currentPlayer = player {
+            VideoPlayerCard(player: currentPlayer,
+                            samples: videoSamples,
+                            isPlaying: $isPlaying)
+                .padding(.horizontal)
+        } else {
+            PhotosPicker(selection: $videoItem, matching: .videos) {
+                uploadTile(title: "点击选择视频", subtitle: "从相册选取一段含车牌的短片")
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal)
+        }
+    }
+
+    // MARK: - Video player card
+
+    /// AVPlayerLayer preview + transport button, kept as a standalone view so the
+    /// `player` binding is unwrapped exactly once (the previous inline `guard let player`
+    /// / `if let player` re-unwrapped an already non-optional value).
+    private struct VideoPlayerCard: View {
+        let player: AVPlayer
+        let samples: [PlateVideoSample]
+        @Binding var isPlaying: Bool
+
+        var body: some View {
             ZStack(alignment: .topTrailing) {
-                VideoPlatePreview(player: player, samples: videoSamples)
+                VideoPlatePreview(player: player, samples: samples)
                     .frame(height: 340)
                     .clipShape(RoundedRectangle(cornerRadius: 16))
                     .overlay(alignment: .bottom) {
@@ -262,22 +331,7 @@ struct ContentView: View {
                             .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
                             .padding(8)
                     }
-                Button {
-                    guard let player else { return }
-                    if player.rate == 0 {
-                        // Parked at the end (or not yet started): rewind, then play.
-                        if let item = player.currentItem,
-                           item.duration.flags.contains(.valid),
-                           CMTimeCompare(item.currentTime(), item.duration) >= 0 {
-                            player.seek(to: .zero)
-                        }
-                        player.play()
-                        isPlaying = true
-                    } else {
-                        player.pause()
-                        isPlaying = false
-                    }
-                } label: {
+                Button(action: togglePlayback) {
                     Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
                         .font(.system(size: 30))
                         .symbolRenderingMode(.palette)
@@ -285,19 +339,28 @@ struct ContentView: View {
                 }
                 .padding(10)
             }
-            .padding(.horizontal)
             .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { note in
                 // Keep the transport icon in sync when the clip finishes on its own.
-                if let player, (note.object as? AVPlayerItem) == player.currentItem {
+                if (note.object as? AVPlayerItem) == player.currentItem {
                     isPlaying = false
                 }
             }
-        } else {
-            PhotosPicker(selection: $videoItem, matching: .videos) {
-                uploadTile(title: "点击选择视频", subtitle: "从相册选取一段含车牌的短片")
+        }
+
+        private func togglePlayback() {
+            if player.rate == 0 {
+                // Parked at the end (or not yet started): rewind, then play.
+                if let item = player.currentItem,
+                   item.duration.flags.contains(.valid),
+                   CMTimeCompare(item.currentTime(), item.duration) >= 0 {
+                    player.seek(to: .zero)
+                }
+                player.play()
+                isPlaying = true
+            } else {
+                player.pause()
+                isPlaying = false
             }
-            .buttonStyle(.plain)
-            .padding(.horizontal)
         }
     }
 
@@ -393,7 +456,10 @@ struct ContentView: View {
             errorMessage = nil
             isBusy = true
             let pixelBuffer = try recognizer.prepareFrame(from: oriented)
-            let frame = try await recognizer.recognizeFrame(pixelBuffer, mode: mode)
+            // Tiled detection: still photos (especially multi-plate collages) keep their
+            // plates large enough for the fixed-640 pose model to see them. The tiled
+            // pass falls back to a single detect when the image is small.
+            let frame = try await recognizer.recognizeFrame(pixelBuffer, mode: mode, tiled: true)
             results = frame.plates
             // Surface detection vs. OCR outcome so a silent failure is diagnosable:
             lastDetectionCount = frame.detections.count

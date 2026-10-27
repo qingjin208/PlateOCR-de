@@ -10,10 +10,35 @@
 		04F04279CA2B14773D17F672 /* libPods-LicensePlateOCR.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 44737BEFAC7BC1D1BED5C969 /* libPods-LicensePlateOCR.a */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		37E9C4D3308F9FA000953685 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A1B2C3D4E5F607182930A5B6 /* Pods.xcodeproj */;
+			proxyType = 2;
+			remoteGlobalIDString = EFCD5A1058E9109AAD4F0B9F6ABE47E9;
+			remoteInfo = "onnxruntime-mobile-objc";
+		};
+		37E9C4D5308F9FA000953685 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A1B2C3D4E5F607182930A5B6 /* Pods.xcodeproj */;
+			proxyType = 2;
+			remoteGlobalIDString = 387CCBF166A71A9766F044D1CBF6F5B2;
+			remoteInfo = "Pods-LicensePlateOCR";
+		};
+		A1B2C3D4E5F607182930A5B7 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A1B2C3D4E5F607182930A5B6 /* Pods.xcodeproj */;
+			proxyType = 1;
+			remoteGlobalIDString = 9B248793ED5FDB77258CEAE14A0A5066;
+			remoteInfo = "Pods-LicensePlateOCR";
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		44737BEFAC7BC1D1BED5C969 /* libPods-LicensePlateOCR.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-LicensePlateOCR.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		5AEB2D0585BE7AA526324265 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		982C93A0335B9D1D599BB87C /* LICENSE.txt */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; path = LICENSE.txt; sourceTree = "<group>"; };
+		A1B2C3D4E5F607182930A5B6 /* Pods.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; name = Pods.xcodeproj; path = Pods/Pods.xcodeproj; sourceTree = "<group>"; };
 		D0506ABCA56D588BC7620CAE /* SampleCode.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = SampleCode.xcconfig; path = Configuration/SampleCode.xcconfig; sourceTree = "<group>"; };
 		E5CEE3008D4FCDB9239C0720 /* Pods-LicensePlateOCR.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-LicensePlateOCR.debug.xcconfig"; path = "Target Support Files/Pods-LicensePlateOCR/Pods-LicensePlateOCR.debug.xcconfig"; sourceTree = "<group>"; };
 		E7E80A76A563AE2644F78404 /* Pods-LicensePlateOCR.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-LicensePlateOCR.release.xcconfig"; path = "Target Support Files/Pods-LicensePlateOCR/Pods-LicensePlateOCR.release.xcconfig"; sourceTree = "<group>"; };
@@ -21,17 +46,7 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		LPR0000000000000000000040 /* LicensePlateOCR */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-			);
-			explicitFileTypes = {
-			};
-			explicitFolders = (
-			);
-			path = LicensePlateOCR;
-			sourceTree = "<group>";
-		};
+		LPR0000000000000000000040 /* LicensePlateOCR */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = LicensePlateOCR; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -46,13 +61,21 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		37E9C4CE308F9FA000953685 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				37E9C4D4308F9FA000953685 /* libonnxruntime-mobile-objc.a */,
+				37E9C4D6308F9FA000953685 /* libPods-LicensePlateOCR.a */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
 		3C10B1554B03B5886E3D3A1E /* Pods */ = {
 			isa = PBXGroup;
 			children = (
 				E5CEE3008D4FCDB9239C0720 /* Pods-LicensePlateOCR.debug.xcconfig */,
 				E7E80A76A563AE2644F78404 /* Pods-LicensePlateOCR.release.xcconfig */,
 			);
-			name = Pods;
 			path = Pods;
 			sourceTree = "<group>";
 		};
@@ -90,6 +113,7 @@
 				D68AAFA492903982B7EF2F92 /* Configuration */,
 				D8635552A3AE2ED52E4391F9 /* LICENSE */,
 				3C10B1554B03B5886E3D3A1E /* Pods */,
+				A1B2C3D4E5F607182930A5B6 /* Pods.xcodeproj */,
 				57E640F12E5A7D57C896CBE6 /* Frameworks */,
 			);
 			sourceTree = "<group>";
@@ -117,6 +141,7 @@
 			buildRules = (
 			);
 			dependencies = (
+				A1B2C3D4E5F607182930A5B8 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				LPR0000000000000000000040 /* LicensePlateOCR */,
@@ -153,12 +178,35 @@
 			mainGroup = LPR0000000000000000000010;
 			productRefGroup = LPR0000000000000000000020 /* Products */;
 			projectDirPath = "";
+			projectReferences = (
+				{
+					ProductGroup = 37E9C4CE308F9FA000953685 /* Products */;
+					ProjectRef = A1B2C3D4E5F607182930A5B6 /* Pods.xcodeproj */;
+				},
+			);
 			projectRoot = "";
 			targets = (
 				LPR0000000000000000000050 /* LicensePlateOCR */,
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXReferenceProxy section */
+		37E9C4D4308F9FA000953685 /* libonnxruntime-mobile-objc.a */ = {
+			isa = PBXReferenceProxy;
+			fileType = archive.ar;
+			path = "libonnxruntime-mobile-objc.a";
+			remoteRef = 37E9C4D3308F9FA000953685 /* PBXContainerItemProxy */;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+		37E9C4D6308F9FA000953685 /* libPods-LicensePlateOCR.a */ = {
+			isa = PBXReferenceProxy;
+			fileType = archive.ar;
+			path = "libPods-LicensePlateOCR.a";
+			remoteRef = 37E9C4D5308F9FA000953685 /* PBXContainerItemProxy */;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+/* End PBXReferenceProxy section */
 
 /* Begin PBXResourcesBuildPhase section */
 		LPR00000000000000000000C2 /* Resources */ = {
@@ -204,6 +252,14 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A1B2C3D4E5F607182930A5B8 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = "Pods-LicensePlateOCR";
+			targetProxy = A1B2C3D4E5F607182930A5B7 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		LPR00000000000000000000A1 /* Debug */ = {

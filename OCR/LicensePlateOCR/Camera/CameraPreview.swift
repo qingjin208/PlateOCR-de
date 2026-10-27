@@ -138,7 +138,10 @@ final class PreviewView: UIView {
         // `toLayer` maps them with a plain aspect-fill transform that matches what the
         // preview layer actually draws, so boxes track the video exactly under aspect-fill
         // and any layout change — there is no rotate/mirror step that could drift.
-        func toLayer(_ rect: CGRect) -> CGRect {
+        func toLayerRect(_ rect: CGRect) -> CGRect {
+            // NB: the outer `toLayer(_ point: CGPoint)` is the point mapper. Name this
+            // helper differently so the calls below resolve to that CGPoint version,
+            // not to this CGRect overload (shadowing caused CGPoint→CGRect errors).
             let a = toLayer(CGPoint(x: rect.minX, y: rect.minY))
             let b = toLayer(CGPoint(x: rect.maxX, y: rect.maxY))
             return CGRect(x: min(a.x, b.x), y: min(a.y, b.y),
@@ -169,7 +172,7 @@ final class PreviewView: UIView {
 
         var usedResultIndices = Set<Int>()
         for (index, detection) in detections.enumerated() {
-            detectionPath.addRect(toLayer(detection.rect))
+            detectionPath.addRect(toLayerRect(detection.rect))
             // Prefer the OCR result that belongs to this detection so the colour is keyed
             // on the plate text (stable across frames); otherwise key on the position.
             let matched = results.indices.first { i in

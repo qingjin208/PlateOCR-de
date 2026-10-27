@@ -64,6 +64,8 @@ final class CameraController: NSObject {
                 liveDetections = []
                 isAnalyzing = false
                 waitingForOCR = false
+                trackedPlates.removeAll()
+                foldedFrameIdentifier = -1
                 previewView?.clearOverlay()
             }
         }
@@ -87,6 +89,133 @@ final class CameraController: NSObject {
     /// the per-frame rotation and the debug thumbnail both draw through it. Declared
     /// `nonisolated static` so the off-main analysis task can use it without hopping.
     private nonisolated static let ciContext = CIContext(options: [.cacheIntermediates: false])
+
+    // MARK: - Temporal detection stability
+    //
+    // The pose model occasionally emits a one-frame phantom box (e.g. a quad regressed
+    // onto the bumper *below* the real plate, or onto a plate-like reflection). Showing
+    // every raw detection makes those phantoms flash on the live feed. Instead, boxes are
+    // tracked across analysis cycles: a box is only drawn once it has been seen in
+    // `confirmationHits` consecutive cycles at the same place (IoU association), its
+    // geometry is exponentially smoothed, and a confirmed box survives a single missed
+    // cycle for `trackPersistence` seconds so stable boxes don't flicker.
+
+    /// One plate box tracked across consecutive analysis cycles.
+    private struct TrackedPlate {
+        var rect: CGRect
+        var quad: [CGPoint]
+        var confidence: Float
+        var hits: Int
+        var lastSeen: Date
+    }
+
+    @ObservationIgnored private var trackedPlates: [TrackedPlate] = []
+    /// Identifier of the analysis frame whose detections were already folded into the
+    /// tracker by the intermediate detection callback (so the final publish of the same
+    /// frame reuses the tracks instead of double-counting `hits`).
+    @ObservationIgnored private var foldedFrameIdentifier = -1
+
+    /// Cycles a box must be seen consecutively before it is drawn.
+    private static let confirmationHits = 2
+    /// A confirmed track stays drawn (frozen) this long without a matching detection.
+    private static let trackPersistence: TimeInterval = 0.45
+    /// Minimum IoU to associate an incoming detection with an existing track.
+    private static let associationIoU: CGFloat = 0.3
+    /// Weight of the *new* observation when smoothing track geometry (0...1).
+    private static let smoothing: CGFloat = 0.5
+
+    private nonisolated static func iou(_ a: CGRect, _ b: CGRect) -> CGFloat {
+        let inter = a.intersection(b)
+        guard !inter.isEmpty else { return 0 }
+        let interArea = inter.width * inter.height
+        let unionArea = a.width * a.height + b.width * b.height - interArea
+        return unionArea > 0 ? interArea / unionArea : 0
+    }
+
+    private nonisolated static func lerp(_ a: CGPoint, _ b: CGPoint, _ t: CGFloat) -> CGPoint {
+        CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t)
+    }
+
+    private nonisolated static func lerp(_ a: CGRect, _ b: CGRect, _ t: CGFloat) -> CGRect {
+        CGRect(x: a.minX + (b.minX - a.minX) * t,
+               y: a.minY + (b.minY - a.minY) * t,
+               width: a.width + (b.width - a.width) * t,
+               height: a.height + (b.height - a.height) * t)
+    }
+
+    /// Folds the current frame's raw detections into the tracker and returns the
+    /// stabilized set to draw: confirmed tracks (smoothed, `hits >= confirmationHits`),
+    /// including confirmed tracks that missed this cycle but are still fresh.
+    private func stabilizeDetections(_ incoming: [PlateDetection]) -> [PlateDetection] {
+        let now = Date()
+        trackedPlates.removeAll { now.timeIntervalSince($0.lastSeen) > Self.trackPersistence }
+
+        var matchedIndices = Set<Int>()
+        var nextTracks: [TrackedPlate] = []
+        for detection in incoming {
+            var bestIndex = -1
+            var bestIoU = Self.associationIoU
+            for (index, track) in trackedPlates.enumerated() where !matchedIndices.contains(index) {
+                let score = Self.iou(detection.rect, track.rect)
+                if score > bestIoU { bestIoU = score; bestIndex = index }
+            }
+            let incomingQuad = detection.plateQuad
+            if bestIndex >= 0 {
+                matchedIndices.insert(bestIndex)
+                var track = trackedPlates[bestIndex]
+                let t = Self.smoothing
+                track.rect = Self.lerp(track.rect, detection.rect, t)
+                // Pose corners have a fixed order, so point-wise smoothing is safe.
+                if track.quad.count == incomingQuad.count {
+                    track.quad = zip(track.quad, incomingQuad).map { Self.lerp($0, $1, t) }
+                } else {
+                    track.quad = incomingQuad
+                }
+                track.confidence = max(track.confidence, detection.confidence)
+                track.hits += 1
+                track.lastSeen = now
+                nextTracks.append(track)
+            } else {
+                nextTracks.append(TrackedPlate(rect: detection.rect, quad: incomingQuad,
+                                               confidence: detection.confidence, hits: 1, lastSeen: now))
+            }
+        }
+        // Tracks that missed this cycle keep their last geometry (frozen) and simply age
+        // out via the `lastSeen` prune above — that's the anti-flicker persistence.
+        for (index, track) in trackedPlates.enumerated() where !matchedIndices.contains(index) {
+            nextTracks.append(track)
+        }
+        trackedPlates = nextTracks
+        return confirmedTracks()
+    }
+
+    /// The currently confirmed tracks, reboxed as `PlateDetection`s for the overlay.
+    private func confirmedTracks() -> [PlateDetection] {
+        trackedPlates
+            .filter { $0.hits >= Self.confirmationHits }
+            .map { PlateDetection(rect: $0.rect, confidence: $0.confidence, label: "license_plate",
+                                  keypoints: $0.quad, keypointConfidences: nil) }
+    }
+
+    /// Single publish path for the live overlay. `updateTracks` is true only for the
+    /// intermediate detection callback (the one place per analysis cycle that folds raw
+    /// detections into the tracker); the final publish of the same frame reuses those
+    /// tracks. Results pass through untouched — a newly recognized plate keeps its label
+    /// even on the confirming frame, and OCR'd plates are already validated downstream.
+    private func publishLiveOverlay(detections: [PlateDetection], frameIdentifier: Int,
+                                    imageSize: CGSize, results: [PlateResult]) {
+        let updateTracks = foldedFrameIdentifier != frameIdentifier
+        let stabilized: [PlateDetection]
+        if updateTracks {
+            stabilized = stabilizeDetections(detections)
+            foldedFrameIdentifier = frameIdentifier
+        } else {
+            stabilized = confirmedTracks()
+        }
+        liveDetections = stabilized
+        frameSize = imageSize
+        previewView?.draw(detections: stabilized, results: results, imageSize: imageSize)
+    }
 
     /// Shared context for the debug echo (thread-safe; created once).
     private nonisolated static let debugImageContext = CIContext()
@@ -210,6 +339,8 @@ final class CameraController: NSObject {
     func suspendSession() {
         active = false
         generation += 1
+        trackedPlates.removeAll()
+        foldedFrameIdentifier = -1
         previewView?.clearOverlay()
         sessionQueue.async { if self.session.isRunning { self.session.stopRunning() } }
     }
@@ -234,9 +365,8 @@ final class CameraController: NSObject {
                 Task { @MainActor in
                     guard let self, self.active, self.liveEnabled, !self.paused,
                           self.generation == token, self.analysisIdentifier == frameIdentifier else { return }
-                    self.liveDetections = detections
-                    self.frameSize = size
-                    self.previewView?.draw(detections: detections, results: [], imageSize: size)
+                    self.publishLiveOverlay(detections: detections, frameIdentifier: frameIdentifier,
+                                            imageSize: size, results: [])
                 }
             }
             let latency = Int(Date().timeIntervalSince(started) * 1000)
@@ -246,10 +376,9 @@ final class CameraController: NSObject {
                 self.isAnalyzing = false
                 self.elapsedMilliseconds = latency
                 self.liveResults = result.plates
-                self.liveDetections = result.detections
-                self.frameSize = result.imageSize
+                self.publishLiveOverlay(detections: result.detections, frameIdentifier: frameIdentifier,
+                                        imageSize: result.imageSize, results: result.plates)
                 self.errorMessage = nil
-                self.previewView?.draw(detections: result.detections, results: result.plates, imageSize: result.imageSize)
                 // Diagnostic echo: the analyzed (already portrait) buffer + the same boxes, so the
                 // preview-vs-buffer alignment question can be answered on device.
                 if self.debugEchoEnabled {
@@ -283,6 +412,8 @@ final class CameraController: NSObject {
                 self.errorMessage = error.localizedDescription
                 self.liveResults = []
                 self.liveDetections = []
+                self.trackedPlates.removeAll()
+                self.foldedFrameIdentifier = -1
                 self.previewView?.clearOverlay()
             }
         }

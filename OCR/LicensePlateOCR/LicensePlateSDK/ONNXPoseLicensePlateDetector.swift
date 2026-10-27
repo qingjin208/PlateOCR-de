@@ -157,21 +157,25 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
 
         // Float16 export → upcast to float32 (length is half of the float32 size).
         if rawData.length == elementCount * 2 {
-            guard let bytes = rawData.bytes else {
-                throw LicensePlateError.invalidModelOutput("无法读取 ONNX 输出。")
-            }
+            // `NSMutableData.bytes` is a non-optional `UnsafeRawPointer` (unlike
+            // `Data`), so it is bound with `let`, not `guard let`.
+            let bytes = rawData.bytes
             let src = bytes.assumingMemoryBound(to: UInt16.self)
             var floats = [Float](repeating: 0, count: elementCount)
             for i in 0..<elementCount { floats[i] = Float(Float16(bitPattern: src[i])) }
             let array = try MLMultiArray(shape: dims.map { NSNumber(value: $0) }, dataType: .float32)
-            floats.withUnsafeBytes { memcpy(array.dataPointer, $0.baseAddress!, floats.count * MemoryLayout<Float>.size) }
+            let byteCount = floats.count * MemoryLayout<Float>.size
+            floats.withUnsafeBytes { buffer in
+                guard let base = buffer.baseAddress else { return }
+                memcpy(array.dataPointer, base, byteCount)
+            }
             return array
         }
 
         let array = try MLMultiArray(shape: dims.map { NSNumber(value: $0) }, dataType: .float32)
-        if let src = rawData.bytes {
-            memcpy(array.dataPointer, src, min(rawData.length, array.count * MemoryLayout<Float>.size))
-        }
+        // `bytes` is non-optional here too — it is always valid for the data's length.
+        memcpy(array.dataPointer, rawData.bytes,
+               min(rawData.length, array.count * MemoryLayout<Float>.size))
         return array
     }
 }

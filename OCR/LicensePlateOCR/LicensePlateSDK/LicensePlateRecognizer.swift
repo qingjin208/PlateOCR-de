@@ -215,7 +215,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     public func recognize(in image: CGImage, mode: RecognitionMode = .fast) async throws -> [PlateResult] {
         // Still images enter the same external-frame pipeline as video and live capture.
         let buffer = try makePixelBuffer(from: CIImage(cgImage: image))
-        return try await recognizeFrame(buffer, mode: mode).plates
+        return try await recognizeFrame(buffer, mode: mode, tiled: true).plates
     }
 
     /// Converts an upright still image to an external BGRA frame, scaling oversized images.
@@ -223,9 +223,16 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         try makePixelBuffer(from: CIImage(cgImage: image))
     }
 
+    /// - Parameter tiled: run tiled detection (see `LicensePlateDetecting.detectTiled`).
+    ///   Turn this on for **still images** whose plates may be small relative to the
+    ///   frame (collages, parking lots, forecourt photos): the pose model's input is a
+    ///   fixed 640x640, so a single pass letterboxes the whole picture and small plates
+    ///   fall below the confidence threshold. Leave off for video/live frames, where
+    ///   latency matters more than the last few tiny plates.
     public func recognizeFrame(_ pixelBuffer: CVPixelBuffer,
                                orientation: CGImagePropertyOrientation = .up,
                                mode: RecognitionMode = .fast,
+                               tiled: Bool = false,
                                onDetections: (@Sendable ([PlateDetection], CGSize) -> Void)? = nil) async throws -> PlateFrameResult {
         let width = CVPixelBufferGetWidth(pixelBuffer), height = CVPixelBufferGetHeight(pixelBuffer)
         let format = CVPixelBufferGetPixelFormatType(pixelBuffer)
@@ -240,7 +247,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
             throw LicensePlateError.invalidInput("Could not render the input frame.")
         }
         let imageSize = CGSize(width: image.width, height: image.height)
-        let detections = try await detector.detect(in: image)
+        let detections = try await tiled ? detector.detectTiled(in: image) : detector.detect(in: image)
         onDetections?(detections, imageSize)
 
         // One frame can hold several plates (car park, traffic scene, forecourt). Each

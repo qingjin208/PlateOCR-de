@@ -28,6 +28,69 @@ public protocol LicensePlateDetecting: Sendable {
     func detect(in image: CGImage) async throws -> [PlateDetection]
 }
 
+/// Tiled detection for large still images.
+///
+/// The German-plate pose model exports a **fixed 640x640 input**, so a single pass
+/// letterboxes the whole picture and every plate shrinks with it — on multi-plate
+/// collages / parking-lot photos most plates drop below the confidence threshold
+/// (the "detects everything on the PC, only a couple of boxes in the app" case).
+/// Slicing the image into overlapping tiles keeps each region at a resolution the
+/// model actually sees; the per-tile results are mapped back to full-image
+/// normalized coordinates and merged with NMS. Small images fall through to one
+/// plain `detect` pass, so the common case pays no extra cost.
+public extension LicensePlateDetecting {
+    /// - Parameters:
+    ///   - tileSize: maximum tile edge in pixels (each tile is letterboxed to the model
+    ///     input by `detect`).
+    ///   - overlap: fractional overlap between neighbouring tiles so a plate cut off at
+    ///     one tile edge is fully inside the next one.
+    ///   - nmsThreshold: IoU threshold for the final cross-tile merge (a plate seen by
+    ///     two tiles must not be reported twice).
+    func detectTiled(in image: CGImage, tileSize: CGFloat = 1024, overlap: CGFloat = 0.3,
+                     nmsThreshold: Float = 0.45) async throws -> [PlateDetection] {
+        let width = CGFloat(image.width), height = CGFloat(image.height)
+        let tile = CGSize(width: min(tileSize, width), height: min(tileSize, height))
+        guard max(width, height) > max(tile.width, tile.height) else {
+            return try await detect(in: image)
+        }
+        // Tile origins along one axis: step until the next tile would overshoot, then
+        // always pin the last tile to the far edge so the border is fully covered.
+        func offsets(length: CGFloat, tileLength: CGFloat) -> [CGFloat] {
+            guard length > tileLength else { return [0] }
+            let step = tileLength * (1 - overlap)
+            var result: [CGFloat] = []
+            var offset: CGFloat = 0
+            while offset + tileLength < length - 1 {
+                result.append(offset)
+                offset += step
+            }
+            result.append(length - tileLength)
+            return result
+        }
+
+        var proposals: [PlateDetection] = []
+        for tileY in offsets(length: height, tileLength: tile.height) {
+            for tileX in offsets(length: width, tileLength: tile.width) {
+                let crop = CGRect(x: tileX, y: tileY, width: tile.width, height: tile.height).integral
+                guard let tileImage = image.cropping(to: crop) else { continue }
+                // `detect` returns boxes/keypoints normalized to the tile it was given.
+                for detection in try await detect(in: tileImage) {
+                    func mapX(_ nx: CGFloat) -> CGFloat { min(1, max(0, (crop.minX + nx * crop.width) / width)) }
+                    func mapY(_ ny: CGFloat) -> CGFloat { min(1, max(0, (crop.minY + ny * crop.height) / height)) }
+                    let rect = CGRect(x: mapX(detection.rect.minX), y: mapY(detection.rect.minY),
+                                      width: detection.rect.width * crop.width / width,
+                                      height: detection.rect.height * crop.height / height)
+                    let keypoints = detection.keypoints?.map { CGPoint(x: mapX($0.x), y: mapY($0.y)) }
+                    proposals.append(PlateDetection(rect: rect, confidence: detection.confidence,
+                                                    label: detection.label, keypoints: keypoints,
+                                                    keypointConfidences: detection.keypointConfidences))
+                }
+            }
+        }
+        return YOLOOutputDecoder.suppress(proposals, threshold: nmsThreshold)
+    }
+}
+
 /// The bundled model produces [1, 5, 8400], with xywh in 640x640 input pixels.
 public struct YOLOConfig: Sendable {
     public var inputSize: Int
