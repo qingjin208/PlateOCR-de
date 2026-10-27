@@ -24,8 +24,29 @@ public struct PlateDetection: Sendable {
     }
 }
 
-public protocol LicensePlateDetecting: Sendable {
+/// Tunables + diagnostics every detector exposes.
+///
+/// The thresholds are runtime-settable because the working value can only be confirmed
+/// on device against a known-good PC run. The PC pipeline that "detects everything"
+/// (`截取车牌区域并保存-2.py`) calls `model(image)` with no overrides, so it runs on the
+/// Ultralytics defaults **conf = 0.25, iou = 0.7** — those are the values mirrored here.
+/// (The video script passes `conf=0.7` explicitly; that is a *stricter* run, not the
+/// reference for recall.)
+public protocol LicensePlateDetecting: AnyObject, Sendable {
+    var confidenceThreshold: Float { get set }
+    var nmsIoUThreshold: Float { get set }
+    /// The exact image handed to the model (640x640 letterbox) when snapshotting is on.
+    /// Comparing this against the PC input settles "is the tensor wrong?" in one step.
+    var debugSnapshot: CGImage? { get }
+    var captureDebugSnapshot: Bool { get set }
     func detect(in image: CGImage) async throws -> [PlateDetection]
+}
+
+public extension LicensePlateDetecting {
+    var confidenceThreshold: Float { get { 0.25 } set {} }
+    var nmsIoUThreshold: Float { get { 0.7 } set {} }
+    var debugSnapshot: CGImage? { nil }
+    var captureDebugSnapshot: Bool { get { false } set {} }
 }
 
 /// Tiled detection for large still images.
@@ -45,9 +66,10 @@ public extension LicensePlateDetecting {
     ///   - overlap: fractional overlap between neighbouring tiles so a plate cut off at
     ///     one tile edge is fully inside the next one.
     ///   - nmsThreshold: IoU threshold for the final cross-tile merge (a plate seen by
-    ///     two tiles must not be reported twice).
+    ///     two tiles must not be reported twice). Matches the PC reference's 0.7; lower
+    ///     values merge genuinely distinct plates that sit close together.
     func detectTiled(in image: CGImage, tileSize: CGFloat = 1024, overlap: CGFloat = 0.3,
-                     nmsThreshold: Float = 0.45) async throws -> [PlateDetection] {
+                     nmsThreshold: Float = 0.7) async throws -> [PlateDetection] {
         let width = CGFloat(image.width), height = CGFloat(image.height)
         let tile = CGSize(width: min(tileSize, width), height: min(tileSize, height))
         guard max(width, height) > max(tile.width, tile.height) else {
@@ -122,8 +144,15 @@ public struct YOLOConfig: Sendable {
     /// `[1, 17, 8400]` = 5 (box + conf) + 4 corners * 3 (x, y, visibility).
     /// Corner order is fixed by the training config: left_top, right_top, right_bottom, left_bottom.
     public static var germanPlatePose: YOLOConfig {
+        // Thresholds mirror the PC reference exactly (`截取车牌区域并保存-2.py` calls
+        // `model(image)` with no overrides, i.e. Ultralytics defaults conf=0.25/iou=0.7):
+        //   • conf 0.25 — the PC run that "detects everything" uses this. A 0.45 gate
+        //     silently discards every plate the model scores between 0.25 and 0.45.
+        //   • iou 0.7 — must match. At 0.45 two neighbouring plates whose boxes overlap
+        //     by ~half are merged into one: the "2-3 plates in frame, 1 reported" symptom.
+        // Both stay runtime-tunable so the working pair can be confirmed on device.
         YOLOConfig(inputSize: 640, numClasses: 1, classNames: ["plate"],
-                   confidenceThreshold: 0.45, iouThreshold: 0.45,
+                   confidenceThreshold: 0.25, iouThreshold: 0.7,
                    format: .xywhCenterPixels, targetClassIndices: [0], numKeypoints: 4)
     }
 }
@@ -134,6 +163,40 @@ public final class CoreMLLicensePlateDetector: LicensePlateDetecting, @unchecked
     private let config: YOLOConfig
     private let inputName: String
     private let outputName: String
+    /// Mutable thresholds live in a box: a `Sendable` class may not have mutable stored
+    /// properties, and `@unchecked` on the box suppresses the warning without lying about
+    /// the detector itself (writes are single-value assignments from the UI).
+    private final class Tunables: @unchecked Sendable {
+        var confidence: Float
+        var iou: Float
+        var captureSnapshot = false
+        init(confidence: Float, iou: Float) { self.confidence = confidence; self.iou = iou }
+    }
+    private let tunables: Tunables
+
+    // MARK: - Runtime tunables / diagnostics
+
+    public var confidenceThreshold: Float {
+        get { tunables.confidence }
+        set { tunables.confidence = newValue }
+    }
+    public var nmsIoUThreshold: Float {
+        get { tunables.iou }
+        set { tunables.iou = newValue }
+    }
+    public var debugSnapshot: CGImage? { nil }
+    public var captureDebugSnapshot: Bool {
+        get { tunables.captureSnapshot }
+        set { tunables.captureSnapshot = newValue }
+    }
+
+    /// The base config with the current runtime thresholds applied.
+    private func currentConfig() -> YOLOConfig {
+        var cfg = config
+        cfg.confidenceThreshold = tunables.confidence
+        cfg.iouThreshold = tunables.iou
+        return cfg
+    }
 
     public init(modelName: String = "license_plate_yolo", config: YOLOConfig = .germanPlate,
                 computeUnits: MLComputeUnits = .all) throws {
@@ -157,6 +220,7 @@ public final class CoreMLLicensePlateDetector: LicensePlateDetecting, @unchecked
         settings.computeUnits = computeUnits
         model = try MLModel(contentsOf: compiled, configuration: settings)
         self.config = config
+        self.tunables = Tunables(confidence: config.confidenceThreshold, iou: config.iouThreshold)
         guard let input = model.modelDescription.inputDescriptionsByName.first(where: { $0.value.type == .image }),
               let constraint = input.value.imageConstraint,
               constraint.pixelsWide == config.inputSize, constraint.pixelsHigh == config.inputSize else {
@@ -176,14 +240,15 @@ public final class CoreMLLicensePlateDetector: LicensePlateDetecting, @unchecked
 
     public func detect(in image: CGImage) async throws -> [PlateDetection] {
         try Task.checkCancellation()
-        let prepared = try image.letterboxed(size: config.inputSize)
+        let cfg = currentConfig()
+        let prepared = try image.letterboxed(size: cfg.inputSize)
         let array = try await prediction(on: prepared.buffer)
-        let proposals = try YOLOOutputDecoder.decode(array, config: config)
+        let proposals = try YOLOOutputDecoder.decode(array, config: cfg)
         let mapped = proposals.map {
             YOLOOutputDecoder.remap($0, scale: prepared.scale, padX: prepared.padX, padY: prepared.padY,
                 imageSize: CGSize(width: image.width, height: image.height))
         }.filter { $0.rect.width > 0 && $0.rect.height > 0 }
-        return YOLOOutputDecoder.suppress(mapped, threshold: config.iouThreshold)
+        return YOLOOutputDecoder.suppress(mapped, threshold: cfg.iouThreshold)
     }
 
     /// Exposes the raw graph output to package regression tests before NMS/cropping.

@@ -70,8 +70,14 @@ enum YOLOOutputDecoder {
                     confs.append(kv)
                 }
                 if valid, pts.count == config.numKeypoints {
-                    keypoints = pts
-                    keypointConfidences = confs
+                    // Re-derive the corner order instead of trusting the model's.
+                    if let order = Self.cornerOrder(pts) {
+                        keypoints = order.map { pts[$0] }
+                        keypointConfidences = order.map { confs[$0] }
+                    } else {
+                        keypoints = pts
+                        keypointConfidences = confs
+                    }
                 }
             }
 
@@ -80,6 +86,37 @@ enum YOLOOutputDecoder {
                 keypoints: keypoints, keypointConfidences: keypointConfidences))
         }
         return results
+    }
+
+    /// Re-orders 4 raw keypoints into `left_top, right_top, right_bottom, left_bottom`
+    /// and returns the permutation (`result[slot] = index in the input`).
+    ///
+    /// The PC reference (`截取车牌区域并保存-2.py` → `determine_relative_positions`) does
+    /// NOT trust the model's corner order and re-derives it from the centroid, so the
+    /// on-device pipeline must do the same: a mis-ordered quad warps into a bow tie,
+    /// every geometry check downstream then rejects it, and the plate silently falls back
+    /// to a box crop — which looks exactly like "detected, but the crop is wrong".
+    ///
+    /// - Returns: `nil` when the centroid test is ambiguous (two corners in the same
+    ///   quadrant). The caller then keeps the model order rather than guessing.
+    static func cornerOrder(_ pts: [CGPoint]) -> [Int]? {
+        guard pts.count == 4 else { return nil }
+        let meanX = pts.map(\.x).reduce(0, +) / 4
+        let meanY = pts.map(\.y).reduce(0, +) / 4
+        // slots: 0 = left_top, 1 = right_top, 2 = right_bottom, 3 = left_bottom
+        var slots = [Int](repeating: -1, count: 4)
+        for (index, p) in pts.enumerated() {
+            switch (p.x < meanX, p.y < meanY) {
+            case (true, true): slots[0] = index
+            case (false, true): slots[1] = index
+            case (false, false): slots[2] = index
+            case (true, false): slots[3] = index
+            }
+        }
+        // Two corners in one quadrant leaves another slot empty, so this single check
+        // also catches duplicate assignments.
+        guard !slots.contains(-1) else { return nil }
+        return slots
     }
 
     static func remap(_ detection: PlateDetection, scale: CGFloat, padX: CGFloat, padY: CGFloat,

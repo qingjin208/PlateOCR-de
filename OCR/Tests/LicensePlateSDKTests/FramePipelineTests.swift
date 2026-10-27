@@ -3,7 +3,7 @@ import CoreImage
 import CoreVideo
 @testable import LicensePlateSDK
 
-private struct MockDetector: LicensePlateDetecting {
+private final class MockDetector: LicensePlateDetecting {
     func detect(in image: CGImage) async throws -> [PlateDetection] {
         [PlateDetection(rect: CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.1), confidence: 0.9, label: "license_plate"),
          PlateDetection(rect: CGRect(x: 0.6, y: 0.5, width: 0.3, height: 0.1), confidence: 0.8, label: "license_plate")]

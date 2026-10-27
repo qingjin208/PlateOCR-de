@@ -81,6 +81,23 @@ struct ContentView: View {
     /// Input channel order for the ONNX detector. RGB matches Ultralytics training and the
     /// PC reference pipeline; switch to BGR only if an export needs it.
     @State private var useRGB: Bool = true
+    /// Letterbox buffer orientation for the detector (top-row-first = PC layout). Debug
+    /// switch: with the wrong value the boxes land vertically mirrored and OCR reads nothing.
+    @State private var flipLetterbox: Bool = true
+    /// Detection confidence gate. 0.25 mirrors the PC reference's Ultralytics default
+    /// (`截取车牌区域并保存-2.py` calls `model(image)` with no overrides). Raise it only
+    /// if a pass starts reporting obvious false positives.
+    @State private var confidenceThreshold: Double = 0.25
+    /// NMS IoU. 0.7 mirrors the PC reference. Lower values merge neighbouring plates into
+    /// one — the "2-3 plates in frame, only 1 reported" case.
+    @State private var nmsIoU: Double = 0.7
+    /// Frames sampled from a video (the PC script processes every frame).
+    @State private var videoSampleLimit: Double = 60
+    /// Reveals the raw model input and the raw detections, so one screenshot settles
+    /// whether a bad pass is a wrong tensor or a wrong decode.
+    @State private var showDiagnostics: Bool = false
+    @State private var rawDetections: [PlateDetection] = []
+    @State private var debugSnapshotImage: UIImage?
     @State private var results: [PlateResult] = []
     /// Number of raw detections last pass (before OCR/validation). Shown in the
     /// "nothing recognized" state to distinguish "model saw nothing" from
@@ -118,6 +135,10 @@ struct ContentView: View {
             .onChange(of: mode) { _, newMode in handleModeChange(newMode) }
             .onChange(of: ocrEngine) { _, newEngine in handleOCREngineChange(newEngine) }
             .onChange(of: useRGB) { _, newValue in handleUseRGBChange(newValue) }
+            .onChange(of: flipLetterbox) { _, newValue in handleFlipLetterboxChange(newValue) }
+            .onChange(of: confidenceThreshold) { _, v in recognizer.confidenceThreshold = Float(v) }
+            .onChange(of: nmsIoU) { _, v in recognizer.nmsIoUThreshold = Float(v) }
+            .onChange(of: showDiagnostics) { _, v in recognizer.captureDebugSnapshot = v }
             .onChange(of: enhancements) { _, newValue in handleEnhancementsChange(newValue) }
             .onChange(of: videoURL) { _, newURL in handleVideoURLChange(newURL) }
             .onChange(of: source) { _, newSource in handleSourceChange(newSource) }
@@ -131,9 +152,43 @@ struct ContentView: View {
                 header
                 mediaPreview
                 resultsSection
+                diagnosticsPanel
                 errorText
             }
             .padding(.vertical)
+        }
+    }
+
+    /// Raw pipeline output: the exact 640x640 tensor handed to the model, plus every
+    /// detection produced before OCR. Comparing these with the PC run isolates
+    /// "wrong tensor" from "wrong decode" without recompiling.
+    @ViewBuilder
+    private var diagnosticsPanel: some View {
+        if showDiagnostics, source != .camera {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("检测诊断 · conf \(String(format: "%.2f", confidenceThreshold)) · IoU \(String(format: "%.2f", nmsIoU)) · 原始框 \(rawDetections.count)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                if let debugSnapshotImage {
+                    Image(uiImage: debugSnapshotImage)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(height: 140)
+                        .overlay(RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.secondary, lineWidth: 0.5))
+                    Text("↑ 送入模型的 640 输入").font(.caption2).foregroundStyle(.tertiary)
+                }
+                ForEach(Array(rawDetections.enumerated()), id: \.offset) { pair in
+                    Text("#\(pair.offset + 1) conf \(String(format: "%.3f", pair.element.confidence))"
+                         + " box(\(String(format: "%.3f", pair.element.rect.minX)),\(String(format: "%.3f", pair.element.rect.minY))"
+                         + " \(String(format: "%.3f", pair.element.rect.width))x\(String(format: "%.3f", pair.element.rect.height)))"
+                         + " kp\(pair.element.keypoints?.count ?? 0)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal)
         }
     }
 
@@ -151,11 +206,16 @@ struct ContentView: View {
                 Color.black.opacity(0.4)
                     .ignoresSafeArea()
                     .onTapGesture { withAnimation { showSettings = false } }
-                SettingsSheet(mode: $mode,
-                              ocrEngine: $ocrEngine,
-                              useRGB: $useRGB,
-                              enhancements: $enhancements,
-                              controller: cameraController) { withAnimation { showSettings = false } }
+            SettingsSheet(mode: $mode,
+                          ocrEngine: $ocrEngine,
+                          useRGB: $useRGB,
+                          flipLetterbox: $flipLetterbox,
+                          confidenceThreshold: $confidenceThreshold,
+                          nmsIoU: $nmsIoU,
+                          videoSampleLimit: $videoSampleLimit,
+                          showDiagnostics: $showDiagnostics,
+                          enhancements: $enhancements,
+                          controller: cameraController) { withAnimation { showSettings = false } }
                     .padding(.horizontal, 4)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -184,6 +244,10 @@ struct ContentView: View {
 
     private func handleUseRGBChange(_ newValue: Bool) {
         recognizer.useRGB = newValue
+    }
+
+    private func handleFlipLetterboxChange(_ newValue: Bool) {
+        recognizer.flipLetterbox = newValue
     }
 
     /// Push the enhancement switches into the SDK: the live camera shares this same
@@ -288,7 +352,7 @@ struct ContentView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 16))
                 // Overlay maps normalized boxes onto the scaled-to-fit image, so the
                 // tint tracks the plate exactly (no rotation/scale drift).
-                .overlay { PlateQuadOverlay(results: results) }
+                .overlay { PlateQuadOverlay(results: results, imageSize: uiImage.size) }
                 .padding(.horizontal)
         } else {
             PhotosPicker(selection: $imageItem, matching: .images) {
@@ -414,10 +478,19 @@ struct ContentView: View {
             // Media loaded but nothing recognized → give explicit feedback so it does not
             // look like "nothing happened". Show the detection count: >0 means the model
             // found candidates but OCR/validation rejected them.
-            Text(lastDetectionCount > 0
-                 ? "未识别到车牌：模型检测到 \(lastDetectionCount) 个候选框，但 OCR 未确认（请尝试切换 OCR 引擎或识别模式）。"
-                 : "未检测到车牌。可尝试更换素材、切换识别模式或 OCR 引擎后重试。")
-                .font(.footnote).foregroundStyle(.secondary).padding(.horizontal)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(lastDetectionCount > 0
+                     ? "未识别到车牌：模型检测到 \(lastDetectionCount) 个候选框，但 OCR 未确认（请尝试切换 OCR 引擎或识别模式）。"
+                     : "未检测到车牌。可尝试更换素材、切换识别模式或 OCR 引擎后重试。")
+                    .font(.footnote).foregroundStyle(.secondary)
+                // The reselection button must be reachable here too: with no results the
+                // list above never renders, which previously left the loaded photo/video
+                // stuck on screen until the app was restarted.
+                Button("重新选择") { clearResults() }
+                    .font(.subheadline).foregroundStyle(appAccent)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal)
         }
     }
 
@@ -461,14 +534,19 @@ struct ContentView: View {
             lastDetectionCount = 0
             errorMessage = nil
             isBusy = true
-            let pixelBuffer = try recognizer.prepareFrame(from: oriented)
-            // Tiled detection: still photos (especially multi-plate collages) keep their
-            // plates large enough for the fixed-640 pose model to see them. The tiled
-            // pass falls back to a single detect when the image is small.
-            let frame = try await recognizer.recognizeFrame(pixelBuffer, mode: mode, tiled: true)
+            recognizer.captureDebugSnapshot = showDiagnostics
+            // Feed the upright CGImage straight into the detector. The old path built a
+            // CVPixelBuffer first, which the SDK then had to render back into a CGImage —
+            // an extra resample plus a colour-space conversion on the only pixels that
+            // matter. `tiled` adds a second pass for plates too small at full-frame scale.
+            let frame = try await recognizer.recognizeImage(oriented, mode: mode, tiled: true)
             results = frame.plates
             // Surface detection vs. OCR outcome so a silent failure is diagnosable:
             lastDetectionCount = frame.detections.count
+            if showDiagnostics {
+                rawDetections = frame.detections
+                debugSnapshotImage = recognizer.debugSnapshot.map { UIImage(cgImage: $0) }
+            }
             isBusy = false
         } catch {
             isBusy = false
@@ -495,7 +573,9 @@ struct ContentView: View {
             errorMessage = nil
             isBusy = true
             videoProgress = 0
-            let samples = try await recognizer.recognizeVideoSamples(at: dst, mode: mode, maxSamples: 30) { progress in
+            recognizer.captureDebugSnapshot = showDiagnostics
+            let samples = try await recognizer.recognizeVideoSamples(at: dst, mode: mode,
+                                                                     maxSamples: Int(videoSampleLimit)) { progress in
                 Task { @MainActor in videoProgress = progress }
             }
             videoSamples = samples
@@ -563,6 +643,11 @@ private struct SettingsSheet: View {
     @Binding var mode: RecognitionMode
     @Binding var ocrEngine: OCREngine
     @Binding var useRGB: Bool
+    @Binding var flipLetterbox: Bool
+    @Binding var confidenceThreshold: Double
+    @Binding var nmsIoU: Double
+    @Binding var videoSampleLimit: Double
+    @Binding var showDiagnostics: Bool
     @Binding var enhancements: RecognitionEnhancements
     /// Camera controller, so the sheet can toggle the on-device diagnostic echo
     /// (`debugEchoEnabled`) that reveals whether the frame fed to detection matches the
@@ -604,11 +689,50 @@ private struct SettingsSheet: View {
                 .tint(appAccent)
             }
 
+            settingRow(title: "检测置信度", subtitle: "PC 参考默认值 0.25；调低可召回更多，调高更保守") {
+                VStack(alignment: .trailing, spacing: 0) {
+                    Text(String(format: "%.2f", confidenceThreshold)).font(.caption.monospacedDigit())
+                    Slider(value: $confidenceThreshold, in: 0.05...0.9, step: 0.05)
+                        .frame(width: 150)
+                        .tint(appAccent)
+                }
+            }
+
+            settingRow(title: "NMS IoU", subtitle: "PC 参考值 0.7；过低会把相邻车牌合并成一块") {
+                VStack(alignment: .trailing, spacing: 0) {
+                    Text(String(format: "%.2f", nmsIoU)).font(.caption.monospacedDigit())
+                    Slider(value: $nmsIoU, in: 0.1...0.9, step: 0.05)
+                        .frame(width: 150)
+                        .tint(appAccent)
+                }
+            }
+
             DisclosureGroup("调试选项", isExpanded: $showDebug) {
+                settingRow(title: "视频采样帧数", subtitle: "PC 逐帧处理；移动端默认 60 帧，可按视频长度调整") {
+                    VStack(alignment: .trailing, spacing: 0) {
+                        Text("\(Int(videoSampleLimit))").font(.caption.monospacedDigit())
+                        Slider(value: $videoSampleLimit, in: 10...180, step: 10)
+                            .frame(width: 150)
+                            .tint(appAccent)
+                    }
+                }
+                settingRow(title: "检测诊断", subtitle: "显示送入模型的 640 输入图与原始检测框/置信度") {
+                    Toggle("", isOn: $showDiagnostics)
+                }
                 settingRow(title: "输入通道顺序", subtitle: "默认 RGB（与 PC 参考一致）；仅当检测明显错乱时切 BGR") {
                     Picker("输入通道", selection: $useRGB) {
                         Text("RGB").tag(true)
                         Text("BGR").tag(false)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 130)
+                    .tint(appAccent)
+                }
+                settingRow(title: "Letterbox 缓冲朝向",
+                           subtitle: "正向(PC 同款，默认)/反向；框上下镜像时切到反向对照") {
+                    Picker("Letterbox 朝向", selection: $flipLetterbox) {
+                        Text("正向").tag(true)
+                        Text("反向").tag(false)
                     }
                     .pickerStyle(.segmented)
                     .frame(width: 130)
@@ -735,7 +859,7 @@ private struct CorrectedPlateView: View {
                 .resizable()
                 .interpolation(.medium)
                 .scaledToFit()
-                .frame(height: 38)
+                .frame(height: 44)
                 .background(Color.white)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.4), lineWidth: 1))
@@ -775,7 +899,7 @@ private struct PlateCardView: View {
         HStack(alignment: .center, spacing: 12) {
             RoundedRectangle(cornerRadius: 4)
                 .fill(color)
-                .frame(width: 8, height: 38)
+                .frame(width: 8, height: 44)
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 10) {
                     CorrectedPlateView(cgImage: result.correctedPlateImage, text: result.text)
@@ -848,9 +972,12 @@ private struct HistoryCardView: View {
         HStack(alignment: .center, spacing: 12) {
             RoundedRectangle(cornerRadius: 4)
                 .fill(color)
-                .frame(width: 8, height: 38)
+                .frame(width: 8, height: 44)
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 10) {
+                    // The plate region the pose model's 4 corner keypoints cut out and
+                    // perspective-corrected (falls back to the synthetic plate only when
+                    // the detector produced no keypoint quad for this frame).
                     CorrectedPlateView(cgImage: entry.result.correctedPlateImage, text: entry.result.text)
                     Spacer(minLength: 0)
                     Text(CameraResultsView.timeFormatter.string(from: entry.date))
@@ -883,18 +1010,24 @@ private struct ImportedMovie: Transferable {
 /// semi-transparent solid tint plus a matching solid outline over the plate area.
 struct PlateQuadOverlay: View {
     let results: [PlateResult]
+    /// Pixel size of the displayed image. `scaledToFit()` letterboxes the picture inside
+    /// its container, so the overlay must map onto the *fitted image rect* — mapping onto
+    /// the container stretches the quads whenever the two aspect ratios differ, which
+    /// reads as "the box does not line up with the plate".
+    let imageSize: CGSize
 
     var body: some View {
         GeometryReader { geometry in
+            let target = Self.fittedRect(imageSize: imageSize, in: geometry.size)
             ForEach(Array(results.enumerated()), id: \.element.id) { pair in
                 let index = pair.offset
                 let result = pair.element
                 let tint = Color(cgColor: Self.color(for: result).cgColor)
 
-                PlateQuadShape(quad: result.plateQuad)
+                PlateQuadShape(quad: result.plateQuad, rect: target)
                     .fill(tint.opacity(PlateOverlayPalette.fillAlpha))
                     .overlay {
-                        PlateQuadShape(quad: result.plateQuad)
+                        PlateQuadShape(quad: result.plateQuad, rect: target)
                             .stroke(tint, lineWidth: PlateOverlayPalette.strokeWidth)
                     }
                     .allowsHitTesting(false)
@@ -905,10 +1038,21 @@ struct PlateQuadOverlay: View {
                     .background(tint.opacity(0.95))
                     .foregroundStyle(.white)
                     .fixedSize()
-                    .position(x: Self.centerX(result, in: geometry.size),
-                              y: max(10, Self.topY(result, in: geometry.size) - 10))
+                    .position(x: Self.centerX(result, in: target),
+                              y: max(10, Self.topY(result, in: target) - 10))
             }
         }
+    }
+
+    /// The rect the image actually occupies inside `size` under `.scaledToFit()`.
+    static func fittedRect(imageSize: CGSize, in size: CGSize) -> CGRect {
+        guard imageSize.width > 0, imageSize.height > 0, size.width > 0, size.height > 0 else {
+            return CGRect(origin: .zero, size: size)
+        }
+        let scale = min(size.width / imageSize.width, size.height / imageSize.height)
+        let width = imageSize.width * scale, height = imageSize.height * scale
+        return CGRect(x: (size.width - width) / 2, y: (size.height - height) / 2,
+                      width: width, height: height)
     }
 
     static func color(for result: PlateResult) -> PlateOverlayColor {
@@ -917,26 +1061,32 @@ struct PlateQuadOverlay: View {
 
     /// Label anchors derived from the plate quad (not the box) so the chip sits above the
     /// tilted plate outline rather than above a taller bounding rectangle.
-    private static func topY(_ result: PlateResult, in size: CGSize) -> CGFloat {
-        (result.plateQuad.map(\.y).min() ?? result.boundingBox.minY) * size.height
+    private static func topY(_ result: PlateResult, in rect: CGRect) -> CGFloat {
+        rect.minY + (result.plateQuad.map(\.y).min() ?? result.boundingBox.minY) * rect.height
     }
 
-    private static func centerX(_ result: PlateResult, in size: CGSize) -> CGFloat {
+    private static func centerX(_ result: PlateResult, in rect: CGRect) -> CGFloat {
         let xs = result.plateQuad.map(\.x)
         let mid = ((xs.min() ?? result.boundingBox.minX) + (xs.max() ?? result.boundingBox.maxX)) / 2
-        return min(max(mid * size.width, 60), max(60, size.width - 60))
+        let x = rect.minX + mid * rect.width
+        return min(max(x, 60), max(60, rect.width - 60))
     }
 }
 
 /// Draws the plate outline (the 4 pose corners, or the box corners when there are no
-/// keypoints) as a filled/stroked quadrilateral in the view's coordinate space.
+/// keypoints) as a filled/stroked quadrilateral. `rect` is the on-screen area the
+/// normalized coordinates belong to (the fitted image rect, not the container).
 struct PlateQuadShape: Shape {
     /// Normalized (top-left origin, 0...1) corner points.
     let quad: [CGPoint]
+    /// On-screen rect those normalized points map into. Defaults to the whole shape frame.
+    var rect: CGRect? = nil
 
-    func path(in rect: CGRect) -> Path {
+    func path(in bounds: CGRect) -> Path {
+        let target = rect ?? bounds
         var path = Path()
-        let points = quad.map { CGPoint(x: $0.x * rect.width, y: $0.y * rect.height) }
+        let points = quad.map { CGPoint(x: target.minX + $0.x * target.width,
+                                        y: target.minY + $0.y * target.height) }
         guard points.count >= 3 else { return path }
         path.addLines(points)
         path.closeSubpath()

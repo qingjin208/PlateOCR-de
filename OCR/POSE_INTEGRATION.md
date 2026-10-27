@@ -75,8 +75,11 @@ RGB 且 /255（NCHW）。Ultralytics 导出并训练时用的就是 RGB（`Image
 - 只有当某个导出确实是在 BGR 流水线上训练/导出时，才把 `useRGB` 切到 `false`（App 内有
   「输入通道顺序」开关，可运行时切换，无需重编译）。**不要**因为「真机效果差」就盲切 BGR——
   这类症状更常见的原因是角点/几何或阈值问题。
-- `letterboxedUpright` 与旧 Core ML 检测器用的 `letterboxed`（带 y 翻转）**不同**，
-  不可混用——pose 模型需要正向（非翻转）缓冲。
+- `letterboxedUpright` 与旧 Core ML 检测器用的 `letterboxed` 现在**都是正向（top-row-first）
+  缓冲**（2026-10-27 修正）：`CGContext(data:...)` 的坐标原点在**左下角**，不翻转会把图像
+  **上下颠倒**写进缓冲，于是模型看到的是垂直镜像的画面——这正是「PC 一下全对、真机不行」的根因。
+  `flipY` 默认 `true`（= 翻转成正向，与 PC `canvas[pad_y:pad_y+nh] = resized` 一致）。
+  App 调试面板有「Letterbox 缓冲朝向」开关，可真机 A/B 验证（框上下镜像 → 说明应为反向）。
 
 ## 4. 用 Python 参考验证（无需 Xcode）
 

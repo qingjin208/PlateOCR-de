@@ -118,6 +118,9 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         var recognizer: PlateTextRecognizing
         var engine: OCREngine
         var useRGB: Bool
+        /// See `ONNXPoseLicensePlateDetector.flipY`: top-row-first letterbox buffer
+        /// (`true` = the PC/OpenCV layout). Default `true`.
+        var flipY: Bool
         var enhancements: RecognitionEnhancements
     }
 
@@ -156,8 +159,45 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         }
     }
 
+    /// Whether the detector's letterbox buffer is written top-row-first (see
+    /// `ONNXPoseLicensePlateDetector.flipY`). Default `true`, i.e. the same layout the PC
+    /// reference feeds the model. Flip it only for an A/B test on device: with the wrong
+    /// value the boxes land vertically mirrored and OCR reads nothing.
+    public var flipLetterbox: Bool {
+        get { runtimeState.withLock { $0.flipY } }
+        set {
+            runtimeState.withLock { $0.flipY = newValue }
+            #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc)
+            if let det = detector as? ONNXPoseLicensePlateDetector { det.flipY = newValue }
+            #endif
+        }
+    }
+
     /// Human-readable description of the active detector (on-device diagnostics).
     public var detectorInfo: String { String(describing: type(of: detector)) }
+
+    /// Confidence gate on the raw model output (see `LicensePlateDetecting`).
+    /// Default 0.25, matching the PC reference's Ultralytics default.
+    public var confidenceThreshold: Float {
+        get { detector.confidenceThreshold }
+        set { detector.confidenceThreshold = newValue }
+    }
+
+    /// NMS IoU (see `LicensePlateDetecting`). Default 0.7, matching the PC reference.
+    public var nmsIoUThreshold: Float {
+        get { detector.nmsIoUThreshold }
+        set { detector.nmsIoUThreshold = newValue }
+    }
+
+    /// The exact 640x640 image fed to the model, when snapshotting is enabled. Compare it
+    /// with the PC pipeline's input to tell "wrong tensor" from "wrong decode" apart.
+    public var debugSnapshot: CGImage? { detector.debugSnapshot }
+
+    /// Enables capturing `debugSnapshot`. Off by default: it costs one extra image copy.
+    public var captureDebugSnapshot: Bool {
+        get { detector.captureDebugSnapshot }
+        set { detector.captureDebugSnapshot = newValue }
+    }
 
     /// Opt-in strengthening of the validation / overlay stage. See
     /// `RecognitionEnhancements`. Toggling it is cheap: the value is read on every
@@ -188,7 +228,8 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         self.postProcessor = postProcessor
         self.corrector = PerspectivePlateCorrector()
         self.runtimeState = OSAllocatedUnfairLock(initialState: RuntimeState(
-            recognizer: recognizer, engine: ocrEngine, useRGB: true, enhancements: enhancements))
+            recognizer: recognizer, engine: ocrEngine, useRGB: true, flipY: true,
+            enhancements: enhancements))
     }
 
     /// Convenience initializer for the common setup: Core ML YOLO detector + Vision OCR,
@@ -235,46 +276,54 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     #endif
 
     public func recognize(in image: CGImage, mode: RecognitionMode = .fast) async throws -> [PlateResult] {
-        // Still images enter the same external-frame pipeline as video and live capture.
-        let buffer = try makePixelBuffer(from: CIImage(cgImage: image))
-        return try await recognizeFrame(buffer, mode: mode, tiled: true).plates
+        // Straight to the CGImage core: wrapping the still in a CVPixelBuffer first would
+        // add a render round-trip plus a colour-space conversion (see `recognizeImage`).
+        try await recognizeImage(image, mode: mode, tiled: true).plates
     }
 
-    /// Converts an upright still image to an external BGRA frame, scaling oversized images.
-    public func prepareFrame(from image: CGImage) throws -> CVPixelBuffer {
-        try makePixelBuffer(from: CIImage(cgImage: image))
-    }
-
-    /// - Parameter tiled: run tiled detection (see `LicensePlateDetecting.detectTiled`).
-    ///   Turn this on for **still images** whose plates may be small relative to the
-    ///   frame (collages, parking lots, forecourt photos): the pose model's input is a
-    ///   fixed 640x640, so a single pass letterboxes the whole picture and small plates
-    ///   fall below the confidence threshold. Leave off for video/live frames, where
-    ///   latency matters more than the last few tiny plates.
-    public func recognizeFrame(_ pixelBuffer: CVPixelBuffer,
-                               orientation: CGImagePropertyOrientation = .up,
+    /// Detection + OCR on an already-upright `CGImage`.
+    ///
+    /// Media paths (still photos, video frames) call this directly instead of going through
+    /// `recognizeFrame`'s `CVPixelBuffer`. The buffer route is only needed for camera
+    /// capture, and for media it costs an extra render **and** an extra conversion
+    /// (`CIImage` renders through a wide-gamut working space, so a BGRA buffer round-trip
+    /// can shift colours relative to the PC pipeline, which feeds the model the decoded
+    /// sRGB bytes unchanged). Keeping the pixel out of the loop removes one of the last
+    /// real differences from the PC reference.
+    public func recognizeImage(_ image: CGImage,
                                mode: RecognitionMode = .fast,
                                tiled: Bool = false,
                                onDetections: (@Sendable ([PlateDetection], CGSize) -> Void)? = nil) async throws -> PlateFrameResult {
-        let width = CVPixelBufferGetWidth(pixelBuffer), height = CVPixelBufferGetHeight(pixelBuffer)
-        let format = CVPixelBufferGetPixelFormatType(pixelBuffer)
-        guard width > 0, height > 0, max(width, height) <= 3840, min(width, height) <= 2160,
-              [kCVPixelFormatType_32BGRA, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
-               kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange].contains(format) else {
-            throw LicensePlateError.invalidInput("Expected BGRA or NV12, up to 3840 x 2160 (or portrait equivalent).")
-        }
         try Task.checkCancellation()
-        let ci = CIImage(cvPixelBuffer: pixelBuffer).oriented(orientation)
-        guard let image = context.createCGImage(ci, from: ci.extent) else {
-            throw LicensePlateError.invalidInput("Could not render the input frame.")
-        }
+        // Cap the working resolution the same way `recognizeFrame` caps buffers: a
+        // 48 MP photo gains nothing for a 640-input model and only burns memory/time.
+        let image = clampedToWorkingSize(image)
         let imageSize = CGSize(width: image.width, height: image.height)
+        // Still photos: run the whole-image pass FIRST — that is exactly what the PC
+        // reference does (one letterbox of the entire picture), and the plate scale it
+        // produces is the scale the model was trained on. The tiled pass is then used only
+        // to add the plates that are too small to survive a full-frame letterbox, and the
+        // two sets are merged with NMS. Previously only the tiled pass ran, which crops
+        // 1024px tiles and therefore shows the model plates at a very different scale —
+        // the "right on the PC, wrong on the phone" case.
+        let primary = try await detector.detect(in: image)
+        let merged: [PlateDetection]
+        if tiled {
+            let tiledDetections = try await detector.detectTiled(in: image)
+            merged = (primary + tiledDetections)
+        } else {
+            merged = primary
+        }
         // Re-anchor each detection's box on its pose keypoints (see
         // `PlateDetection.alignedToKeypoints`): the model's box head and keypoint head can
         // disagree, and the keypoints visibly track the plate. One geometry for the
         // corrector, the OCR fallback crop, the tracker and every overlay.
-        let detections = try await (tiled ? detector.detectTiled(in: image) : detector.detect(in: image))
-            .map(\.alignedToKeypoints)
+        let aligned = merged.map(\.alignedToKeypoints)
+        // Cross-pass NMS: the same plate seen by both passes must be reported once, while
+        // genuinely distinct plates (low IoU) are all kept. The threshold comes from the
+        // detector so it matches the in-model NMS — a fixed 0.5 here used to re-merge
+        // plates the model had just decided to keep apart.
+        let detections = YOLOOutputDecoder.suppress(aligned, threshold: detector.nmsIoUThreshold)
         onDetections?(detections, imageSize)
 
         // One frame can hold several plates (car park, traffic scene, forecourt). Each
@@ -328,6 +377,50 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         return PlateFrameResult(detections: detections, plates: results, imageSize: imageSize)
     }
 
+    /// Converts an upright still image to an external BGRA frame, scaling oversized images.
+    public func prepareFrame(from image: CGImage) throws -> CVPixelBuffer {
+        try makePixelBuffer(from: CIImage(cgImage: image))
+    }
+
+    /// - Parameter tiled: run tiled detection (see `LicensePlateDetecting.detectTiled`).
+    ///   Turn this on for **still images** whose plates may be small relative to the
+    ///   frame (collages, parking lots, forecourt photos): the pose model's input is a
+    ///   fixed 640x640, so a single pass letterboxes the whole picture and small plates
+    ///   fall below the confidence threshold. Leave off for video/live frames, where
+    ///   latency matters more than the last few tiny plates.
+    public func recognizeFrame(_ pixelBuffer: CVPixelBuffer,
+                               orientation: CGImagePropertyOrientation = .up,
+                               mode: RecognitionMode = .fast,
+                               tiled: Bool = false,
+                               onDetections: (@Sendable ([PlateDetection], CGSize) -> Void)? = nil) async throws -> PlateFrameResult {
+        let width = CVPixelBufferGetWidth(pixelBuffer), height = CVPixelBufferGetHeight(pixelBuffer)
+        let format = CVPixelBufferGetPixelFormatType(pixelBuffer)
+        guard width > 0, height > 0, max(width, height) <= 3840, min(width, height) <= 2160,
+              [kCVPixelFormatType_32BGRA, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+               kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange].contains(format) else {
+            throw LicensePlateError.invalidInput("Expected BGRA or NV12, up to 3840 x 2160 (or portrait equivalent).")
+        }
+        try Task.checkCancellation()
+        let ci = CIImage(cvPixelBuffer: pixelBuffer).oriented(orientation)
+        guard let image = context.createCGImage(ci, from: ci.extent) else {
+            throw LicensePlateError.invalidInput("Could not render the input frame.")
+        }
+        // Delegate to the CGImage core: one geometry, one set of thresholds, and no
+        // second render for media that never needed a pixel buffer in the first place.
+        return try await recognizeImage(image, mode: mode, tiled: tiled, onDetections: onDetections)
+    }
+
+    /// Scales an oversized still/frame down to the working resolution the detector is
+    /// dimensioned for (3840 x 2160 max). Only kicks in for very large photos — everything
+    /// else is passed through untouched, so the bytes the model sees are the decoded image.
+    private func clampedToWorkingSize(_ image: CGImage) -> CGImage {
+        let w = image.width, h = image.height
+        guard w > 0, h > 0, max(w, h) > 3840 || min(w, h) > 2160 else { return image }
+        let scale = min(CGFloat(3840) / CGFloat(max(w, h)), CGFloat(2160) / CGFloat(min(w, h)))
+        let ci = CIImage(cgImage: image).transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        return context.createCGImage(ci, from: ci.extent) ?? image
+    }
+
     private func makePixelBuffer(from image: CIImage) throws -> CVPixelBuffer {
         // Scale oversized photos down while preserving their aspect ratio.
         let extent = image.extent
@@ -346,7 +439,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     }
 
     public func recognizeVideo(at url: URL, mode: RecognitionMode = .fast,
-                               maxSamples: Int = 30,
+                               maxSamples: Int = 60,
                                progress: (@Sendable (Double) -> Void)? = nil) async throws -> [PlateResult] {
         let samples = try await recognizeVideoSamples(at: url, mode: mode,
                                                       maxSamples: maxSamples, progress: progress)
@@ -357,7 +450,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     /// plates and size. A player overlay needs this: the aggregate result list spans many
     /// frames, so drawing it onto one frame would place boxes in the wrong coordinate space.
     public func recognizeVideoSamples(at url: URL, mode: RecognitionMode = .fast,
-                                      maxSamples: Int = 30,
+                                      maxSamples: Int = 60,
                                       progress: (@Sendable (Double) -> Void)? = nil) async throws -> [PlateVideoSample] {
         let asset = AVURLAsset(url: url)
         let duration = try await asset.load(.duration).seconds
@@ -384,10 +477,17 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
             try Task.checkCancellation()
             let time = CMSampleBufferGetPresentationTimeStamp(sample).seconds
             guard time >= nextTime, let pixel = CMSampleBufferGetImageBuffer(sample) else { continue }
-            let buffer = try autoreleasepool {
-                try makePixelBuffer(from: CIImage(cvPixelBuffer: pixel).transformed(by: transform))
+            // Apply the track's preferred transform so a sideways phone clip is upright,
+            // then hand the CGImage straight to the core — the old `makePixelBuffer`
+            // round-trip added a render plus a colour-space conversion per frame.
+            let cgImage: CGImage? = autoreleasepool {
+                let ci = CIImage(cvPixelBuffer: pixel).transformed(by: transform)
+                return context.createCGImage(ci, from: ci.extent)
             }
-            let frame = try await recognizeFrame(buffer, mode: mode)
+            guard let cgImage else {
+                throw LicensePlateError.invalidInput("Could not render the input frame.")
+            }
+            let frame = try await recognizeImage(cgImage, mode: mode)
             samples.append(PlateVideoSample(id: seen, time: time, imageSize: frame.imageSize,
                                             detections: frame.detections, plates: frame.plates))
             seen += 1

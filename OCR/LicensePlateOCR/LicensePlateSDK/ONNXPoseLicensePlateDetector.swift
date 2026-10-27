@@ -41,13 +41,65 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
     /// `LicensePlateRecognizer.useRGB` so a differently trained export can be handled
     /// without recompiling.
     var useRGB: Bool
+    /// Whether the letterbox buffer is written top-row-first (`true`), like every
+    /// Ultralytics / OpenCV / PIL pipeline — including the PC reference
+    /// (`canvas[pad_y:pad_y+nh] = resized`, row 0 = visual top).
+    ///
+    /// This is NOT cosmetic. A `CGContext` created with `CGContext(data:...)` uses the
+    /// Quartz default coordinate system with its origin at the **bottom-left**, so drawing
+    /// a `CGImage` into it without a flip transform writes the picture **upside down** into
+    /// the buffer — the model then sees a vertically mirrored scene. The PC pipeline has
+    /// no such flip, which is exactly why "the PC detects everything, the phone does not".
+    /// The flip is kept runtime-settable so the two behaviours can be A/B-tested on device
+    /// without rebuilding.
+    var flipY: Bool
+
+    /// Mutable thresholds in a box: a `Sendable` class may not have mutable stored
+    /// properties, and `@unchecked` on the box keeps that warning off the detector.
+    private final class Tunables: @unchecked Sendable {
+        var confidence: Float
+        var iou: Float
+        var captureSnapshot = false
+        init(confidence: Float, iou: Float) { self.confidence = confidence; self.iou = iou }
+    }
+    private let tunables: Tunables
+    /// `CGImage` is not `Sendable`, so the snapshot lives in its own box too.
+    private final class SnapshotBox: @unchecked Sendable { var image: CGImage? }
+    private let snapshotBox = SnapshotBox()
+
+    // MARK: - Runtime tunables / diagnostics
+
+    public var confidenceThreshold: Float {
+        get { tunables.confidence }
+        set { tunables.confidence = newValue }
+    }
+    public var nmsIoUThreshold: Float {
+        get { tunables.iou }
+        set { tunables.iou = newValue }
+    }
+    public var debugSnapshot: CGImage? { snapshotBox.image }
+    public var captureDebugSnapshot: Bool {
+        get { tunables.captureSnapshot }
+        set { tunables.captureSnapshot = newValue }
+    }
+
+    /// The base config with the current runtime thresholds applied.
+    private func currentConfig() -> YOLOConfig {
+        var cfg = config
+        cfg.confidenceThreshold = tunables.confidence
+        cfg.iouThreshold = tunables.iou
+        return cfg
+    }
 
     public init(modelName: String = "De-plate-pose-500",
                 config: YOLOConfig = .germanPlatePose,
-                useRGB: Bool = true) throws {
+                useRGB: Bool = true,
+                flipY: Bool = true) throws {
         self.config = config
         self.inputSize = config.inputSize
         self.useRGB = useRGB
+        self.flipY = flipY
+        self.tunables = Tunables(confidence: config.confidenceThreshold, iou: config.iouThreshold)
 
         #if SWIFT_PACKAGE
         let bundle = Bundle.module
@@ -75,7 +127,10 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
     public func detect(in image: CGImage) async throws -> [PlateDetection] {
         try Task.checkCancellation()
 
-        let prepared = try image.letterboxedUpright(size: inputSize)
+        let cfg = currentConfig()
+        let prepared = try image.letterboxedUpright(size: inputSize, flipY: flipY,
+                                                    snapshot: tunables.captureSnapshot)
+        if let snapshot = prepared.image { snapshotBox.image = snapshot }
         let tensorData = try Self.inputTensorData(from: prepared.buffer, useRGB: useRGB)
         // `shape` is NSArray<NSNumber*>: build it explicitly instead of relying on an
         // `[Int] as [NSNumber]` bridging cast.
@@ -100,14 +155,14 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
         // "great on PC, poor on device" symptom, because the PC reference auto-detects
         // the layout. `YOLOOutputDecoder` already honors both via tensor strides, so we
         // just feed the actual shape. Float16 exports are upcast to float32.
-        let array = try Self.outputMultiArray(from: outValue, config: config)
+        let array = try Self.outputMultiArray(from: outValue, config: cfg)
 
-        let decoded = try YOLOOutputDecoder.decode(array, config: config)
+        let decoded = try YOLOOutputDecoder.decode(array, config: cfg)
         let mapped = decoded.map {
             YOLOOutputDecoder.remap($0, scale: prepared.scale, padX: prepared.padX, padY: prepared.padY,
                 imageSize: CGSize(width: image.width, height: image.height))
         }.filter { $0.rect.width > 0 && $0.rect.height > 0 }
-        return YOLOOutputDecoder.suppress(mapped, threshold: config.iouThreshold)
+        return YOLOOutputDecoder.suppress(mapped, threshold: cfg.iouThreshold)
     }
 
     // MARK: - Preprocessing: upright letterbox -> RGB/255 NCHW float32
@@ -181,10 +236,17 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
 }
 
 extension CGImage {
-    /// Upright (OpenCV-style, top-row-first) letterbox. YOLOv8/Ultralytics expects the
-    /// image in this orientation; do NOT reuse the flipped `letterboxed` used by the old
-    /// Core ML detector. Returns geometry (scale/pad) consistent with `YOLOOutputDecoder.remap`.
-    func letterboxedUpright(size: Int) throws -> (buffer: CVPixelBuffer, scale: CGFloat, padX: CGFloat, padY: CGFloat) {
+    /// Letterbox into a 640x640 buffer for the pose model.
+    ///
+    /// - Parameter flipY: write the picture top-row-first (`true`, the Ultralytics /
+    ///   OpenCV / PC-reference layout: row 0 = visual top, `padY` measured from the top)
+    ///   instead of letting the Quartz default (bottom-left origin) mirror it vertically.
+    ///   See `ONNXPoseLicensePlateDetector.flipY`.
+    /// - Parameter snapshot: also return the buffer as a `CGImage`, i.e. exactly what the
+    ///   model sees. Comparing it with the PC pipeline's input settles "is the tensor
+    ///   wrong, or is the decode wrong?" in one step.
+    /// - Returns: geometry (scale/pad) consistent with `YOLOOutputDecoder.remap`.
+    func letterboxedUpright(size: Int, flipY: Bool = true, snapshot: Bool = false) throws -> (buffer: CVPixelBuffer, scale: CGFloat, padX: CGFloat, padY: CGFloat, image: CGImage?) {
         let side = CGFloat(size)
         let scale = min(side / CGFloat(width), side / CGFloat(height))
         let resizedWidth = round(CGFloat(width) * scale)
@@ -208,9 +270,18 @@ extension CGImage {
         }
         context.setFillColor(red: 114 / 255, green: 114 / 255, blue: 114 / 255, alpha: 1)
         context.fill(CGRect(x: 0, y: 0, width: side, height: side))
-        // No y-flip: keep the image upright so row 0 is the visual top (OpenCV convention).
+        if flipY {
+            // `CGContext(data:...)` starts in the Quartz default system (origin
+            // bottom-left), which would put the picture into the buffer upside down.
+            // Flipping first makes row 0 the visual top and `padY` a top offset —
+            // byte-for-byte the layout the PC reference produces.
+            context.translateBy(x: 0, y: side)
+            context.scaleBy(x: 1, y: -1)
+        }
         context.draw(self, in: CGRect(x: padX, y: padY, width: resizedWidth, height: resizedHeight))
-        return (buffer, scale, padX, padY)
+        // `makeImage()` bakes in the current transform, i.e. it returns the buffer exactly
+        // as laid out in memory — what the model actually sees, flip and all.
+        return (buffer, scale, padX, padY, snapshot ? context.makeImage() : nil)
     }
 }
 #endif
