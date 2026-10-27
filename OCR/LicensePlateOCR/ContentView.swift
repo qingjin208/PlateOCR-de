@@ -802,7 +802,9 @@ private struct PlateCardView: View {
 struct CameraResultsView: View {
     let controller: CameraController
 
-    private static let timeFormatter: DateFormatter = {
+    /// `fileprivate` on purpose: the sibling `HistoryCardView` in this file formats its
+    /// timestamp with the same formatter, and `private` would hide it from that type.
+    fileprivate static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "HH:mm:ss"
         return f
