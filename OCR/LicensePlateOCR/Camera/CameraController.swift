@@ -360,7 +360,7 @@ final class CameraController: NSObject {
         // GPU render fails — recognition still runs, only the orientation may be off.
         let workingBuffer = rotateToPortrait(frame.buffer) ?? frame.buffer
         do {
-            let result = try await recognizer.recognizeFrame(workingBuffer, orientation: .up, mode: mode) {
+            let result = try await recognizer.recognizeFrame(workingBuffer, orientation: .up, mode: mode, tiled: false) {
                 [weak self] detections, size in
                 Task { @MainActor in
                     guard let self, self.active, self.liveEnabled, !self.paused,

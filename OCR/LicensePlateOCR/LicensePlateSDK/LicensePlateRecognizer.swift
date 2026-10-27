@@ -13,6 +13,7 @@ import CoreGraphics
 import AVFoundation
 import CoreImage
 import ImageIO
+import os
 
 /// Boxes and validated OCR results for one oriented frame. Coordinates start at the top-left.
 public struct PlateFrameResult: Sendable {
@@ -95,7 +96,7 @@ public struct PlateCandidate: Sendable, Identifiable {
 public protocol LicensePlateRecognizing: Sendable {
     /// Accepts caller-owned BGRA/NV12 frames without creating a capture session.
     func recognizeFrame(_ pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation,
-                        mode: RecognitionMode,
+                        mode: RecognitionMode, tiled: Bool,
                         onDetections: (@Sendable ([PlateDetection], CGSize) -> Void)?) async throws -> PlateFrameResult
     /// Recognizes plates in a still image.
     func recognize(in image: CGImage, mode: RecognitionMode) async throws -> [PlateResult]
@@ -105,21 +106,38 @@ public protocol LicensePlateRecognizing: Sendable {
 }
 
 /// Default implementation wiring together the detector, recognizer and post-processor.
+///
+/// `LicensePlateRecognizing` refines `Sendable`, and a `Sendable` class may only have
+/// immutable (`let`) stored properties. The runtime switches (OCR engine, channel order,
+/// enhancements) are therefore grouped behind an `OSAllocatedUnfairLock` instead of
+/// plain `var`s — the lock also makes swapping the recognizer mid-flight safe.
 public final class LicensePlateRecognizer: LicensePlateRecognizing {
 
+    /// The UI-driven mutable state, guarded by `runtimeState`.
+    private struct RuntimeState: Sendable {
+        var recognizer: PlateTextRecognizing
+        var engine: OCREngine
+        var useRGB: Bool
+        var enhancements: RecognitionEnhancements
+    }
+
     private let detector: LicensePlateDetecting
-    private var recognizer: PlateTextRecognizing
     private let postProcessor: PlatePostProcessor
     private let corrector: PerspectivePlateCorrector
     private let recognitionLanguages: [Locale.Language]
     private let context = CIContext(options: [.cacheIntermediates: false])
+    private let runtimeState: OSAllocatedUnfairLock<RuntimeState>
 
     /// The OCR engine currently in use. Setting it rebuilds the underlying recognizer,
     /// so the App can let the user switch between Apple Vision and PaddleOCR at runtime.
     public var ocrEngine: OCREngine {
-        didSet {
-            guard ocrEngine != oldValue else { return }
-            recognizer = ocrEngine.makeRecognizer(languages: recognitionLanguages)
+        get { runtimeState.withLock { $0.engine } }
+        set {
+            runtimeState.withLock { state in
+                guard state.engine != newValue else { return }
+                state.engine = newValue
+                state.recognizer = newValue.makeRecognizer(languages: recognitionLanguages)
+            }
         }
     }
 
@@ -128,10 +146,12 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     /// (`Scripts/pose_pipeline_reference.py`: `Image.open(...).convert("RGB")` → `/255`).
     /// Exposed so the Demo app can flip it at runtime if a differently trained export
     /// needs BGR.
-    public var useRGB: Bool = true {
-        didSet {
+    public var useRGB: Bool {
+        get { runtimeState.withLock { $0.useRGB } }
+        set {
+            runtimeState.withLock { $0.useRGB = newValue }
             #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc)
-            if let det = detector as? ONNXPoseLicensePlateDetector { det.useRGB = useRGB }
+            if let det = detector as? ONNXPoseLicensePlateDetector { det.useRGB = newValue }
             #endif
         }
     }
@@ -142,7 +162,10 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     /// Opt-in strengthening of the validation / overlay stage. See
     /// `RecognitionEnhancements`. Toggling it is cheap: the value is read on every
     /// recognition pass, so nothing has to be rebuilt or reloaded.
-    public var enhancements: RecognitionEnhancements = .off
+    public var enhancements: RecognitionEnhancements {
+        get { runtimeState.withLock { $0.enhancements } }
+        set { runtimeState.withLock { $0.enhancements = newValue } }
+    }
 
     /// The default pipeline uses the original plate model converted to Core ML and Apple OCR.
     public convenience init() {
@@ -161,12 +184,11 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
                 postProcessor: PlatePostProcessor = PlatePostProcessor(),
                 enhancements: RecognitionEnhancements = .off) {
         self.detector = detector
-        self.recognizer = recognizer
         self.recognitionLanguages = recognitionLanguages
-        self.ocrEngine = ocrEngine
         self.postProcessor = postProcessor
         self.corrector = PerspectivePlateCorrector()
-        self.enhancements = enhancements
+        self.runtimeState = OSAllocatedUnfairLock(initialState: RuntimeState(
+            recognizer: recognizer, engine: ocrEngine, useRGB: true, enhancements: enhancements))
     }
 
     /// Convenience initializer for the common setup: Core ML YOLO detector + Vision OCR,
@@ -256,10 +278,10 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         // Collaborators are captured as locals so each task only touches value types /
         // Sendable existentials.
         let corrector = self.corrector
-        let recognizer = self.recognizer
+        // Snapshot the locked runtime state: each task only touches Sendable values, and
+        // the App may flip the OCR engine / enhancements while a pass is in flight.
+        let (recognizer, enhancements) = runtimeState.withLock { ($0.recognizer, $0.enhancements) }
         let postProcessor = self.postProcessor
-        // Snapshot the opt-in switches: the App may flip them while a pass is in flight.
-        let enhancements = self.enhancements
         // `CGImage` is immutable and safe to read from several tasks at once; the wrapper
         // states that explicitly so the task group does not need to copy the frame.
         let source = SendableImage(image: image)
