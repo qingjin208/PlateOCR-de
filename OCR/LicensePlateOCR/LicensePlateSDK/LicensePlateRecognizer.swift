@@ -269,7 +269,12 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
             throw LicensePlateError.invalidInput("Could not render the input frame.")
         }
         let imageSize = CGSize(width: image.width, height: image.height)
-        let detections = try await tiled ? detector.detectTiled(in: image) : detector.detect(in: image)
+        // Re-anchor each detection's box on its pose keypoints (see
+        // `PlateDetection.alignedToKeypoints`): the model's box head and keypoint head can
+        // disagree, and the keypoints visibly track the plate. One geometry for the
+        // corrector, the OCR fallback crop, the tracker and every overlay.
+        let detections = try await (tiled ? detector.detectTiled(in: image) : detector.detect(in: image))
+            .map(\.alignedToKeypoints)
         onDetections?(detections, imageSize)
 
         // One frame can hold several plates (car park, traffic scene, forecourt). Each

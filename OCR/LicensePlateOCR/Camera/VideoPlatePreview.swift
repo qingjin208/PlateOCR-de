@@ -66,7 +66,7 @@ final class VideoPlateView: UIView {
         super.init(frame: frame)
         playerLayer.videoGravity = .resizeAspect
         detectionLayer.fillColor = nil
-        detectionLayer.strokeColor = UIColor.systemYellow.cgColor
+        detectionLayer.strokeColor = PlateOverlayPalette.unifiedColor.cgColor
         detectionLayer.lineWidth = PlateOverlayPalette.detectionStrokeWidth
         layer.addSublayer(detectionLayer)
         layer.addSublayer(plateContainerLayer)

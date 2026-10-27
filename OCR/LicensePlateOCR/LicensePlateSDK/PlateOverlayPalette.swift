@@ -2,14 +2,10 @@
  License Plate OCR SDK — Overlay styling
 
  Abstract:
- Gives every plate a stable pseudo-random solid colour so a caller can fill the plate
- area with a semi-transparent tint and outline it with a solid stroke of the same hue.
-
- The colour is derived from a deterministic FNV-1a hash of the plate's key (its
- canonical text, else a quantised position), which means:
-   - the same plate keeps the same colour across video samples / live frames;
-   - different plates get visually distinct colours;
-   - the palette is stable across app launches (`hashValue` is not, so it is not used).
+ Draws every plate with ONE fixed green (`unifiedColor`): a semi-transparent green fill
+ plus a solid green outline, for recognized and not-yet-recognized plates alike. The
+ original per-plate FNV-1a palette helpers are kept below so the key/hashing logic and
+ the ability to restore distinct per-plate colours remain available.
  */
 
 import Foundation
@@ -37,23 +33,6 @@ public struct PlateOverlayColor: Sendable, Hashable {
 }
 
 public enum PlateOverlayPalette {
-    /// Solid, high-contrast hues. Deliberately saturated so a 25–30 % fill stays
-    /// readable on both the white German plate and a dark car body.
-    public static let colors: [PlateOverlayColor] = [
-        PlateOverlayColor(red: 0.95, green: 0.20, blue: 0.26),  // red
-        PlateOverlayColor(red: 1.00, green: 0.52, blue: 0.06),  // orange
-        PlateOverlayColor(red: 0.98, green: 0.78, blue: 0.10),  // amber
-        PlateOverlayColor(red: 0.55, green: 0.84, blue: 0.12),  // lime
-        PlateOverlayColor(red: 0.13, green: 0.78, blue: 0.40),  // green
-        PlateOverlayColor(red: 0.04, green: 0.76, blue: 0.70),  // teal
-        PlateOverlayColor(red: 0.09, green: 0.70, blue: 0.95),  // cyan
-        PlateOverlayColor(red: 0.20, green: 0.45, blue: 0.98),  // blue
-        PlateOverlayColor(red: 0.44, green: 0.36, blue: 0.96),  // indigo
-        PlateOverlayColor(red: 0.66, green: 0.34, blue: 0.95),  // violet
-        PlateOverlayColor(red: 0.90, green: 0.27, blue: 0.84),  // magenta
-        PlateOverlayColor(red: 0.98, green: 0.36, blue: 0.60)   // pink
-    ]
-
     /// Alpha of the solid-colour plate fill.
     public static let fillAlpha: Double = 0.28
     /// Stroke width of the matching solid outline.
@@ -61,10 +40,16 @@ public enum PlateOverlayPalette {
     /// Stroke width used for the underlying detection box, drawn under the plate tint.
     public static let detectionStrokeWidth: CGFloat = 1.5
 
-    /// Stable colour for an arbitrary key.
+    /// The single overlay colour requested by the App (2026-10-27): every plate —
+    /// recognized or not — draws in the same green instead of the per-plate palette, so
+    /// the boxes no longer change colour from frame to frame.
+    public static let unifiedColor = PlateOverlayColor(red: 0.10, green: 0.78, blue: 0.35)
+
+    /// Stable colour for an arbitrary key. Returns the fixed green for every key; the
+    /// hashing helpers below are kept so existing call sites (and the ability to restore
+    /// per-plate colours) keep working unchanged.
     public static func color(for key: String) -> PlateOverlayColor {
-        guard !colors.isEmpty else { return PlateOverlayColor(red: 0.13, green: 0.78, blue: 0.40) }
-        return colors[Int(fnv1a(key) % UInt64(colors.count))]
+        unifiedColor
     }
 
     /// Stable colour for a plate: keyed on its canonical text when available, else on a
@@ -103,6 +88,43 @@ public extension PlateDetection {
                 CGPoint(x: rect.maxX, y: rect.minY),
                 CGPoint(x: rect.maxX, y: rect.maxY),
                 CGPoint(x: rect.minX, y: rect.maxY)]
+    }
+
+    /// Re-anchors the detection box on the pose keypoints: the box head and the keypoint
+    /// head of the pose model can disagree (field screenshots show the regression box
+    /// drifting a fraction of its own width off the plate while the corner quad sits
+    /// exactly on it). Every consumer — the perspective corrector's box-vs-quad checks,
+    /// the OCR fallback crop, the NMS/tracker matching and the on-screen rectangles —
+    /// then works from ONE geometry: the quad the keypoints actually describe.
+    ///
+    /// The original regression box is kept when the keypoints are absent or not a
+    /// plausible plate quad (non-convex ordering, degenerate area, non-plate aspect), so
+    /// a broken keypoint read can never make the box worse than it already was.
+    var alignedToKeypoints: PlateDetection {
+        guard let quad = keypoints, quad.count == 4,
+              quad.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { return self }
+        let xs = quad.map(\.x), ys = quad.map(\.y)
+        let minX = max(0, (xs.min() ?? 0)), maxX = min(1, (xs.max() ?? 0))
+        let minY = max(0, (ys.min() ?? 0)), maxY = min(1, (ys.max() ?? 0))
+        guard minX < maxX, minY < maxY else { return self }
+        let width = maxX - minX, height = maxY - minY
+        // Plausibility gate (same spirit as `PerspectivePlateCorrector.validatedQuad`):
+        // a plate is a wide, convex quadrilateral. Anything else — keep the box.
+        guard width / max(height, 1e-6) >= 1.0, width / max(height, 1e-6) <= 14 else { return self }
+        let a = quad[0], b = quad[1], c = quad[2], d = quad[3]
+        let doubleArea = (a.x*b.y - b.x*a.y) + (b.x*c.y - c.x*b.y)
+            + (c.x*d.y - d.x*c.y) + (d.x*a.y - a.x*d.y)
+        guard abs(doubleArea) / 2 >= 1e-5 else { return self }
+        let orientation = doubleArea > 0 ? CGFloat(1) : CGFloat(-1)
+        let points = [a, b, c, d]
+        for i in 0..<4 {
+            let p0 = points[i], p1 = points[(i + 1) % 4], p2 = points[(i + 2) % 4]
+            let cross = (p1.x - p0.x) * (p2.y - p1.y) - (p1.y - p0.y) * (p2.x - p1.x)
+            guard cross * orientation > 0 else { return self }
+        }
+        return PlateDetection(rect: CGRect(x: minX, y: minY, width: width, height: height),
+                              confidence: confidence, label: label,
+                              keypoints: quad, keypointConfidences: keypointConfidences)
     }
 }
 

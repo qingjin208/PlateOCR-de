@@ -2,8 +2,8 @@ import SwiftUI
 import UIKit
 
 /// Camera tab, redesigned to match the HTML mockup's live-detection flow:
-///   • idle (detection off): a clean live feed with a dashed guide frame, and the
-///     "开始实时识别" button placed BELOW the preview (not overlaid on the video).
+///   • idle (detection off): a clean live feed with a "开始实时识别" button placed BELOW
+///     the preview (not overlaid on the video).
 ///   • active (detection on): the feed carries only lightweight telemetry pills in its two
 ///     corners — status + plate count top-left, latency top-right — plus the detection
 ///     boxes/labels (the actual recognition output) and a decorative scanning beam.
@@ -23,8 +23,6 @@ struct CameraView: View {
                 CameraPreview(controller: controller)
                     // Scanning beam is detection visualisation, not a control — keep on feed.
                     .overlay(alignment: .top) { scanBeam }
-                    // Dashed guide frame is a placement hint, not a button — keep on feed.
-                    .overlay(alignment: .center) { guideFrame }
                     // Live telemetry: tiny pills pinned to the two top corners, so the
                     // numbers stay visible without stealing a whole row of height.
                     .overlay(alignment: .topLeading) { statusPill }
@@ -47,18 +45,6 @@ struct CameraView: View {
         }
         .background(Color.black)
         .clipShape(RoundedRectangle(cornerRadius: 16))
-    }
-
-    // MARK: - Idle guide frame (dashed hint on the feed, no button)
-
-    @ViewBuilder
-    private var guideFrame: some View {
-        if !controller.liveEnabled {
-            RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [6]))
-                .foregroundStyle(.white.opacity(0.5))
-                .frame(width: 220, height: 120)
-        }
     }
 
     // MARK: - Live telemetry pills (pinned to the two top corners of the feed)

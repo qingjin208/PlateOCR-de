@@ -57,10 +57,10 @@ final class PreviewView: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        // The detection box stays as a thin yellow rectangle; the plate tint (below) is
-        // the "recognised plate area" filled with a solid colour.
+        // The detection rectangle draws in the same unified green as the plate tint
+        // (see `PlateOverlayPalette.unifiedColor`).
         overlayLayer.fillColor = nil
-        overlayLayer.strokeColor = UIColor.systemYellow.cgColor
+        overlayLayer.strokeColor = PlateOverlayPalette.unifiedColor.cgColor
         overlayLayer.lineWidth = PlateOverlayPalette.detectionStrokeWidth
         videoPreviewLayer.addSublayer(overlayLayer)
         videoPreviewLayer.addSublayer(plateContainerLayer)
@@ -266,7 +266,7 @@ final class PreviewView: UIView {
                                 height: detection.rect.height * size.height))
         }
         boxes.path = path
-        boxes.strokeColor = UIColor.systemYellow.cgColor
+        boxes.strokeColor = PlateOverlayPalette.unifiedColor.cgColor
         boxes.fillColor = nil
         boxes.lineWidth = 1.5
         container.addSublayer(boxes)
