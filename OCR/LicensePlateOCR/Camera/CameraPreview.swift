@@ -33,19 +33,17 @@ struct CameraPreview: UIViewRepresentable {
 final class PreviewView: UIView {
     private var detections: [PlateDetection] = []
     private var results: [PlateResult] = []
-    /// Size (in pixels) of the upright portrait frame the SDK analyzes. The preview layer
-    /// shows that same portrait frame (the raw landscape buffer rotated to portrait by the
-    /// preview connection), so the overlay maps detection points through an aspect-fill
-    /// transform keyed on this size — not through `layerPointConverted`, whose capture-device
-    /// space is the *unrotated* (landscape) buffer and would double-rotate the boxes.
+    /// Size (in pixels) of the upright portrait frame the SDK analyzes. Retained for
+    /// reference/telemetry; the overlay no longer maps through this directly — it goes via
+    /// `layerPointConverted`, which applies the preview's own videoGravity + rotation, so
+    /// `imageSize` is no longer part of the coordinate math.
     private var imageSize: CGSize = .zero
     private var labels: [CATextLayer] = []
     /// One layer per plate: semi-transparent solid fill + same-colour solid outline.
     private var plateLayers: [CAShapeLayer] = []
     // Detection points are normalized (top-left, 0..1) in the upright portrait frame the
-    // SDK analyzes. The preview shows that same portrait frame, so `toLayer` maps them with
-    // a plain aspect-fill transform (see the function) — no rotate/mirror math, no
-    // `layerPointConverted`, nothing that can drift between frames or devices.
+    // SDK analyzes. `toLayer` converts them to native-landscape coords and routes them
+    // through `layerPointConverted`, so the boxes always track the (rotated) video.
 
     /// Overlay layer used to draw the detection boxes; one path, many rects.
     private let overlayLayer = CAShapeLayer()
@@ -97,32 +95,33 @@ final class PreviewView: UIView {
         renderOverlay()
     }
 
-    /// Maps a detection-space point (normalized, top-left origin, in the upright portrait
-    /// frame the SDK analyzes) onto the preview layer's bounds.
+    /// Maps a detection-space point (normalized, top-left origin, in the upright PORTRAIT
+    /// frame the SDK analyzes) onto the preview layer's local coordinate space.
     ///
-    /// We do **not** use `layerPointConverted(fromCaptureDevicePoint:)`: per Apple's own
-    /// definition the capture-device coordinate space is the *unrotated* (landscape) sensor
-    /// picture, and that method applies the preview connection's rotation as part of the
-    /// conversion. Our detection points are already portrait, so feeding them in would
-    /// rotate them a second time and push every box ~90° off — the exact drift that was
-    /// reported. Instead we map portrait→portrait directly: the preview displays the same
-    /// portrait frame (raw landscape buffer rotated to portrait by the preview connection),
-    /// scaled with `videoGravity = .resizeAspectFill`, so an aspect-fill transform keyed on
-    /// `imageSize` is exact and leaves no rotate/mirror ambiguity.
+    /// The detection points live in the portrait frame produced by `rotateToPortrait`
+    /// (the raw landscape buffer rotated 90° CW via `CIImage.oriented(.right)`). The
+    /// preview layer, however, shows the *native landscape* frame and rotates it 90° CW
+    /// through `videoRotationAngle`; the overlay is a plain sublayer of that layer, so it
+    /// sits in the layer's UNROTATED local space while the video content is rotated
+    /// within it. Mapping portrait→portrait with a naive aspect-fill therefore puts the
+    /// boxes in the wrong place (the real plate's box can even fall off-screen) — the
+    /// exact "定位错误 / 检测不到" symptom. The correct path is:
+    ///   1. undo the 90° CW rotation to return to native-landscape normalized coords, then
+    ///   2. let `layerPointConverted` apply the preview's own `videoGravity` +
+    ///      `videoRotationAngle` to reach the on-screen point.
+    /// This removes the entire class of rotate/mirror/aspect-fill drift the manual math
+    /// was prone to, and it is the Apple-recommended way to draw detections on a preview.
     private func toLayer(_ point: CGPoint) -> CGPoint {
-        let bounds = videoPreviewLayer.bounds
-        guard bounds.width > 0, bounds.height > 0,
-              imageSize.width > 0, imageSize.height > 0 else {
-            // Defensive fallback before the first frame's size is known.
-            return CGPoint(x: point.x * bounds.width, y: point.y * bounds.height)
-        }
-        let scale = max(bounds.width / imageSize.width, bounds.height / imageSize.height)
-        let contentW = imageSize.width * scale
-        let contentH = imageSize.height * scale
-        let offsetX = (bounds.width - contentW) * 0.5
-        let offsetY = (bounds.height - contentH) * 0.5
-        return CGPoint(x: offsetX + point.x * contentW,
-                       y: offsetY + point.y * contentH)
+        // `rotateToPortrait` turns the landscape sensor image into the upright portrait
+        // frame the detector analyzes via a 90° CW rotation (`CIImage.oriented(.right)`).
+        // To draw a portrait-space point on the preview we must undo that rotation: the
+        // inverse of a 90° CW turn is a 90° CCW turn, which maps a portrait point (px, py)
+        // back to native-landscape normalized coords as (1 - py, px). `layerPointConverted`
+        // then re-applies the preview's own `videoGravity` + 90° CW `videoRotationAngle`,
+        // closing the loop so the box lands exactly on the plate. (Verified by a round-trip:
+        // portrait (0.5, 0.4) → native (0.6, 0.5) → on-screen (0.5, 0.4).)
+        let native = CGPoint(x: 1 - point.y, y: point.x)
+        return videoPreviewLayer.layerPointConverted(fromCaptureDevicePoint: native)
     }
 
     private func renderOverlay() {
@@ -134,10 +133,10 @@ final class PreviewView: UIView {
         plateLayers = []
         CATransaction.commit()
         let detectionPath = CGMutablePath()
-        // Detection points are normalized (top-left, 0..1) in the upright portrait frame.
-        // `toLayer` maps them with a plain aspect-fill transform that matches what the
-        // preview layer actually draws, so boxes track the video exactly under aspect-fill
-        // and any layout change — there is no rotate/mirror step that could drift.
+        // Detection points are normalized (top-left, 0..1) in the upright portrait frame
+        // the SDK analyzes. `toLayer` sends them through `layerPointConverted`, which
+        // applies the preview's own videoGravity + videoRotationAngle, so the boxes track
+        // the rotated video exactly under any layout or aspect-fill change.
         func toLayerRect(_ rect: CGRect) -> CGRect {
             // NB: the outer `toLayer(_ point: CGPoint)` is the point mapper. Name this
             // helper differently so the calls below resolve to that CGPoint version,

@@ -154,7 +154,8 @@ struct ContentView: View {
                 SettingsSheet(mode: $mode,
                               ocrEngine: $ocrEngine,
                               useRGB: $useRGB,
-                              enhancements: $enhancements) { withAnimation { showSettings = false } }
+                              enhancements: $enhancements,
+                              controller: cameraController) { withAnimation { showSettings = false } }
                     .padding(.horizontal, 4)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -268,6 +269,11 @@ struct ContentView: View {
                 .allowsHitTesting(source == .camera)
                 .clipShape(RoundedRectangle(cornerRadius: 16))
                 .padding(.horizontal)
+            // Transport + history controls sit *below* the preview on the app background,
+            // so the video area has no black bar (see `CameraControls`).
+            if source == .camera {
+                CameraControls(controller: cameraController)
+            }
             if source == .image { imagePreview }
             if source == .video { videoPreview }
         }
@@ -558,6 +564,10 @@ private struct SettingsSheet: View {
     @Binding var ocrEngine: OCREngine
     @Binding var useRGB: Bool
     @Binding var enhancements: RecognitionEnhancements
+    /// Camera controller, so the sheet can toggle the on-device diagnostic echo
+    /// (`debugEchoEnabled`) that reveals whether the frame fed to detection matches the
+    /// displayed preview — the key to diagnosing the "plate box in the wrong place" report.
+    let controller: CameraController
     var onDone: () -> Void
 
     /// Debug-only options (RGB/BGR channel order) are collapsed by default so the sheet's
@@ -603,6 +613,11 @@ private struct SettingsSheet: View {
                     .pickerStyle(.segmented)
                     .frame(width: 130)
                     .tint(appAccent)
+                }
+                settingRow(title: "诊断回显", subtitle: "预览角落显示送入检测的原始帧+框，用于排查定位/旋转问题") {
+                    Toggle("", isOn: Binding(
+                        get: { controller.debugEchoEnabled },
+                        set: { controller.debugEchoEnabled = $0 }))
                 }
             }
             .tint(.secondary)
@@ -705,6 +720,31 @@ private struct GermanPlateView: View {
     }
 }
 
+/// Shows the actual plate region that the pose model's 4 corner keypoints cut out and
+/// perspective-corrected — the same image fed to the OCR engine — instead of a synthetic
+/// plate drawing. Falls back to the drawn `GermanPlateView` when no corrected image is
+/// available (e.g. the detector fell back to a plain box crop, or the result came from an
+/// older pipeline that does not produce one).
+private struct CorrectedPlateView: View {
+    let cgImage: CGImage?
+    let text: String
+
+    var body: some View {
+        if let cgImage {
+            Image(uiImage: UIImage(cgImage: cgImage))
+                .resizable()
+                .interpolation(.medium)
+                .scaledToFit()
+                .frame(height: 38)
+                .background(Color.white)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.4), lineWidth: 1))
+        } else {
+            GermanPlateView(text: text)
+        }
+    }
+}
+
 private struct ConfidenceBar: View {
     let value: Float
 
@@ -738,7 +778,7 @@ private struct PlateCardView: View {
                 .frame(width: 8, height: 38)
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 10) {
-                    GermanPlateView(text: result.text)
+                    CorrectedPlateView(cgImage: result.correctedPlateImage, text: result.text)
                     Spacer(minLength: 0)
                     Text("#\(index)").font(.caption).foregroundStyle(.secondary)
                     Text("\(Int(result.confidence * 100))%").font(.caption).foregroundStyle(.secondary)
@@ -756,26 +796,72 @@ private struct PlateCardView: View {
     }
 }
 
-/// Live camera results, shown as the same German-plate cards below the preview.
+/// Live camera results, shown as a persistent, newest-first history list below the
+/// preview. Each entry is a plate the SDK actually recognised; the current frame's plates
+/// are already boxed on the video, so the list carries the rolling log.
 struct CameraResultsView: View {
     let controller: CameraController
 
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
+
     var body: some View {
-        if controller.liveResults.isEmpty {
+        let history = controller.recognitionHistory
+        if history.isEmpty {
             EmptyView()
         } else {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
-                    Text("实时识别 \(controller.liveResults.count) 块车牌").font(.headline)
+                    Text("识别历史（\(history.count)）").font(.headline)
                     Spacer(minLength: 0)
+                    Text("最新在上").font(.caption).foregroundStyle(.tertiary)
                 }
                 .padding(.horizontal)
-                ForEach(Array(controller.liveResults.enumerated()), id: \.element.id) { pair in
-                    PlateCardView(result: pair.element, index: pair.offset + 1)
+                // Newest first: `recognitionHistory` is appended chronologically, so reverse it.
+                ForEach(Array(history.reversed().enumerated()), id: \.element.id) { pair in
+                    HistoryCardView(entry: pair.element)
                         .padding(.horizontal)
                 }
             }
         }
+    }
+}
+
+/// One logged recognition: stable plate colour, German-plate visual, timestamp and
+/// confidence — mirroring `PlateCardView` but keyed on the history entry rather than the
+/// current frame's result array.
+private struct HistoryCardView: View {
+    let entry: CameraRecognitionLogEntry
+
+    private var paletteColor: PlateOverlayColor {
+        PlateOverlayPalette.color(for: PlateOverlayPalette.key(text: entry.result.text,
+                                                              box: entry.result.boundingBox))
+    }
+    private var color: Color { Color(paletteColor.cgColor) }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            RoundedRectangle(cornerRadius: 4)
+                .fill(color)
+                .frame(width: 8, height: 38)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 10) {
+                    CorrectedPlateView(cgImage: entry.result.correctedPlateImage, text: entry.result.text)
+                    Spacer(minLength: 0)
+                    Text(CameraResultsView.timeFormatter.string(from: entry.date))
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("\(Int(entry.result.confidence * 100))%")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                ConfidenceBar(value: entry.result.confidence)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(12)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
     }
 }
 

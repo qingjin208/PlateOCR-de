@@ -35,19 +35,14 @@ struct CameraView: View {
                     description: Text(controller.setupFailed ? "相机初始化失败，请检查设备。" : "请允许相机访问权限。"))
             }
 
-            // Controls sit BELOW the video, never on top of it.
-            if controller.liveEnabled {
-                controlBar
-                    .padding(.top, 8)
-                    .padding(.bottom, 10)
-            } else {
-                startButton
-                    .padding(.top, 12)
-                    .padding(.bottom, 14)
-            }
-
+            // Controls (开始 / 暂停 / 停止 / 清空) live in `CameraControls`, rendered by the
+            // parent *below* this preview on the app's normal background — so the video area
+            // itself shows no black bar beneath it.
             if let message = controller.errorMessage {
-                Text(message).font(.footnote).foregroundStyle(.red).padding(8)
+                Text(message).font(.footnote).foregroundStyle(.red)
+                    .frame(maxWidth: .infinity)
+                    .padding(8)
+                    .background(Color.black)
             }
         }
         .background(Color.black)
@@ -64,27 +59,6 @@ struct CameraView: View {
                 .foregroundStyle(.white.opacity(0.5))
                 .frame(width: 220, height: 120)
         }
-    }
-
-    // MARK: - Start button (below the feed, idle state)
-
-    @ViewBuilder
-    private var startButton: some View {
-        Button {
-            controller.liveEnabled = true
-            controller.paused = false
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "camera.fill")
-                Text("开始实时识别")
-                    .font(.headline)
-            }
-            .foregroundStyle(.white)
-            .frame(maxWidth: .infinity)
-            .frame(height: 50)
-            .background(appAccent, in: RoundedRectangle(cornerRadius: 14))
-        }
-        .padding(.horizontal, 16)
     }
 
     // MARK: - Live telemetry pills (pinned to the two top corners of the feed)
@@ -125,44 +99,6 @@ struct CameraView: View {
         }
     }
 
-    // MARK: - Active control bar (below the feed, compact capsules)
-
-    @ViewBuilder
-    private var controlBar: some View {
-        HStack(spacing: 10) {
-            Button {
-                controller.paused.toggle()
-                if controller.paused { controller.isAnalyzing = false }
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: controller.paused ? "play.fill" : "pause.fill")
-                        .font(.system(size: 11, weight: .bold))
-                    Text(controller.paused ? "继续" : "暂停")
-                        .font(.system(size: 13, weight: .semibold))
-                }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 18)
-                .frame(height: 34)
-                .background(Color.white.opacity(0.16), in: Capsule())
-            }
-
-            Button {
-                controller.liveEnabled = false
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "stop.fill")
-                        .font(.system(size: 10, weight: .bold))
-                    Text("停止")
-                        .font(.system(size: 13, weight: .semibold))
-                }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 18)
-                .frame(height: 34)
-                .background(appAccent, in: Capsule())
-            }
-        }
-    }
-
     // MARK: - Scanning beam (detection visualisation, kept on the feed)
 
     @ViewBuilder
@@ -195,6 +131,119 @@ private struct ScanBeam: View {
                         offset = maxOffset
                     }
                 }
+        }
+    }
+}
+
+/// Camera transport + history controls.
+///
+/// Rendered by the parent *below* the preview, on the app's normal background (never on the
+/// black preview surface), so the video area carries no black bar and the "清空检测历史"
+/// button can share the same row as 暂停 / 停止.
+struct CameraControls: View {
+    let controller: CameraController
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if controller.liveEnabled {
+                pauseButton
+                stopButton
+                Spacer(minLength: 0)
+                if !controller.recognitionHistory.isEmpty { clearButton }
+            } else if controller.recognitionHistory.isEmpty {
+                startButtonFullWidth
+            } else {
+                startButton
+                Spacer(minLength: 0)
+                clearButton
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
+    }
+
+    private var startButton: some View {
+        Button {
+            controller.liveEnabled = true
+            controller.paused = false
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "camera.fill")
+                Text("开始实时识别").font(.headline)
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 22)
+            .frame(height: 50)
+            .background(appAccent, in: RoundedRectangle(cornerRadius: 14))
+        }
+    }
+
+    private var startButtonFullWidth: some View {
+        Button {
+            controller.liveEnabled = true
+            controller.paused = false
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "camera.fill")
+                Text("开始实时识别").font(.headline)
+            }
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .frame(height: 50)
+            .background(appAccent, in: RoundedRectangle(cornerRadius: 14))
+        }
+    }
+
+    private var pauseButton: some View {
+        Button {
+            controller.paused.toggle()
+            if controller.paused { controller.isAnalyzing = false }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: controller.paused ? "play.fill" : "pause.fill")
+                    .font(.system(size: 11, weight: .bold))
+                Text(controller.paused ? "继续" : "暂停")
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 18)
+            .frame(height: 34)
+            .background(Color.white.opacity(0.16), in: Capsule())
+        }
+    }
+
+    private var stopButton: some View {
+        Button {
+            controller.liveEnabled = false
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 10, weight: .bold))
+                Text("停止")
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 18)
+            .frame(height: 34)
+            .background(appAccent, in: Capsule())
+        }
+    }
+
+    private var clearButton: some View {
+        Button {
+            controller.clearRecognitionHistory()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "trash")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("清空检测历史")
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 14)
+            .frame(height: 34)
+            .background(Color(.tertiarySystemBackground), in: Capsule())
         }
     }
 }
