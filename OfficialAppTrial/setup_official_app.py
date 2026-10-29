@@ -272,6 +272,36 @@ def ensure_app(app_dir: Path | None, clone_to: Path) -> Path:
     return app_dir
 
 
+def python_has_module(module: str) -> bool:
+    return subprocess.call([sys.executable, "-c", f"import {module}"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
+
+
+def ensure_ultralytics() -> None:
+    """Make sure ultralytics (+ coremltools) is importable by the running python."""
+    if python_has_module("ultralytics") and python_has_module("coremltools"):
+        return
+
+    pkg = '"ultralytics[export-coreml]>=8.4.142"'
+    log(f"  ultralytics/coremltools missing for {sys.executable}")
+    log(f"  $ {sys.executable} -m pip install {pkg}")
+    if run([sys.executable, "-m", "pip", "install", pkg]) != 0:
+        # pip may itself be missing (e.g. bare Xcode Command Line Tools python3).
+        if not python_has_module("pip"):
+            log("  pip itself is missing. Try one of:")
+            log(f"    {sys.executable} -m ensurepip --upgrade")
+            log("    brew install python3           # then: python3 -m pip install " + pkg)
+            log('    uv pip install "ultralytics[export-coreml]>=8.4.142"')
+        raise SystemExit(
+            f"ERROR: could not install ultralytics automatically.\n"
+            f"       Install it manually into the SAME python you use to run this script:\n"
+            f"         {sys.executable} -m pip install {pkg}\n"
+            f"       then re-run setup_official_app.py")
+    if not (python_has_module("ultralytics") and python_has_module("coremltools")):
+        raise SystemExit("ERROR: ultralytics installed but still not importable. "
+                         "Check your python environment.")
+
+
 def ensure_model(model: Path | None, weights: Path, out_dir: Path) -> Path:
     if model:
         model = model.resolve()
@@ -287,6 +317,7 @@ def ensure_model(model: Path | None, weights: Path, out_dir: Path) -> Path:
         return existing[0].resolve()
 
     log("[2/4] Exporting Core ML from weights (needs ultralytics + macOS) ...")
+    ensure_ultralytics()
     export_script = SCRIPT_DIR / "export_pose_coreml.py"
     if run([sys.executable, str(export_script), "--weights", str(weights),
             "--out", str(out_dir)]) != 0:
