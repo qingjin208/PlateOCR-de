@@ -1,8 +1,39 @@
-# 德国车牌识别：车牌检测 + Apple Vision OCR
+# 德国车牌识别：车牌关键点检测 + OCR
 
-当前 `feature/coreml-plate-detection` 分支使用由原 **`yolo.nb` 计算图和权重转换的 `license_plate_yolo.mlmodel`**，通过 Apple Core ML 执行车牌检测。129 个 FP32 参数张量与原模型逐字节一致，没有替换检测模型。检测后逐个裁剪车牌区域，继续交给 Apple Vision `RecognizeTextRequest` 识别字符。
+当前 `feature/coreml-plate-detection` 分支的**检测链路整体采用官方 Ultralytics YOLO iOS 方案**：
+`De-plate-pose-500.mlpackage`（Core ML，由你的 `.pt` 权重导出，4 角点关键点模型）通过官方
+`UltralyticsYOLO` Swift Package 推理。前处理（Vision `scaleFit` letterbox）、pose 解码、NMS
+与阈值（conf 0.25 / iou 0.7）**全部由官方包负责**，与官方 App 完全一致；检测后用 4 角点做透视
+矫正，再交给 OCR（Apple Vision / PaddleOCR 可切换）并做德国车牌格式校验。
 
-> **新增：德国车牌关键点（Pose）检测 + 可切换 OCR**。已接入训练好的 `De-plate-pose-500.onnx`（4 角点关键点模型），通过 ONNX Runtime 推理，用 4 角点做透视矫正后再 OCR；App 可在 **Apple Vision / PaddleOCR** 间选择引擎并传入 SDK。详见 [POSE_INTEGRATION.md](POSE_INTEGRATION.md)。默认构建仍走原 Core ML 检测器，链接 `onnxruntime` 后自动改用 pose 模型。
+> **为什么换掉原来的自研链路**：同一份权重在官方 App 上效果很好、速度也快，说明模型没问题，
+> 差异在自研的 letterbox / 解码 / NMS / 叠加映射。本分支把这些环节整体替换为官方实现。
+> 分支里只保留了 Demo 的图片/视频/相机输入与 OCR 逻辑。
+
+**ONNX Runtime 与旧 `license_plate_yolo.mlmodel` 已彻底移除**（Podfile、`Pods/`、`.onnx`、
+自研 `YOLOOutputDecoder` 全部删除），改用 SPM 依赖 `https://github.com/ultralytics/yolo-ios-app`。
+
+## Mac 上首次构建（三步）
+
+```bash
+# 1. 导出 Core ML 模型（需要 ultralytics；脚本会自动安装）
+python3 Scripts/export_pose_coreml.py \
+    --weights <path>/De-plate-pose-500.pt \
+    --out ../Models/export
+# 把生成的 De-plate-pose-500.mlpackage 放进
+#   LicensePlateOCR/LicensePlateSDK/Resources/
+# （该目录是 Xcode「文件夹同步」目录，会自动打进 App 包，无需手动添加资源）
+
+# 2. 转换工程依赖（已执行一次，重复运行会提示 already patched）
+python3 Scripts/retarget_to_coreml.py
+
+# 3. 打开工程，让 Xcode 解析 SPM 包
+open LicensePlateOCR.xcodeproj   # File > Packages > Resolve Package Versions（若未自动解析）
+```
+
+选 arm64 iPhone 真机（iOS 18+）运行。**首次启动会编译 Core ML 模型，稍慢属正常。**
+
+> 若工程已由脚本改好，第 2 步可跳过；`project.pbxproj.bak` 是改动前的备份。
 
 `main` 保留原 Paddle Lite / `.nb` 方案，基准提交为 `9ec6f24`。本分支不链接 Paddle Lite，也不向 App 打包 `.nb`；原 `.nb` 仅保留在 `Models/source/` 作为离线转换输入。
 
@@ -37,7 +68,12 @@ for plate in frame.plates {
 
 ## 项目文件
 
-- `LicensePlateOCR/LicensePlateSDK/Resources/license_plate_yolo.mlmodel`：由原 `.nb` 转换的 Core ML 车牌检测模型。
+- `LicensePlateOCR/LicensePlateSDK/Resources/De-plate-pose-500.mlpackage`：Core ML pose 模型
+  （由你的 `.pt` 经 `Scripts/export_pose_coreml.py` 导出，**不入库**，需本地生成）。
+- `LicensePlateOCR/LicensePlateSDK/UltralyticsPosePlateDetector`（在 `LicensePlateDetector.swift`）：
+  官方包驱动的检测器，输出归一化矩形 + 4 角点。
+- `Scripts/export_pose_coreml.py`：`.pt` → `.mlpackage`（`format=coreml, imgsz=640, quantize=8, nms=False`）。
+- `Scripts/retarget_to_coreml.py`：工程依赖改造（删 CocoaPods/onnxruntime，加官方 SPM 包）。
 - `Models/source/yolo.nb`：原模型，仅供离线转换和一致性验证。
 - `Models/nb-coreml-provenance.json`：模型 SHA-256、原始参数映射和转换元数据。
 - `Models/nb-coreml-validation.json`：CPU 图计算一致性验证结果。
