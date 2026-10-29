@@ -1,21 +1,21 @@
 import Foundation
 import CoreGraphics
 import CoreImage
-@preconcurrency import CoreML
+import UIKit
+import UltralyticsYOLO
 
 /// A plate box. When the model is a pose model, `keypoints` carries the plate
-/// corners (e.g. 4 corners for the German-plate pose model) in the same
-/// coordinate space as `rect`: 640-input pixels before `YOLOOutputDecoder.remap`,
-/// normalized 0...1 (top-left origin) after it.
+/// corners (4 corners for the German-plate pose model) in the same coordinate
+/// space as `rect`: normalized 0...1 with a top-left origin, relative to the
+/// image that was passed to `detect(in:)`.
 public struct PlateDetection: Sendable {
     public let rect: CGRect
     public let confidence: Float
     public let label: String
     /// Optional pose keypoints (corner points) mirroring `rect`'s coordinate space.
     public let keypoints: [CGPoint]?
-    /// Per-keypoint visibility/confidence. For the Ultralytics YOLOv8-pose ONNX used here this
-    /// is a Sigmoid output in [0, 1] (verified: max ~0.998), NOT the COCO label convention
-    /// (0 absent / 1 occluded / 2 visible). Do not compare it against values > 1.
+    /// Per-keypoint confidence in [0, 1] (Ultralytics pose exports a Sigmoid head,
+    /// NOT the COCO 0/1/2 label convention).
     public let keypointConfidences: [Float]?
     public init(rect: CGRect, confidence: Float, label: String,
                 keypoints: [CGPoint]? = nil, keypointConfidences: [Float]? = nil) {
@@ -24,19 +24,72 @@ public struct PlateDetection: Sendable {
     }
 }
 
-/// Tunables + diagnostics every detector exposes.
-///
-/// The thresholds are runtime-settable because the working value can only be confirmed
-/// on device against a known-good PC run. The PC pipeline that "detects everything"
-/// (`截取车牌区域并保存-2.py`) calls `model(image)` with no overrides, so it runs on the
-/// Ultralytics defaults **conf = 0.25, iou = 0.7** — those are the values mirrored here.
-/// (The video script passes `conf=0.7` explicitly; that is a *stricter* run, not the
-/// reference for recall.)
+// MARK: - Geometry helpers
+
+/// Corner ordering and quad utilities shared by the detector and the overlay.
+public enum PlateGeometry {
+
+    /// Reorders 4 points to [leftTop, rightTop, rightBottom, leftBottom] using the
+    /// centroid quadrants. The pose model is trained with a fixed corner order, but
+    /// trusting it blindly turns a mis-ordered quad into a bow-tie warp, so the order
+    /// is always re-derived from geometry.
+    public static func orderedCorners(_ points: [CGPoint]) -> [CGPoint] {
+        guard points.count == 4 else { return points }
+        let cx = points.reduce(0) { $0 + $1.x } / 4
+        let cy = points.reduce(0) { $0 + $1.y } / 4
+        var lt = CGPoint.zero, rt = CGPoint.zero, rb = CGPoint.zero, lb = CGPoint.zero
+        for p in points {
+            switch (p.x < cx, p.y < cy) {
+            case (true, true): lt = p
+            case (false, true): rt = p
+            case (false, false): rb = p
+            case (true, false): lb = p
+            }
+        }
+        return [lt, rt, rb, lb]
+    }
+
+    /// Axis-aligned bounds of a point set, clamped to the unit square.
+    public static func boundingBox(_ points: [CGPoint]) -> CGRect? {
+        guard let first = points.first else { return nil }
+        var minX = first.x, minY = first.y, maxX = first.x, maxY = first.y
+        for p in points.dropFirst() {
+            minX = min(minX, p.x); minY = min(minY, p.y)
+            maxX = max(maxX, p.x); maxY = max(maxY, p.y)
+        }
+        return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+            .intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+    }
+
+    public static func iou(_ a: CGRect, _ b: CGRect) -> CGFloat {
+        let overlap = a.intersection(b)
+        guard !overlap.isNull, overlap.width > 0, overlap.height > 0 else { return 0 }
+        let union = a.width * a.height + b.width * b.height - overlap.width * overlap.height
+        guard union > 0 else { return 0 }
+        return (overlap.width * overlap.height) / union
+    }
+}
+
+/// Greedy IoU non-maximum suppression over normalized detection rectangles.
+public enum PlateNMS {
+    public static func suppress(_ detections: [PlateDetection], threshold: Float) -> [PlateDetection] {
+        let sorted = detections.sorted { $0.confidence > $1.confidence }
+        var kept: [PlateDetection] = []
+        for candidate in sorted {
+            let dominated = kept.contains { PlateGeometry.iou($0.rect, candidate.rect) > CGFloat(threshold) }
+            if !dominated { kept.append(candidate) }
+        }
+        return kept
+    }
+}
+
+// MARK: - Detector protocol
+
+/// Tunables every detector exposes.
 public protocol LicensePlateDetecting: AnyObject, Sendable {
     var confidenceThreshold: Float { get set }
     var nmsIoUThreshold: Float { get set }
     /// The exact image handed to the model (640x640 letterbox) when snapshotting is on.
-    /// Comparing this against the PC input settles "is the tensor wrong?" in one step.
     var debugSnapshot: CGImage? { get }
     var captureDebugSnapshot: Bool { get set }
     func detect(in image: CGImage) async throws -> [PlateDetection]
@@ -51,23 +104,12 @@ public extension LicensePlateDetecting {
 
 /// Tiled detection for large still images.
 ///
-/// The German-plate pose model exports a **fixed 640x640 input**, so a single pass
-/// letterboxes the whole picture and every plate shrinks with it — on multi-plate
-/// collages / parking-lot photos most plates drop below the confidence threshold
-/// (the "detects everything on the PC, only a couple of boxes in the app" case).
-/// Slicing the image into overlapping tiles keeps each region at a resolution the
-/// model actually sees; the per-tile results are mapped back to full-image
-/// normalized coordinates and merged with NMS. Small images fall through to one
-/// plain `detect` pass, so the common case pays no extra cost.
+/// The pose model has a fixed 640x640 input, so a single pass letterboxes the whole
+/// picture and every plate shrinks with it. Slicing into overlapping tiles keeps each
+/// region at a resolution the model actually sees; per-tile results are mapped back to
+/// full-image normalized coordinates and merged with NMS. Small images fall through to
+/// one plain `detect` pass.
 public extension LicensePlateDetecting {
-    /// - Parameters:
-    ///   - tileSize: maximum tile edge in pixels (each tile is letterboxed to the model
-    ///     input by `detect`).
-    ///   - overlap: fractional overlap between neighbouring tiles so a plate cut off at
-    ///     one tile edge is fully inside the next one.
-    ///   - nmsThreshold: IoU threshold for the final cross-tile merge (a plate seen by
-    ///     two tiles must not be reported twice). Matches the PC reference's 0.7; lower
-    ///     values merge genuinely distinct plates that sit close together.
     func detectTiled(in image: CGImage, tileSize: CGFloat = 1024, overlap: CGFloat = 0.3,
                      nmsThreshold: Float = 0.7) async throws -> [PlateDetection] {
         let width = CGFloat(image.width), height = CGFloat(image.height)
@@ -75,8 +117,6 @@ public extension LicensePlateDetecting {
         guard max(width, height) > max(tile.width, tile.height) else {
             return try await detect(in: image)
         }
-        // Tile origins along one axis: step until the next tile would overshoot, then
-        // always pin the last tile to the far edge so the border is fully covered.
         func offsets(length: CGFloat, tileLength: CGFloat) -> [CGFloat] {
             guard length > tileLength else { return [0] }
             let step = tileLength * (1 - overlap)
@@ -95,7 +135,6 @@ public extension LicensePlateDetecting {
             for tileX in offsets(length: width, tileLength: tile.width) {
                 let crop = CGRect(x: tileX, y: tileY, width: tile.width, height: tile.height).integral
                 guard let tileImage = image.cropping(to: crop) else { continue }
-                // `detect` returns boxes/keypoints normalized to the tile it was given.
                 for detection in try await detect(in: tileImage) {
                     func mapX(_ nx: CGFloat) -> CGFloat { min(1, max(0, (crop.minX + nx * crop.width) / width)) }
                     func mapY(_ ny: CGFloat) -> CGFloat { min(1, max(0, (crop.minY + ny * crop.height) / height)) }
@@ -109,184 +148,130 @@ public extension LicensePlateDetecting {
                 }
             }
         }
-        return YOLOOutputDecoder.suppress(proposals, threshold: nmsThreshold)
+        return PlateNMS.suppress(proposals, threshold: nmsThreshold)
     }
 }
 
-/// The bundled model produces [1, 5, 8400], with xywh in 640x640 input pixels.
-public struct YOLOConfig: Sendable {
-    public var inputSize: Int
-    public var numClasses: Int
-    public var classNames: [String]
-    public var confidenceThreshold: Float
-    public var iouThreshold: Float
-    public var format: OutputFormat
-    public var targetClassIndices: [Int]
-    /// Number of pose keypoints per detection (0 for a plain detector model).
-    /// The pose output layout is `[1, 5 + numKeypoints*3, N]`.
-    public var numKeypoints: Int
-    public enum OutputFormat: Sendable, Equatable {
-        case xywhCenterPixels
-        case xywhCenterNormalized
-        case xyxyCornerNormalized
-    }
-    public init(inputSize: Int = 640, numClasses: Int = 1, classNames: [String] = ["license_plate"],
-                confidenceThreshold: Float = 0.45, iouThreshold: Float = 0.45,
-                format: OutputFormat = .xywhCenterPixels, targetClassIndices: [Int] = [0],
-                numKeypoints: Int = 0) {
-        self.inputSize = inputSize; self.numClasses = numClasses; self.classNames = classNames
-        self.confidenceThreshold = confidenceThreshold; self.iouThreshold = iouThreshold
-        self.format = format; self.targetClassIndices = targetClassIndices
-        self.numKeypoints = numKeypoints
-    }
-    public static var germanPlate: YOLOConfig { YOLOConfig() }
-    /// German-plate keypoint (pose) model: `De-plate-pose-500`. Output is
-    /// `[1, 17, 8400]` = 5 (box + conf) + 4 corners * 3 (x, y, visibility).
-    /// Corner order is fixed by the training config: left_top, right_top, right_bottom, left_bottom.
-    public static var germanPlatePose: YOLOConfig {
-        // Thresholds mirror the PC reference exactly (`截取车牌区域并保存-2.py` calls
-        // `model(image)` with no overrides, i.e. Ultralytics defaults conf=0.25/iou=0.7):
-        //   • conf 0.25 — the PC run that "detects everything" uses this. A 0.45 gate
-        //     silently discards every plate the model scores between 0.25 and 0.45.
-        //   • iou 0.7 — must match. At 0.45 two neighbouring plates whose boxes overlap
-        //     by ~half are merged into one: the "2-3 plates in frame, 1 reported" symptom.
-        // Both stay runtime-tunable so the working pair can be confirmed on device.
-        YOLOConfig(inputSize: 640, numClasses: 1, classNames: ["plate"],
-                   confidenceThreshold: 0.25, iouThreshold: 0.7,
-                   format: .xywhCenterPixels, targetClassIndices: [0], numKeypoints: 4)
-    }
-}
+// MARK: - Official UltralyticsYOLO Core ML pose detector
 
-/// Executes the original NB graph and weights through Core ML's eligible compute units.
-public final class CoreMLLicensePlateDetector: LicensePlateDetecting, @unchecked Sendable {
-    private let model: MLModel
-    private let config: YOLOConfig
-    private let inputName: String
-    private let outputName: String
-    /// Mutable thresholds live in a box: a `Sendable` class may not have mutable stored
-    /// properties, and `@unchecked` on the box suppresses the warning without lying about
-    /// the detector itself (writes are single-value assignments from the UI).
+/// Plate corner detector backed by the **official Ultralytics YOLO iOS package**.
+///
+/// Detection quality on device matches the official app because preprocessing
+/// (Vision `scaleFit` letterbox), the pose decoder, NMS and the thresholds all come
+/// from that package instead of a hand-rolled pipeline. The model is the Core ML
+/// `.mlpackage` exported from `De-plate-pose-500.pt` (`Scripts/export_pose_coreml.py`);
+/// the package compiles it on first use, so the raw `.mlpackage` can ship in Resources.
+///
+/// Output contract (unchanged for the rest of the SDK): rect and keypoints are
+/// normalized 0...1 with a top-left origin, relative to the image passed in.
+public final class UltralyticsPosePlateDetector: LicensePlateDetecting, @unchecked Sendable {
+
+    public let modelName: String
+
+    private let yolo: YOLO
+    private let tunables: Tunables
+    private let loadState = LoadState()
+
     private final class Tunables: @unchecked Sendable {
         var confidence: Float
         var iou: Float
-        var captureSnapshot = false
         init(confidence: Float, iou: Float) { self.confidence = confidence; self.iou = iou }
     }
-    private let tunables: Tunables
 
-    // MARK: - Runtime tunables / diagnostics
+    private final class LoadState: @unchecked Sendable {
+        var failure: Error?
+    }
 
     public var confidenceThreshold: Float {
         get { tunables.confidence }
-        set { tunables.confidence = newValue }
+        set { tunables.confidence = newValue; yolo.setConfidenceThreshold(Double(newValue)) }
     }
+
     public var nmsIoUThreshold: Float {
         get { tunables.iou }
-        set { tunables.iou = newValue }
+        set { tunables.iou = newValue; yolo.setIouThreshold(Double(newValue)) }
     }
+
     public var debugSnapshot: CGImage? { nil }
-    public var captureDebugSnapshot: Bool {
-        get { tunables.captureSnapshot }
-        set { tunables.captureSnapshot = newValue }
-    }
+    public var captureDebugSnapshot: Bool { get { false } set {} }
 
-    /// The base config with the current runtime thresholds applied.
-    private func currentConfig() -> YOLOConfig {
-        var cfg = config
-        cfg.confidenceThreshold = tunables.confidence
-        cfg.iouThreshold = tunables.iou
-        return cfg
-    }
-
-    public init(modelName: String = "license_plate_yolo", config: YOLOConfig = .germanPlate,
-                computeUnits: MLComputeUnits = .all) throws {
-        #if SWIFT_PACKAGE
-        let bundle = Bundle.module
-        #else
-        let bundle = Bundle.main
-        #endif
-        guard config.inputSize > 0, config.numClasses > 0 else {
-            throw LicensePlateError.invalidInput("Invalid detector configuration.")
-        }
-        guard let url = bundle.url(forResource: modelName, withExtension: "mlmodelc")
-                ?? bundle.url(forResource: modelName, withExtension: "mlmodel")
-                ?? bundle.url(forResource: modelName, withExtension: "mlpackage") else {
+    /// - Parameter modelName: bundle resource name of the exported `.mlpackage` / `.mlmodelc`.
+    public init(modelName: String = "De-plate-pose-500",
+                confidence: Float = 0.25,
+                iou: Float = 0.7) throws {
+        let bundle = Self.resourceBundle
+        guard bundle.url(forResource: modelName, withExtension: "mlpackage") != nil
+                || bundle.url(forResource: modelName, withExtension: "mlmodelc") != nil
+                || bundle.url(forResource: modelName, withExtension: "mlmodel") != nil else {
             throw LicensePlateError.modelNotFound(modelName)
         }
-        let compiled: URL
-        if url.pathExtension == "mlmodelc" { compiled = url }
-        else { compiled = try MLModel.compileModel(at: url) }
-        let settings = MLModelConfiguration()
-        settings.computeUnits = computeUnits
-        model = try MLModel(contentsOf: compiled, configuration: settings)
-        self.config = config
-        self.tunables = Tunables(confidence: config.confidenceThreshold, iou: config.iouThreshold)
-        guard let input = model.modelDescription.inputDescriptionsByName.first(where: { $0.value.type == .image }),
-              let constraint = input.value.imageConstraint,
-              constraint.pixelsWide == config.inputSize, constraint.pixelsHigh == config.inputSize else {
-            throw LicensePlateError.invalidModelOutput("The model image size does not match the detector configuration.")
+        self.modelName = modelName
+        self.tunables = Tunables(confidence: confidence, iou: iou)
+
+        let state = LoadState()
+        let predictor = YOLO(modelName, task: .pose) { result in
+            if case .failure(let error) = result { state.failure = error }
         }
-        inputName = input.key
-        guard let output = model.modelDescription.outputDescriptionsByName.first(where: {
-            guard let shape = $0.value.multiArrayConstraint?.shape.map(\.intValue) else { return false }
-            let channels = 4 + config.numClasses
-            let poseChannels = 5 + config.numKeypoints * 3
-            return shape.count == 3 && shape[0] == 1
-                && (shape[1] == channels || shape[2] == channels
-                    || (config.numKeypoints > 0 && (shape[1] == poseChannels || shape[2] == poseChannels)))
-        }) else { throw LicensePlateError.invalidModelOutput("Expected raw YOLO box / pose output.") }
-        outputName = output.key
+        predictor.setConfidenceThreshold(Double(confidence))
+        predictor.setIouThreshold(Double(iou))
+        self.yolo = predictor
+        self.loadState = state
     }
+
+    private static var resourceBundle: Bundle {
+        #if SWIFT_PACKAGE
+        return Bundle.module
+        #else
+        return Bundle.main
+        #endif
+    }
+
+    public var detectorDescription: String { "UltralyticsPosePlateDetector(\(modelName))" }
 
     public func detect(in image: CGImage) async throws -> [PlateDetection] {
-        try Task.checkCancellation()
-        let cfg = currentConfig()
-        let prepared = try image.letterboxed(size: cfg.inputSize)
-        let array = try await prediction(on: prepared.buffer)
-        let proposals = try YOLOOutputDecoder.decode(array, config: cfg)
-        let mapped = proposals.map {
-            YOLOOutputDecoder.remap($0, scale: prepared.scale, padX: prepared.padX, padY: prepared.padY,
-                imageSize: CGSize(width: image.width, height: image.height))
-        }.filter { $0.rect.width > 0 && $0.rect.height > 0 }
-        return YOLOOutputDecoder.suppress(mapped, threshold: cfg.iouThreshold)
+        try await waitUntilLoaded()
+        let result = yolo(CIImage(cgImage: image))
+        return Self.convert(result)
     }
 
-    /// Exposes the raw graph output to package regression tests before NMS/cropping.
-    func prediction(on pixelBuffer: CVPixelBuffer) async throws -> MLMultiArray {
-        let features = try MLDictionaryFeatureProvider(dictionary: [inputName: MLFeatureValue(pixelBuffer: pixelBuffer)])
-        let output = try await model.prediction(from: features, options: MLPredictionOptions())
-        guard let array = output.featureValue(for: outputName)?.multiArrayValue else {
-            throw LicensePlateError.invalidModelOutput("The model did not return its configured YOLO output.")
+    /// Model loading is asynchronous inside the package; inference before it completes
+    /// returns an empty result, so the first call waits (with a bound) instead of
+    /// silently reporting "no plate".
+    private func waitUntilLoaded() async throws {
+        for _ in 0..<600 {  // ~6 s
+            if yolo.isLoaded { return }
+            if let failure = loadState.failure { throw failure }
+            try await Task.sleep(nanoseconds: 10_000_000)
         }
-        return array
+        if let failure = loadState.failure { throw failure }
+        throw LicensePlateError.modelNotFound(modelName)
     }
-}
 
-extension CGImage {
-    /// Preserves the original iOS detector's centered 114-gray padding and top-left pixels.
-    func letterboxed(size: Int) throws -> (buffer: CVPixelBuffer, scale: CGFloat, padX: CGFloat, padY: CGFloat) {
-        let side = CGFloat(size)
-        let scale = min(side / CGFloat(width), side / CGFloat(height))
-        let resizedWidth = round(CGFloat(width) * scale), resizedHeight = round(CGFloat(height) * scale)
-        let padX = floor((side - resizedWidth) / 2), padY = floor((side - resizedHeight) / 2)
-        var pixel: CVPixelBuffer?
-        let attributes = [kCVPixelBufferCGImageCompatibilityKey: true,
-                          kCVPixelBufferCGBitmapContextCompatibilityKey: true] as CFDictionary
-        guard CVPixelBufferCreate(kCFAllocatorDefault, size, size, kCVPixelFormatType_32BGRA, attributes, &pixel) == kCVReturnSuccess,
-              let buffer = pixel else { throw LicensePlateError.invalidInput("Could not allocate the detector image.") }
-        CVPixelBufferLockBaseAddress(buffer, [])
-        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
-        guard let base = CVPixelBufferGetBaseAddress(buffer),
-              let context = CGContext(data: base, width: size, height: size, bitsPerComponent: 8,
-                  bytesPerRow: CVPixelBufferGetBytesPerRow(buffer), space: CGColorSpaceCreateDeviceRGB(),
-                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
-            throw LicensePlateError.invalidInput("Could not render the detector image.")
+    /// Converts an official `YOLOResult` into SDK detections.
+    ///
+    /// The rectangle is derived from the four corners rather than the box head: the
+    /// pose head's box output can sit slightly off the keypoints, and every consumer
+    /// downstream (perspective correction, overlays) uses the corners anyway.
+    static func convert(_ result: YOLOResult) -> [PlateDetection] {
+        guard !result.keypointsList.isEmpty else { return [] }
+        return result.keypointsList.enumerated().compactMap { index, keypoints in
+            guard keypoints.xyn.count >= 4 else { return nil }
+            let raw = keypoints.xyn.prefix(4).map { CGPoint(x: CGFloat($0.x), y: CGFloat($0.y)) }
+            let corners = PlateGeometry.orderedCorners(raw)
+            guard let rect = PlateGeometry.boundingBox(corners), rect.width > 0, rect.height > 0 else {
+                return nil
+            }
+            let confidence: Float
+            if index < result.boxes.count {
+                confidence = result.boxes[index].conf
+            } else if keypoints.conf.isEmpty {
+                confidence = 0
+            } else {
+                confidence = keypoints.conf.reduce(0, +) / Float(keypoints.conf.count)
+            }
+            return PlateDetection(rect: rect, confidence: confidence, label: "plate",
+                                  keypoints: corners,
+                                  keypointConfidences: Array(keypoints.conf.prefix(4)))
         }
-        context.setFillColor(red: 114 / 255, green: 114 / 255, blue: 114 / 255, alpha: 1)
-        context.fill(CGRect(x: 0, y: 0, width: side, height: side))
-        context.translateBy(x: 0, y: side); context.scaleBy(x: 1, y: -1)
-        context.interpolationQuality = .medium
-        context.draw(self, in: CGRect(x: padX, y: padY, width: resizedWidth, height: resizedHeight))
-        return (buffer, scale, padX, padY)
     }
 }

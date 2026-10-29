@@ -21,3 +21,9 @@ __pycache__/
 # CocoaPods — regenerated locally with `pod install` (never commit these)
 Pods/
 LicensePlateOCR.xcworkspace/
+
+# Xcode project backups written by Scripts/retarget_to_coreml.py
+*.pbxproj.bak
+
+# Core ML model generated on macOS by Scripts/export_pose_coreml.py
+LicensePlateOCR/LicensePlateSDK/Resources/*.mlpackage

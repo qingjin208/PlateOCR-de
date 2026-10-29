@@ -51,17 +51,11 @@ struct ContentView: View {
         // The Demo starts with the enhancements on; the toggle below can turn them off.
         let enhancements = RecognitionEnhancements.on
         let rec: LicensePlateRecognizer
-        #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc)
-        // ONNX Runtime linked: use the trained German-plate YOLOv8-pose model directly.
-        rec = LicensePlateRecognizer(poseModelName: "De-plate-pose-500",
-                                     engine: .appleVision,
-                                     enhancements: enhancements)
-        #else
-        // ONNX Runtime not linked yet: fall back to the legacy Core ML detector until the
-        // pose model + onnxruntime framework are added (see POSE_INTEGRATION.md).
-        rec = LicensePlateRecognizer()
-        rec.enhancements = enhancements
-        #endif
+        // Detection runs through the official Ultralytics YOLO Core ML package using the
+        // exported De-plate-pose-500.mlpackage; there is no ONNX fallback any more.
+        let rec = LicensePlateRecognizer(poseModelName: "De-plate-pose-500",
+                                         engine: .appleVision,
+                                         enhancements: enhancements)
         _recognizer = State(initialValue: rec)
         _enhancements = State(initialValue: enhancements)
         _cameraController = State(initialValue: CameraController(recognizer: rec))

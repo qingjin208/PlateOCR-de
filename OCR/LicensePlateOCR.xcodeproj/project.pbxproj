@@ -7,41 +7,16 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		04F04279CA2B14773D17F672 /* libPods-LicensePlateOCR.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 44737BEFAC7BC1D1BED5C969 /* libPods-LicensePlateOCR.a */; };
+		1A2B3C4D5E6F708192A3B4C7 /* UltralyticsYOLO in Frameworks */ = {isa = PBXBuildFile; productRef = 1A2B3C4D5E6F708192A3B4C6 /* UltralyticsYOLO */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
-		37E9C4D3308F9FA000953685 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = A1B2C3D4E5F607182930A5B6 /* Pods.xcodeproj */;
-			proxyType = 2;
-			remoteGlobalIDString = EFCD5A1058E9109AAD4F0B9F6ABE47E9;
-			remoteInfo = "onnxruntime-mobile-objc";
-		};
-		37E9C4D5308F9FA000953685 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = A1B2C3D4E5F607182930A5B6 /* Pods.xcodeproj */;
-			proxyType = 2;
-			remoteGlobalIDString = 387CCBF166A71A9766F044D1CBF6F5B2;
-			remoteInfo = "Pods-LicensePlateOCR";
-		};
-		A1B2C3D4E5F607182930A5B7 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = A1B2C3D4E5F607182930A5B6 /* Pods.xcodeproj */;
-			proxyType = 1;
-			remoteGlobalIDString = 9B248793ED5FDB77258CEAE14A0A5066;
-			remoteInfo = "Pods-LicensePlateOCR";
-		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		44737BEFAC7BC1D1BED5C969 /* libPods-LicensePlateOCR.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-LicensePlateOCR.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		5AEB2D0585BE7AA526324265 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		982C93A0335B9D1D599BB87C /* LICENSE.txt */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; path = LICENSE.txt; sourceTree = "<group>"; };
-		A1B2C3D4E5F607182930A5B6 /* Pods.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; name = Pods.xcodeproj; path = Pods/Pods.xcodeproj; sourceTree = "<group>"; };
 		D0506ABCA56D588BC7620CAE /* SampleCode.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = SampleCode.xcconfig; path = Configuration/SampleCode.xcconfig; sourceTree = "<group>"; };
-		E5CEE3008D4FCDB9239C0720 /* Pods-LicensePlateOCR.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-LicensePlateOCR.debug.xcconfig"; path = "Target Support Files/Pods-LicensePlateOCR/Pods-LicensePlateOCR.debug.xcconfig"; sourceTree = "<group>"; };
-		E7E80A76A563AE2644F78404 /* Pods-LicensePlateOCR.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-LicensePlateOCR.release.xcconfig"; path = "Target Support Files/Pods-LicensePlateOCR/Pods-LicensePlateOCR.release.xcconfig"; sourceTree = "<group>"; };
 		LPR0000000000000000000060 /* LicensePlateOCR.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LicensePlateOCR.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -54,39 +29,13 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				04F04279CA2B14773D17F672 /* libPods-LicensePlateOCR.a in Frameworks */,
+				1A2B3C4D5E6F708192A3B4C7 /* UltralyticsYOLO in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		37E9C4CE308F9FA000953685 /* Products */ = {
-			isa = PBXGroup;
-			children = (
-				37E9C4D4308F9FA000953685 /* libonnxruntime-mobile-objc.a */,
-				37E9C4D6308F9FA000953685 /* libPods-LicensePlateOCR.a */,
-			);
-			name = Products;
-			sourceTree = "<group>";
-		};
-		3C10B1554B03B5886E3D3A1E /* Pods */ = {
-			isa = PBXGroup;
-			children = (
-				E5CEE3008D4FCDB9239C0720 /* Pods-LicensePlateOCR.debug.xcconfig */,
-				E7E80A76A563AE2644F78404 /* Pods-LicensePlateOCR.release.xcconfig */,
-			);
-			path = Pods;
-			sourceTree = "<group>";
-		};
-		57E640F12E5A7D57C896CBE6 /* Frameworks */ = {
-			isa = PBXGroup;
-			children = (
-				44737BEFAC7BC1D1BED5C969 /* libPods-LicensePlateOCR.a */,
-			);
-			name = Frameworks;
-			sourceTree = "<group>";
-		};
 		D68AAFA492903982B7EF2F92 /* Configuration */ = {
 			isa = PBXGroup;
 			children = (
@@ -112,9 +61,6 @@
 				LPR0000000000000000000020 /* Products */,
 				D68AAFA492903982B7EF2F92 /* Configuration */,
 				D8635552A3AE2ED52E4391F9 /* LICENSE */,
-				3C10B1554B03B5886E3D3A1E /* Pods */,
-				A1B2C3D4E5F607182930A5B6 /* Pods.xcodeproj */,
-				57E640F12E5A7D57C896CBE6 /* Frameworks */,
 			);
 			sourceTree = "<group>";
 		};
@@ -133,7 +79,6 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = LPR00000000000000000000B0 /* Build configuration list for PBXNativeTarget "LicensePlateOCR" */;
 			buildPhases = (
-				6EC052693C1ABD4570E06A08 /* [CP] Check Pods Manifest.lock */,
 				LPR00000000000000000000C0 /* Sources */,
 				LPR00000000000000000000C1 /* Frameworks */,
 				LPR00000000000000000000C2 /* Resources */,
@@ -141,7 +86,6 @@
 			buildRules = (
 			);
 			dependencies = (
-				A1B2C3D4E5F607182930A5B8 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				LPR0000000000000000000040 /* LicensePlateOCR */,
@@ -150,6 +94,9 @@
 			productName = LicensePlateOCR;
 			productReference = LPR0000000000000000000060 /* LicensePlateOCR.app */;
 			productType = "com.apple.product-type.application";
+			packageProductDependencies = (
+				1A2B3C4D5E6F708192A3B4C6 /* UltralyticsYOLO */,
+			);
 		};
 /* End PBXNativeTarget section */
 
@@ -179,12 +126,11 @@
 			productRefGroup = LPR0000000000000000000020 /* Products */;
 			projectDirPath = "";
 			projectReferences = (
-				{
-					ProductGroup = 37E9C4CE308F9FA000953685 /* Products */;
-					ProjectRef = A1B2C3D4E5F607182930A5B6 /* Pods.xcodeproj */;
-				},
 			);
 			projectRoot = "";
+			packageReferences = (
+				1A2B3C4D5E6F708192A3B4C5 /* XCRemoteSwiftPackageReference "UltralyticsYOLO" */,
+			);
 			targets = (
 				LPR0000000000000000000050 /* LicensePlateOCR */,
 			);
@@ -192,20 +138,6 @@
 /* End PBXProject section */
 
 /* Begin PBXReferenceProxy section */
-		37E9C4D4308F9FA000953685 /* libonnxruntime-mobile-objc.a */ = {
-			isa = PBXReferenceProxy;
-			fileType = archive.ar;
-			path = "libonnxruntime-mobile-objc.a";
-			remoteRef = 37E9C4D3308F9FA000953685 /* PBXContainerItemProxy */;
-			sourceTree = BUILT_PRODUCTS_DIR;
-		};
-		37E9C4D6308F9FA000953685 /* libPods-LicensePlateOCR.a */ = {
-			isa = PBXReferenceProxy;
-			fileType = archive.ar;
-			path = "libPods-LicensePlateOCR.a";
-			remoteRef = 37E9C4D5308F9FA000953685 /* PBXContainerItemProxy */;
-			sourceTree = BUILT_PRODUCTS_DIR;
-		};
 /* End PBXReferenceProxy section */
 
 /* Begin PBXResourcesBuildPhase section */
@@ -219,28 +151,6 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		6EC052693C1ABD4570E06A08 /* [CP] Check Pods Manifest.lock */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-				"${PODS_PODFILE_DIR_PATH}/Podfile.lock",
-				"${PODS_ROOT}/Manifest.lock",
-			);
-			name = "[CP] Check Pods Manifest.lock";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-				"$(DERIVED_FILE_DIR)/Pods-LicensePlateOCR-checkManifestLockResult.txt",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
-			showEnvVarsInLog = 0;
-		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -254,13 +164,25 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
-		A1B2C3D4E5F607182930A5B8 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			name = "Pods-LicensePlateOCR";
-			targetProxy = A1B2C3D4E5F607182930A5B7 /* PBXContainerItemProxy */;
-		};
 /* End PBXTargetDependency section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		1A2B3C4D5E6F708192A3B4C5 /* XCRemoteSwiftPackageReference "UltralyticsYOLO" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ultralytics/yolo-ios-app";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 8.9.18;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+/* Begin XCSwiftPackageProductDependency section */
+		1A2B3C4D5E6F708192A3B4C6 /* UltralyticsYOLO */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1A2B3C4D5E6F708192A3B4C5 /* XCRemoteSwiftPackageReference "UltralyticsYOLO" */;
+			productName = UltralyticsYOLO;
+		};
+/* End XCSwiftPackageProductDependency section */
 /* Begin XCBuildConfiguration section */
 		LPR00000000000000000000A1 /* Debug */ = {
 			isa = XCBuildConfiguration;

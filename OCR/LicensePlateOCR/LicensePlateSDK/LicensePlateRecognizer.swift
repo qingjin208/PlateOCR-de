@@ -118,8 +118,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         var recognizer: PlateTextRecognizing
         var engine: OCREngine
         var useRGB: Bool
-        /// See `ONNXPoseLicensePlateDetector.flipY`: top-row-first letterbox buffer
-        /// (`true` = the PC/OpenCV layout). Default `true`.
+        /// Legacy letterbox-orientation flag (deprecated, unused by the Core ML pipeline).
         var flipY: Bool
         var enhancements: RecognitionEnhancements
     }
@@ -144,33 +143,21 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         }
     }
 
-    /// Channel order fed to the ONNX detector (RGB vs BGR). Defaults to RGB because that
-    /// is what Ultralytics trains on and what the PC reference implementation feeds
-    /// (`Scripts/pose_pipeline_reference.py`: `Image.open(...).convert("RGB")` → `/255`).
-    /// Exposed so the Demo app can flip it at runtime if a differently trained export
-    /// needs BGR.
+    /// Deprecated no-op. Channel order is fixed by the official Core ML pipeline
+    /// (Ultralytics exports train on RGB); kept only so the demo's settings sheet
+    /// keeps compiling until those controls are removed.
+    @available(*, deprecated, message: "The Core ML pipeline fixes the channel order.")
     public var useRGB: Bool {
         get { runtimeState.withLock { $0.useRGB } }
-        set {
-            runtimeState.withLock { $0.useRGB = newValue }
-            #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc)
-            if let det = detector as? ONNXPoseLicensePlateDetector { det.useRGB = newValue }
-            #endif
-        }
+        set { runtimeState.withLock { $0.useRGB = newValue } }
     }
 
-    /// Whether the detector's letterbox buffer is written top-row-first (see
-    /// `ONNXPoseLicensePlateDetector.flipY`). Default `true`, i.e. the same layout the PC
-    /// reference feeds the model. Flip it only for an A/B test on device: with the wrong
-    /// value the boxes land vertically mirrored and OCR reads nothing.
+    /// Deprecated no-op. Letterboxing is performed by the official package
+    /// (Vision `scaleFit`), there is no buffer orientation to choose.
+    @available(*, deprecated, message: "The Core ML pipeline owns letterboxing.")
     public var flipLetterbox: Bool {
         get { runtimeState.withLock { $0.flipY } }
-        set {
-            runtimeState.withLock { $0.flipY = newValue }
-            #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc)
-            if let det = detector as? ONNXPoseLicensePlateDetector { det.flipY = newValue }
-            #endif
-        }
+        set { runtimeState.withLock { $0.flipY = newValue } }
     }
 
     /// Human-readable description of the active detector (on-device diagnostics).
@@ -207,11 +194,11 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         set { runtimeState.withLock { $0.enhancements = newValue } }
     }
 
-    /// The default pipeline uses the original plate model converted to Core ML and Apple OCR.
+    /// The default pipeline: official Ultralytics YOLO Core ML pose detector + Apple OCR.
     public convenience init() {
         let detector: LicensePlateDetecting
-        do { detector = try CoreMLLicensePlateDetector() }
-        catch { detector = CoreMLLicensePlateDetectorFailing(error: error) }
+        do { detector = try UltralyticsPosePlateDetector() }
+        catch { detector = DetectorFailing(error: error) }
         self.init(detector: detector,
                   recognizer: OCREngine.appleVision.makeRecognizer(),
                   recognitionLanguages: [Locale.Language(identifier: "de-DE")])
@@ -232,20 +219,17 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
             enhancements: enhancements))
     }
 
-    /// Convenience initializer for the common setup: Core ML YOLO detector + Vision OCR,
-    /// German (`de-DE`) recognition.
+    /// Convenience initializer for an explicitly named Core ML pose model.
     /// - Parameters:
-    ///   - modelName: Resource name for an explicitly supplied Core ML YOLO model.
-    ///   - config: YOLO output layout (default `.germanPlate`).
+    ///   - modelName: Resource name of the exported `.mlpackage` (default `De-plate-pose-500`).
     ///   - recognitionLanguages: OCR languages (default `[de-DE]`).
     ///   - enhancements: Opt-in strengthening (default `.off` = legacy behaviour).
-    public convenience init(modelName: String,
-                            config: YOLOConfig = .germanPlate,
+    public convenience init(modelName: String = "De-plate-pose-500",
                             recognitionLanguages: [Locale.Language] = [Locale.Language(identifier: "de-DE")],
                             enhancements: RecognitionEnhancements = .off) {
         let detector: LicensePlateDetecting
-        do { detector = try CoreMLLicensePlateDetector(modelName: modelName, config: config) }
-        catch { detector = CoreMLLicensePlateDetectorFailing(error: error) }
+        do { detector = try UltralyticsPosePlateDetector(modelName: modelName) }
+        catch { detector = DetectorFailing(error: error) }
         self.init(detector: detector,
                   recognizer: PlateTextRecognizer(languages: recognitionLanguages),
                   recognitionLanguages: recognitionLanguages,
@@ -254,18 +238,16 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
                   enhancements: enhancements)
     }
 
-    /// Convenience initializer that wires the trained German-plate YOLOv8-pose model
-    /// (running through ONNX Runtime) with the selected OCR engine.
-    /// Requires the ONNX Runtime framework + `De-plate-pose-500.onnx` in the bundle.
-    #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc)
+    /// Wires the German-plate pose model (`De-plate-pose-500.mlpackage`) with the
+    /// selected OCR engine. Detection runs through the official Ultralytics YOLO
+    /// package (Core ML), so preprocessing, decoding and NMS match the official app.
     public convenience init(poseModelName: String = "De-plate-pose-500",
-                            config: YOLOConfig = .germanPlatePose,
                             engine: OCREngine = .appleVision,
                             recognitionLanguages: [Locale.Language] = [Locale.Language(identifier: "de-DE")],
                             enhancements: RecognitionEnhancements = .off) {
         let detector: LicensePlateDetecting
-        do { detector = try ONNXPoseLicensePlateDetector(modelName: poseModelName, config: config) }
-        catch { detector = CoreMLLicensePlateDetectorFailing(error: error) }
+        do { detector = try UltralyticsPosePlateDetector(modelName: poseModelName) }
+        catch { detector = DetectorFailing(error: error) }
         self.init(detector: detector,
                   recognizer: engine.makeRecognizer(languages: recognitionLanguages),
                   recognitionLanguages: recognitionLanguages,
@@ -273,7 +255,6 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
                   postProcessor: PlatePostProcessor(),
                   enhancements: enhancements)
     }
-    #endif
 
     public func recognize(in image: CGImage, mode: RecognitionMode = .fast) async throws -> [PlateResult] {
         // Straight to the CGImage core: wrapping the still in a CVPixelBuffer first would
@@ -323,7 +304,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         // genuinely distinct plates (low IoU) are all kept. The threshold comes from the
         // detector so it matches the in-model NMS — a fixed 0.5 here used to re-merge
         // plates the model had just decided to keep apart.
-        let detections = YOLOOutputDecoder.suppress(aligned, threshold: detector.nmsIoUThreshold)
+        let detections = PlateNMS.suppress(aligned, threshold: detector.nmsIoUThreshold)
         onDetections?(detections, imageSize)
 
         // One frame can hold several plates (car park, traffic scene, forecourt). Each
@@ -501,7 +482,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
 }
 
 /// Preserves initialization failures so the UI can display the actual cause.
-private final class CoreMLLicensePlateDetectorFailing: LicensePlateDetecting {
+private final class DetectorFailing: LicensePlateDetecting {
     private let error: Error
     init(error: Error) { self.error = error }
     func detect(in image: CGImage) async throws -> [PlateDetection] {
