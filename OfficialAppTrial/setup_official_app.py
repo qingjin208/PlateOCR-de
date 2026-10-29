@@ -257,15 +257,15 @@ def ensure_app(app_dir: Path | None, clone_to: Path) -> Path:
         if not (app_dir / VC_RELATIVE).exists():
             raise SystemExit(f"ERROR: {app_dir / VC_RELATIVE} not found. "
                              "Is --app-dir pointing at a cloned yolo-ios-app?")
-        log(f"[1/4] Using existing app at {app_dir}")
+        log(f"[1/5] Using existing app at {app_dir}")
         return app_dir
 
     if not clone_to.exists():
-        log(f"[1/4] Cloning official app into {clone_to} ...")
+        log(f"[1/5] Cloning official app into {clone_to} ...")
         if run(["git", "clone", "--depth", "1", REPO_URL, str(clone_to)]) != 0:
             raise SystemExit("ERROR: git clone failed.")
     else:
-        log(f"[1/4] Reusing existing clone at {clone_to}")
+        log(f"[1/5] Reusing existing clone at {clone_to}")
     app_dir = clone_to.resolve()
     if not (app_dir / VC_RELATIVE).exists():
         raise SystemExit(f"ERROR: {VC_RELATIVE} missing after clone.")
@@ -307,7 +307,7 @@ def ensure_model(model: Path | None, weights: Path, out_dir: Path) -> Path:
         model = model.resolve()
         if not model.exists():
             raise SystemExit(f"ERROR: model not found: {model}")
-        log(f"[2/4] Using provided model {model}")
+        log(f"[2/5] Using provided model {model}")
         return model
 
     # Look for an already-exported package: --out first, then next to the
@@ -316,10 +316,10 @@ def ensure_model(model: Path | None, weights: Path, out_dir: Path) -> Path:
     for directory in search_dirs:
         existing = sorted(directory.glob("*.mlpackage")) if directory.exists() else []
         if existing:
-            log(f"[2/4] Found exported model {existing[0]}")
+            log(f"[2/5] Found exported model {existing[0]}")
             return existing[0].resolve()
 
-    log("[2/4] Exporting Core ML from weights (needs ultralytics + macOS) ...")
+    log("[2/5] Exporting Core ML from weights (needs ultralytics + macOS) ...")
     ensure_ultralytics()
     export_script = SCRIPT_DIR / "export_pose_coreml.py"
     if run([sys.executable, str(export_script), "--weights", str(weights),
@@ -334,7 +334,7 @@ def ensure_model(model: Path | None, weights: Path, out_dir: Path) -> Path:
 def install_model(model: Path, app_dir: Path, dry: bool) -> None:
     destination_dir = app_dir / MODELS_RELATIVE
     destination = destination_dir / model.name
-    log(f"[3/4] Installing model -> {destination}")
+    log(f"[3/5] Installing model -> {destination}")
     if dry:
         log("  (dry-run, skipped)")
         return
@@ -345,8 +345,42 @@ def install_model(model: Path, app_dir: Path, dry: bool) -> None:
     log("  done. The app auto-discovers models in Models/Pose (no registry edit needed).")
 
 
+# The official app ships YOLOiOSApp.entitlements containing ONLY associated-domains
+# (applinks:platform.ultralytics.com, for the Ultralytics HUB). Company provisioning
+# profiles rarely include that capability, and signing fails with
+# "Provisioning profile doesn't include Associated Domains". Empty the file (keep the
+# file itself so CODE_SIGN_ENTITLEMENTS in project.pbxproj stays valid) - nothing in
+# the trial depends on universal links.
+ENTITLEMENTS_RELATIVE = Path("YOLOiOSApp") / "YOLOiOSApp" / "YOLOiOSApp.entitlements"
+ENTITLEMENTS_PLACEHOLDER = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+    '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+    '<plist version="1.0"><dict/>\n</plist>\n'
+)
+
+
+def fix_entitlements(app_dir: Path, dry: bool) -> None:
+    entitlements = app_dir / ENTITLEMENTS_RELATIVE
+    if not entitlements.exists():
+        log(f"[4/5] No entitlements file at {ENTITLEMENTS_RELATIVE} - nothing to fix")
+        return
+    content = entitlements.read_text(encoding="utf-8")
+    if "associated-domains" not in content:
+        log(f"[4/5] {ENTITLEMENTS_RELATIVE} has no associated-domains - skipping")
+        return
+    log(f"[4/5] Stripping associated-domains from {ENTITLEMENTS_RELATIVE} "
+        "(company profiles usually lack this capability; the trial does not use it)")
+    if dry:
+        log("  (dry-run, file not written)")
+        return
+    entitlements.write_text(ENTITLEMENTS_PLACEHOLDER, encoding="utf-8")
+    log("  written. If Xcode still complains, also remove the 'Associated Domains' "
+        "capability on the Signing & Capabilities tab.")
+
+
 def patch_view_controller(vc: Path, dry: bool) -> None:
-    log(f"[4/4] Patching {vc}")
+    log(f"[5/5] Patching {vc}")
     source = vc.read_text(encoding="utf-8")
 
     if "recognizePlateIfNeeded" in source:
@@ -418,6 +452,7 @@ def main() -> int:
     model = ensure_model(args.model, args.weights, args.out)
 
     install_model(model, app_dir, args.dry_run)
+    fix_entitlements(app_dir, args.dry_run)
     patch_view_controller(app_dir / VC_RELATIVE, args.dry_run)
 
     log("\n=== Done ===")
