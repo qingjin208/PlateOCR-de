@@ -74,25 +74,26 @@ private let _platePoseModelName = "De-plate-pose-500"
 
 extension ViewController {
 
-    /// Loads the bundled pose model at startup.
-    /// Returns true when it took over startup loading (so the official model is skipped).
+    /// Loads the bundled pose model at startup, through the app's own loadModel path so
+    /// the task label, loading state, UserDefaults and external-display handling all
+    /// stay consistent. Returns true when it took over startup loading.
     @discardableResult
     func plateLoadPoseModel() -> Bool {
         guard let url = plateBundledModelURL(named: _platePoseModelName) else {
             print("Plate model not found in bundle: \(_platePoseModelName)")
             return false
         }
-        yoloView.setModel(modelPathOrName: url.path, task: .pose) { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case .success:
-                self.labelName.text = _platePoseModelName
-                self.yoloView.setInferenceFlag(ok: true)
-                print("Plate model loaded: \(url.lastPathComponent)")
-            case .failure(let error):
-                print("Plate model failed to load: \(error)")
-            }
-        }
+        // Same shape as the entries makeModelEntries builds for bundled files:
+        // identifier is the file name, isLocalBundle true, task is String(describing: yoloTask).
+        let entry = ModelEntry(
+            displayName: _platePoseModelName,
+            identifier: url.lastPathComponent,
+            isLocalBundle: true,
+            remoteURL: nil,
+            task: "pose"
+        )
+        showModelEntries(for: "Pose")
+        loadModel(entry: entry, forTask: "Pose")
         return true
     }
 }
