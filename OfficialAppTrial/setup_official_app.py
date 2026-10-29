@@ -50,6 +50,73 @@ DID_RECEIVE_RE = re.compile(
 )
 
 # --------------------------------------------------------------------------
+# Swift: force-load our bundled model at startup.
+#
+# Why: the official picker hard-filters its list to official remote model names:
+#     let names = Set(remoteModelsInfo[task.name]!.map { $0.modelName.lowercased() })
+#     makeModelEntries(for: task.name).filter { names.contains($0.displayName.lowercased()) }
+# So a locally bundled .mlpackage is in the bundle (getModelFiles finds it, it is
+# appended to currentModels) but is NEVER shown in the UI and can never be selected.
+# We therefore load it directly instead of asking the user to pick it.
+# BasePredictor compiles an un-bundled .mlpackage itself (MLModel.compileModel), so
+# shipping the raw .mlpackage is fine - no manual compile step needed.
+# --------------------------------------------------------------------------
+STARTUP_ANCHOR_RE = re.compile(r"(func\s+loadSavedModelOrFirstOfficial\s*\(\s*\)\s*\{)")
+STARTUP_CALL = "        if plateLoadPoseModel() { return }"
+
+STARTUP_SWIFT_BLOCK = r'''
+// MARK: - Force-load the bundled German plate pose model (injected by PlateOCR-de)
+// The official picker only lists official remote model names, so a locally bundled
+// model never appears in the UI. Load it directly: BasePredictor compiles an
+// uncompiled .mlpackage itself, so no manual compile step is needed.
+
+private let _platePoseModelName = "De-plate-pose-500"
+
+extension ViewController {
+
+    /// Loads the bundled pose model at startup.
+    /// Returns true when it took over startup loading (so the official model is skipped).
+    @discardableResult
+    func plateLoadPoseModel() -> Bool {
+        guard let url = plateBundledModelURL(named: _platePoseModelName) else {
+            print("Plate model not found in bundle: \(_platePoseModelName)")
+            return false
+        }
+        yoloView.setModel(modelPathOrName: url.path, task: .pose) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success:
+                self.labelName.text = _platePoseModelName
+                self.yoloView.setInferenceFlag(ok: true)
+                print("Plate model loaded: \(url.lastPathComponent)")
+            case .failure(let error):
+                print("Plate model failed to load: \(error)")
+            }
+        }
+        return true
+    }
+}
+
+/// Locates the bundled model: Models/Pose first, then Models, then the bundle root.
+private func plateBundledModelURL(named name: String) -> URL? {
+    let fm = FileManager.default
+    for folder in ["Models/Pose", "Models"] {
+        guard let folderURL = Bundle.main.url(forResource: folder, withExtension: nil) else {
+            continue
+        }
+        for ext in ["mlmodelc", "mlpackage"] {
+            let candidate = folderURL.appendingPathComponent(name).appendingPathExtension(ext)
+            if fm.fileExists(atPath: candidate.path) { return candidate }
+        }
+    }
+    for ext in ["mlmodelc", "mlpackage"] {
+        if let url = Bundle.main.url(forResource: name, withExtension: ext) { return url }
+    }
+    return nil
+}
+'''
+
+# --------------------------------------------------------------------------
 # Swift: everything appended to the end of ViewController.swift.
 # --------------------------------------------------------------------------
 SWIFT_BLOCK = r'''
@@ -412,11 +479,24 @@ def patch_view_controller(vc: Path, dry: bool) -> None:
     source = (source[:match.end(1)] + "\n" + INJECTED_CALL + "\n" + source[match.end(1):])
     log("  injected OCR call into yoloView(_:didReceiveResult:)")
 
-    # 4c. append the implementation
+    # 4c. force-load our model at startup
+    startup = STARTUP_ANCHOR_RE.search(source)
+    if startup:
+        source = (source[:startup.end(1)] + "\n" + STARTUP_CALL + "\n"
+                  + source[startup.end(1):])
+        log("  injected startup force-load into loadSavedModelOrFirstOfficial()")
+    else:
+        log("  WARNING: loadSavedModelOrFirstOfficial() not found - the app will keep")
+        log("           loading the official pose model. Add this line manually as the")
+        log("           first statement of that method:")
+        log("    " + STARTUP_CALL.strip())
+
+    # 4d. append the implementations
     if not source.endswith("\n"):
         source += "\n"
+    source += STARTUP_SWIFT_BLOCK
     source += SWIFT_BLOCK
-    log("  appended OCR implementation (PlateOCRService, GermanPlateValidator, helpers)")
+    log("  appended model force-load + OCR implementation")
 
     if dry:
         log("  (dry-run, file not written)")

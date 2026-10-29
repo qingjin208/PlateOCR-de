@@ -29,6 +29,12 @@ final class ViewController: UIViewController {
     }
 
     func renderPerformanceLabel() {}
+
+    func reloadModelEntriesAndLoadFirst(for taskName: String) {}
+
+    private func loadSavedModelOrFirstOfficial() {
+        reloadModelEntriesAndLoadFirst(for: currentTask)
+    }
 }
 
 // MARK: - YOLOViewDelegate
@@ -72,6 +78,13 @@ def main() -> int:
         "extension hook appended": "func recognizePlateIfNeeded(result: YOLOResult, in view: YOLOView)" in result,
         "original content preserved": "@IBOutlet weak var yoloView: YOLOView!" in result,
         "didUpdatePerformance untouched": "func yoloView(_ view: YOLOView, didUpdatePerformance" in result,
+        "startup force-load injected": "if plateLoadPoseModel() { return }" in result,
+        "startup call is first statement of the method": (
+            "private func loadSavedModelOrFirstOfficial() {\n"
+            "        if plateLoadPoseModel() { return }\n" in result),
+        "force-load implementation appended": "func plateLoadPoseModel() -> Bool" in result,
+        "bundle lookup helper appended": "func plateBundledModelURL(named name: String) -> URL?" in result,
+        "model name constant appended": '_platePoseModelName = "De-plate-pose-500"' in result,
     }
 
     print()
