@@ -19,13 +19,26 @@ private struct TensorValues {
 enum YOLOOutputDecoder {
     static func decode(_ array: MLMultiArray, config: YOLOConfig) throws -> [PlateDetection] {
         let shape = array.shape.map(\.intValue)
-        // Detection model: 4 (box) + numClasses. Pose model: 5 (box + conf) + numKeypoints*3.
-        let channels = config.numKeypoints > 0 ? (5 + config.numKeypoints * 3) : (4 + config.numClasses)
-        guard shape.count == 3, shape[0] == 1, shape[1] == channels || shape[2] == channels else {
-            throw LicensePlateError.invalidModelOutput("Expected [1, C, N] or [1, N, C] YOLO output (C=\(channels)).")
+        guard shape.count == 3, shape[0] == 1 else {
+            throw LicensePlateError.invalidModelOutput("Expected a [1, C, N] or [1, N, C] YOLO output.")
+        }
+        // Channel count is 5 (box + conf) + 3 per keypoint for a pose model, or
+        // 4 + numClasses for a plain detector. This mirrors the official Ultralytics iOS
+        // `PostProcessPose`, which derives `featureCount = shape[1] - 5` and
+        // `numKeypoints = featureCount / 3` straight from the tensor — so the keypoint
+        // loop is driven by the *real* channel count, never a possibly-stale config value.
+        let poseChannels = 5 + config.numKeypoints * 3
+        let detectChannels = 4 + config.numClasses
+        let channels = config.numKeypoints > 0 ? poseChannels : max(detectChannels, poseChannels)
+        guard shape[1] == channels || shape[2] == channels else {
+            throw LicensePlateError.invalidModelOutput(
+                "Expected [1, C, N] or [1, N, C] YOLO output (C=\(channels)).")
         }
         let first = shape[1] == channels
         let count = first ? shape[2] : shape[1]
+        // Keypoint count derived from the real channel count (official `PostProcessPose`
+        // style), not from `config.numKeypoints`.
+        let numKeypoints = (channels - 5) / 3
         let proposalStride = array.strides[first ? 2 : 1].intValue
         let channelStride = array.strides[first ? 1 : 2].intValue
         let values = TensorValues(array: array)
@@ -56,20 +69,26 @@ enum YOLOOutputDecoder {
             guard rect.width > 0, rect.height > 0 else { continue }
 
             // Pose keypoints (corner points) live in the same 640-input pixel space as the box.
+            // The loop runs for the tensor-derived `numKeypoints` (official `PostProcessPose`
+            // reads each keypoint's x, y and confidence at 5 + 3·k, exactly like we do here).
             var keypoints: [CGPoint]? = nil
             var keypointConfidences: [Float]? = nil
-            if config.numKeypoints > 0 {
+            if numKeypoints > 0 {
                 var pts: [CGPoint] = []
                 var confs: [Float] = []
                 var valid = true
-                for k in 0..<config.numKeypoints {
+                for k in 0..<numKeypoints {
                     let base = 5 + k * 3
                     let kx = CGFloat(read(base)), ky = CGFloat(read(base + 1)), kv = read(base + 2)
                     guard kx.isFinite, ky.isFinite else { valid = false; break }
                     pts.append(CGPoint(x: kx, y: ky))
                     confs.append(kv)
                 }
-                if valid, pts.count == config.numKeypoints {
+                // Compare against the tensor-derived `numKeypoints`, not `config.numKeypoints`:
+                // the loop built exactly `numKeypoints` points, and if the config ever disagrees
+                // with the real channel count this would otherwise drop every keypoint and fall
+                // back to an axis-aligned box — the exact "keypoints never appear" symptom.
+                if valid, pts.count == numKeypoints {
                     // Re-derive the corner order instead of trusting the model's.
                     if let order = Self.cornerOrder(pts) {
                         keypoints = order.map { pts[$0] }
