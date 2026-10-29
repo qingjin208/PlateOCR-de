@@ -310,11 +310,14 @@ def ensure_model(model: Path | None, weights: Path, out_dir: Path) -> Path:
         log(f"[2/4] Using provided model {model}")
         return model
 
-    # Look for an already-exported package.
-    existing = sorted(out_dir.glob("*.mlpackage")) if out_dir.exists() else []
-    if existing:
-        log(f"[2/4] Found exported model {existing[0]}")
-        return existing[0].resolve()
+    # Look for an already-exported package: --out first, then next to the
+    # weights / script dir (older ultralytics writes it beside the .pt).
+    search_dirs = [out_dir, weights.parent, SCRIPT_DIR]
+    for directory in search_dirs:
+        existing = sorted(directory.glob("*.mlpackage")) if directory.exists() else []
+        if existing:
+            log(f"[2/4] Found exported model {existing[0]}")
+            return existing[0].resolve()
 
     log("[2/4] Exporting Core ML from weights (needs ultralytics + macOS) ...")
     ensure_ultralytics()

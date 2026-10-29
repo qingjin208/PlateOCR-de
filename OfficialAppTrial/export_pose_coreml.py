@@ -86,6 +86,15 @@ def main() -> int:
     if package is None or not package.exists():
         print("ERROR: export did not produce a .mlpackage", file=sys.stderr)
         return 3
+
+    # ultralytics always writes the package next to the weights file, ignoring
+    # any output dir. Relocate it into --out so callers find it where promised.
+    if package.parent != out_dir:
+        relocated = out_dir / package.name
+        if relocated.exists():
+            shutil.rmtree(relocated)
+        shutil.move(str(package), str(relocated))
+        package = relocated
     print(f"Exported: {package}")
 
     # ---- Verify the contract the official app relies on -------------------
