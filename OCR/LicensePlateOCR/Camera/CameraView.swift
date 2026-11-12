@@ -53,10 +53,13 @@ struct CameraView: View {
     private var statusPill: some View {
         if controller.liveEnabled {
             HStack(spacing: 5) {
+                // The dot reflects the *session* state, not the per-cycle `isAnalyzing`
+                // flag: analysis runs at ~5 fps, so a yellow/green flip there made the
+                // pill strobe continuously.
                 Circle()
-                    .fill(controller.isAnalyzing ? .yellow : .green)
+                    .fill(controller.paused ? Color.gray : Color.green)
                     .frame(width: 6, height: 6)
-                Text(controller.paused ? "已暂停" : (controller.isAnalyzing ? "实时检测中" : "实时检测"))
+                Text(controller.paused ? "已暂停" : "实时检测中")
                     .fontWeight(.semibold)
                 Text("框 \(controller.liveDetections.count) · 牌 \(controller.liveResults.count)")
                     .foregroundStyle(.white.opacity(0.72))
@@ -89,7 +92,11 @@ struct CameraView: View {
 
     @ViewBuilder
     private var scanBeam: some View {
-        if controller.liveEnabled && !controller.paused && controller.isAnalyzing {
+        // Bound to the *session*, not to `isAnalyzing`: that flag is true only while a
+        // frame is in flight, so the beam was being created and destroyed ~5 times a
+        // second — each recreation restarted its animation from y = 0, which read as a
+        // stuttering jump rather than a sweep.
+        if controller.liveEnabled && !controller.paused {
             ScanBeam()
         }
     }
@@ -183,8 +190,10 @@ struct CameraControls: View {
 
     private var pauseButton: some View {
         Button {
+            // `isAnalyzing` is reset by `CameraController.paused.didSet`; writing it from
+            // the view (the old behaviour) broke the moment pause was triggered from
+            // anywhere else.
             controller.paused.toggle()
-            if controller.paused { controller.isAnalyzing = false }
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: controller.paused ? "play.fill" : "pause.fill")
@@ -192,10 +201,13 @@ struct CameraControls: View {
                 Text(controller.paused ? "继续" : "暂停")
                     .font(.system(size: 13, weight: .semibold))
             }
-            .foregroundStyle(.white)
+            // Controls sit on the app background (light in light mode), so the previous
+            // `.white` text on `Color.white.opacity(0.16)` was invisible. Match the
+            // 清空检测历史 button instead, with the accent colour marking the paused state.
+            .foregroundStyle(controller.paused ? appAccent : Color.secondary)
             .padding(.horizontal, 18)
             .frame(height: 34)
-            .background(Color.white.opacity(0.16), in: Capsule())
+            .background(Color(.tertiarySystemBackground), in: Capsule())
         }
     }
 

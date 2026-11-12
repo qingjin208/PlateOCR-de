@@ -17,12 +17,12 @@
  */
 
 import SwiftUI
-import Combine
 import PhotosUI
 import CoreTransferable
 import CoreGraphics
 import Vision
 import CoreImage
+import ImageIO
 import UniformTypeIdentifiers
 import UIKit
 import AVFoundation
@@ -117,6 +117,12 @@ struct ContentView: View {
 
     /// Bottom-sheet for advanced controls (OCR engine / input channel / enhancement).
     @State private var showSettings = false
+
+    /// The media pass currently running (image or video). A second selection cancels it:
+    /// without a token, two passes ran concurrently and whichever finished *last* wrote
+    /// `results`, so picking a new photo while an old one was still being recognized could
+    /// end up showing the discarded photo's plates.
+    @State private var loadTask: Task<Void, Never>?
 
     /// Drives the camera session lifecycle from the app's foreground/background state so
     /// it is no longer tied to the `CameraView`'s mount/unmount (which caused the black
@@ -215,6 +221,7 @@ struct ContentView: View {
                           videoSampleLimit: $videoSampleLimit,
                           showDiagnostics: $showDiagnostics,
                           enhancements: $enhancements,
+                          channelOrderConfigurable: recognizer.honorsInputChannelOrder,
                           controller: cameraController) { withAnimation { showSettings = false } }
                     .padding(.horizontal, 4)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -226,12 +233,14 @@ struct ContentView: View {
 
     private func handleImageItemChange(_ newItem: PhotosPickerItem?) {
         guard let newItem else { return }
-        Task { await runImage(newItem) }
+        loadTask?.cancel()
+        loadTask = Task { await runImage(newItem) }
     }
 
     private func handleVideoItemChange(_ newItem: PhotosPickerItem?) {
         guard let newItem else { return }
-        Task { await runVideo(newItem) }
+        loadTask?.cancel()
+        loadTask = Task { await runVideo(newItem) }
     }
 
     private func handleModeChange(_ newMode: RecognitionMode) {
@@ -270,6 +279,14 @@ struct ContentView: View {
         if newSource != .video {
             player?.pause()
             isPlaying = false
+        }
+        // A media pass belongs to the tab it was started from. Leaving that tab cancels it,
+        // so a photo/video pass can no longer write its results into another tab's state
+        // (and 识别中… no longer survives a tab switch).
+        if loadTask != nil {
+            loadTask?.cancel()
+            loadTask = nil
+            isBusy = false
         }
         // Camera session follows the selected source: (re)start on the camera tab,
         // suspend when leaving it. Keeps the preview layer mounted (no black flash).
@@ -495,6 +512,10 @@ struct ContentView: View {
     }
 
     private func clearResults() {
+        // Stop a running pass first, otherwise it would repopulate `results` after the
+        // user cleared them (the "重新选择 did nothing" case).
+        loadTask?.cancel()
+        loadTask = nil
         // Remove the temp copy the video import created so repeated selections don't
         // accumulate .mov files in the system temporary directory.
         if let url = videoURL { try? FileManager.default.removeItem(at: url) }
@@ -506,9 +527,27 @@ struct ContentView: View {
         player = nil
         videoSamples = []
         lastDetectionCount = 0
+        isBusy = false
     }
 
     // MARK: - Run
+
+    /// Decodes `data` straight into an upright, working-size `CGImage`.
+    ///
+    /// `kCGImageSourceCreateThumbnailFromImageAlways` forces a real decode (instead of a
+    /// cached embedded thumbnail), `kCGImageSourceCreateThumbnailWithTransform` bakes the
+    /// EXIF orientation into the pixels, and `kCGImageSourceThumbnailMaxPixelSize` caps the
+    /// long edge — the same 3840-px working size `LicensePlateRecognizer` clamps to anyway.
+    /// The image is never upscaled: ImageIO only shrinks.
+    private static func uprightCGImage(from data: Data, maxPixelSize: Int = 3840) -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+    }
 
     private func runImage(_ item: PhotosPickerItem) async {
         // Clear the selection once we've consumed it, so re-selecting the same asset
@@ -516,16 +555,21 @@ struct ContentView: View {
         defer { if imageItem == item { imageItem = nil } }
         do {
             guard let data = try await item.loadTransferable(type: Data.self) else {
+                guard !Task.isCancelled else { return }
                 errorMessage = "无法读取图片"
                 return
             }
-            // Honor EXIF orientation up front and bake it into a CGImage so the image we
-            // display and the image we feed to the detector share one coordinate space.
-            guard let uiImage = UIImage(data: data),
-                  let oriented = uiImage.cgImageWithOrientationApplied() else {
+            // Decode once with ImageIO: it applies the EXIF orientation and downscales to the
+            // pipeline's working size in the same pass, so the displayed image and the image
+            // the detector sees share one coordinate space. The previous
+            // `UIImage(data:)` + full-size `UIGraphicsImageRenderer` round-trip decoded the
+            // photo twice and allocated a second full-resolution bitmap (≈190 MB for 48 MP).
+            guard let oriented = Self.uprightCGImage(from: data) else {
+                guard !Task.isCancelled else { return }
                 errorMessage = "无法读取图片"
                 return
             }
+            guard !Task.isCancelled else { return }
             imageData = data
             displayImage = UIImage(cgImage: oriented)
             videoURL = nil
@@ -540,6 +584,8 @@ struct ContentView: View {
             // an extra resample plus a colour-space conversion on the only pixels that
             // matter. `tiled` adds a second pass for plates too small at full-frame scale.
             let frame = try await recognizer.recognizeImage(oriented, mode: mode, tiled: true)
+            // Superseded by a newer selection: that task owns the UI state now.
+            guard !Task.isCancelled else { return }
             results = frame.plates
             // Surface detection vs. OCR outcome so a silent failure is diagnosable:
             lastDetectionCount = frame.detections.count
@@ -548,6 +594,9 @@ struct ContentView: View {
                 debugSnapshotImage = recognizer.debugSnapshot.map { UIImage(cgImage: $0) }
             }
             isBusy = false
+        } catch is CancellationError {
+            // A newer selection (or 重新选择) cancelled this pass — it owns `isBusy` now, so
+            // touching it here would fight the replacement task.
         } catch {
             isBusy = false
             errorMessage = error.localizedDescription
@@ -558,7 +607,12 @@ struct ContentView: View {
         defer { if videoItem == item { videoItem = nil } }
         do {
             guard let movie = try await item.loadTransferable(type: ImportedMovie.self) else {
+                guard !Task.isCancelled else { return }
                 errorMessage = "无法读取视频"
+                return
+            }
+            guard !Task.isCancelled else {
+                try? FileManager.default.removeItem(at: movie.url)
                 return
             }
             let dst = movie.url
@@ -578,10 +632,16 @@ struct ContentView: View {
                                                                      maxSamples: Int(videoSampleLimit)) { progress in
                 Task { @MainActor in videoProgress = progress }
             }
+            guard !Task.isCancelled else { return }
             videoSamples = samples
-            results = PlatePostProcessor.deduplicate(samples.flatMap(\.plates))
+            // Majority vote across sampled frames (not just a text-level de-duplication):
+            // a reading that only one frame produced is absorbed into the reading the
+            // other frames agree on, so a one-glyph misread never gets its own row.
+            results = PlateVoteAggregator.consolidate(samples.map(\.plates))
             lastDetectionCount = samples.reduce(0) { $0 + $1.detections.count }
             isBusy = false
+        } catch is CancellationError {
+            // Superseded — see `runImage`.
         } catch {
             isBusy = false
             errorMessage = error.localizedDescription
@@ -649,6 +709,11 @@ private struct SettingsSheet: View {
     @Binding var videoSampleLimit: Double
     @Binding var showDiagnostics: Bool
     @Binding var enhancements: RecognitionEnhancements
+    /// Whether the active detector actually reads `useRGB` (see
+    /// `LicensePlateRecognizer.honorsInputChannelOrder`). The LibreYOLO YOLO-NAS-pose
+    /// export is BGR-only and the Core ML detector normalizes the buffer itself, so in
+    /// those builds the switch is shown disabled instead of pretending to work.
+    let channelOrderConfigurable: Bool
     /// Camera controller, so the sheet can toggle the on-device diagnostic echo
     /// (`debugEchoEnabled`) that reveals whether the frame fed to detection matches the
     /// displayed preview — the key to diagnosing the "plate box in the wrong place" report.
@@ -658,6 +723,17 @@ private struct SettingsSheet: View {
     /// Debug-only options (RGB/BGR channel order) are collapsed by default so the sheet's
     /// first screen stays focused on the controls a normal user needs.
     @State private var showDebug = false
+
+    /// Engines actually linked into this build. Offering an unlinked engine made the
+    /// picker lie: `.paddleOCR` falls back to Apple Vision, so the UI claimed PaddleOCR
+    /// was running while Vision did the reading.
+    private var availableEngines: [OCREngine] { OCREngine.allCases.filter(\.isAvailable) }
+
+    private var ocrSubtitle: String {
+        OCREngine.paddleOCR.isAvailable
+            ? "Apple Vision 系统级、零依赖；PaddleOCR 精度更高"
+            : "当前构建只链接了 Apple Vision（PaddleOCR 未集成）"
+    }
 
     var body: some View {
         VStack(spacing: 12) {
@@ -670,107 +746,139 @@ private struct SettingsSheet: View {
                 .font(.caption).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            settingRow(title: "识别模式", subtitle: "极速响应更快；精准更稳（默认极速）") {
-                Picker("识别模式", selection: $mode) {
-                    Text("极速").tag(RecognitionMode.fast)
-                    Text("精准").tag(RecognitionMode.accurate)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 180)
-                .tint(appAccent)
-            }
-
-            settingRow(title: "OCR 引擎", subtitle: "Apple Vision 系统级、零依赖；PaddleOCR 精度更高") {
-                Picker("OCR 引擎", selection: $ocrEngine) {
-                    ForEach(OCREngine.allCases, id: \.self) { Text($0.displayName) }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 190)
-                .tint(appAccent)
-            }
-
-            settingRow(title: "检测置信度", subtitle: "PC 参考默认值 0.25；调低可召回更多，调高更保守") {
-                VStack(alignment: .trailing, spacing: 0) {
-                    Text(String(format: "%.2f", confidenceThreshold)).font(.caption.monospacedDigit())
-                    Slider(value: $confidenceThreshold, in: 0.05...0.9, step: 0.05)
-                        .frame(width: 150)
+            // The sheet has more rows than an iPhone SE screen can hold. A plain VStack
+            // simply overflowed — the 完成 button and the last switches were off-screen and
+            // unreachable. The ScrollView is the flexible element of this VStack, so it
+            // absorbs the overflow and keeps the button pinned at the bottom.
+            ScrollView {
+                VStack(spacing: 12) {
+                    settingRow(title: "识别模式", subtitle: "极速响应更快；精准更稳（默认极速）") {
+                        Picker("识别模式", selection: $mode) {
+                            Text("极速").tag(RecognitionMode.fast)
+                            Text("精准").tag(RecognitionMode.accurate)
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 180)
                         .tint(appAccent)
-                }
-            }
+                    }
 
-            settingRow(title: "NMS IoU", subtitle: "PC 参考值 0.7；过低会把相邻车牌合并成一块") {
-                VStack(alignment: .trailing, spacing: 0) {
-                    Text(String(format: "%.2f", nmsIoU)).font(.caption.monospacedDigit())
-                    Slider(value: $nmsIoU, in: 0.1...0.9, step: 0.05)
-                        .frame(width: 150)
-                        .tint(appAccent)
-                }
-            }
-
-            DisclosureGroup("调试选项", isExpanded: $showDebug) {
-                settingRow(title: "视频采样帧数", subtitle: "PC 逐帧处理；移动端默认 60 帧，可按视频长度调整") {
-                    VStack(alignment: .trailing, spacing: 0) {
-                        Text("\(Int(videoSampleLimit))").font(.caption.monospacedDigit())
-                        Slider(value: $videoSampleLimit, in: 10...180, step: 10)
-                            .frame(width: 150)
+                    settingRow(title: "OCR 引擎", subtitle: ocrSubtitle) {
+                        // A single linked engine leaves nothing to choose, and a one-segment
+                        // segmented control reads as broken — show the engine as text. The
+                        // picker comes back by itself once PaddleOCR is linked.
+                        if availableEngines.count > 1 {
+                            Picker("OCR 引擎", selection: $ocrEngine) {
+                                ForEach(availableEngines, id: \.self) { Text($0.displayName) }
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 190)
                             .tint(appAccent)
+                        } else {
+                            Text(availableEngines.first?.displayName ?? ocrEngine.displayName)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                }
-                settingRow(title: "检测诊断", subtitle: "显示送入模型的 640 输入图与原始检测框/置信度") {
-                    Toggle("", isOn: $showDiagnostics)
-                }
-                settingRow(title: "输入通道顺序", subtitle: "默认 RGB（与 PC 参考一致）；仅当检测明显错乱时切 BGR") {
-                    Picker("输入通道", selection: $useRGB) {
-                        Text("RGB").tag(true)
-                        Text("BGR").tag(false)
+
+                    settingRow(title: "检测置信度", subtitle: "PC 参考默认值 0.25；调低可召回更多，调高更保守") {
+                        VStack(alignment: .trailing, spacing: 0) {
+                            Text(String(format: "%.2f", confidenceThreshold)).font(.caption.monospacedDigit())
+                            Slider(value: $confidenceThreshold, in: 0.05...0.9, step: 0.05)
+                                .frame(width: 150)
+                                .tint(appAccent)
+                        }
                     }
-                    .pickerStyle(.segmented)
-                    .frame(width: 130)
-                    .tint(appAccent)
-                }
-                settingRow(title: "Letterbox 缓冲朝向",
-                           subtitle: "正向(PC 同款，默认)/反向；框上下镜像时切到反向对照") {
-                    Picker("Letterbox 朝向", selection: $flipLetterbox) {
-                        Text("正向").tag(true)
-                        Text("反向").tag(false)
+
+                    settingRow(title: "NMS IoU", subtitle: "PC 参考值 0.7；过低会把相邻车牌合并成一块") {
+                        VStack(alignment: .trailing, spacing: 0) {
+                            Text(String(format: "%.2f", nmsIoU)).font(.caption.monospacedDigit())
+                            Slider(value: $nmsIoU, in: 0.1...0.9, step: 0.05)
+                                .frame(width: 150)
+                                .tint(appAccent)
+                        }
                     }
-                    .pickerStyle(.segmented)
-                    .frame(width: 130)
-                    .tint(appAccent)
+
+                    DisclosureGroup("调试选项", isExpanded: $showDebug) {
+                        VStack(spacing: 12) {
+                            settingRow(title: "视频采样帧数", subtitle: "PC 逐帧处理；移动端默认 60 帧，可按视频长度调整") {
+                                VStack(alignment: .trailing, spacing: 0) {
+                                    Text("\(Int(videoSampleLimit))").font(.caption.monospacedDigit())
+                                    Slider(value: $videoSampleLimit, in: 10...180, step: 10)
+                                        .frame(width: 150)
+                                        .tint(appAccent)
+                                }
+                            }
+                            settingRow(title: "检测诊断", subtitle: "显示送入模型的 640 输入图与原始检测框/置信度") {
+                                Toggle("", isOn: $showDiagnostics)
+                            }
+                            settingRow(title: "输入通道顺序",
+                                       subtitle: channelOrderConfigurable
+                                           ? "默认 RGB（与 PC 参考一致）；仅当检测明显错乱时切 BGR"
+                                           : "当前模型固定 BGR（LibreYOLO 导出 / Core ML），此开关不生效") {
+                                Picker("输入通道", selection: $useRGB) {
+                                    Text("RGB").tag(true)
+                                    Text("BGR").tag(false)
+                                }
+                                .pickerStyle(.segmented)
+                                .frame(width: 130)
+                                .tint(appAccent)
+                                .disabled(!channelOrderConfigurable)
+                                .opacity(channelOrderConfigurable ? 1 : 0.45)
+                            }
+                            settingRow(title: "Letterbox 缓冲朝向",
+                                       subtitle: "正向(PC 同款，默认)/反向；框上下镜像时切到反向对照") {
+                                Picker("Letterbox 朝向", selection: $flipLetterbox) {
+                                    Text("正向").tag(true)
+                                    Text("反向").tag(false)
+                                }
+                                .pickerStyle(.segmented)
+                                .frame(width: 130)
+                                .tint(appAccent)
+                            }
+                            settingRow(title: "诊断回显", subtitle: "预览角落显示送入检测的原始帧+框，用于排查定位/旋转问题") {
+                                Toggle("", isOn: Binding(
+                                    get: { controller.debugEchoEnabled },
+                                    set: { controller.debugEchoEnabled = $0 }))
+                            }
+                        }
+                        .padding(.top, 10)
+                    }
+                    .tint(.secondary)
+                    .font(.subheadline)
+                    .padding(14)
+                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Toggle(isOn: $enhancements.isEnabled) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("强化识别（SDK Enhanced Mode）")
+                                Text("折叠感知排序 · 数字段严格校验 · 关键点四边形叠层 · 图像清理")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
+                        if enhancements.isEnabled {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Toggle("折叠感知排序（修正 3 位 / E·H 误读）",
+                                       isOn: $enhancements.foldAwareScoring)
+                                Toggle("数字段严格校验（拒绝前导 0）",
+                                       isOn: $enhancements.strictNumericPart)
+                                Toggle("关键点四边形叠层（用 pose 角点）",
+                                       isOn: $enhancements.keypointQuads)
+                                // Was missing from the sheet, so the one stage that changes
+                                // the pixels fed to OCR could not be isolated on device.
+                                Toggle("图像清理（遮 EU 蓝条 / 年检圆章）",
+                                       isOn: $enhancements.plateImageCleaning)
+                            }
+                            .font(.footnote)
+                            .padding(.top, 8)
+                        }
+                    }
+                    .padding(14)
+                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
                 }
-                settingRow(title: "诊断回显", subtitle: "预览角落显示送入检测的原始帧+框，用于排查定位/旋转问题") {
-                    Toggle("", isOn: Binding(
-                        get: { controller.debugEchoEnabled },
-                        set: { controller.debugEchoEnabled = $0 }))
-                }
+                .padding(.bottom, 4)
             }
-            .tint(.secondary)
-            .font(.subheadline)
-            .padding(14)
-            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
-            VStack(alignment: .leading, spacing: 8) {
-                Toggle(isOn: $enhancements.isEnabled) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("强化识别（SDK Enhanced Mode）")
-                        Text("折叠感知排序 · 数字段严格校验 · 关键点四边形叠层")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-                if enhancements.isEnabled {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Toggle("折叠感知排序（修正 3 位 / E·H 误读）",
-                               isOn: $enhancements.foldAwareScoring)
-                        Toggle("数字段严格校验（拒绝前导 0）",
-                               isOn: $enhancements.strictNumericPart)
-                        Toggle("关键点四边形叠层（用 pose 角点）",
-                               isOn: $enhancements.keypointQuads)
-                    }
-                    .font(.footnote)
-                    .padding(.top, 8)
-                }
-            }
-            .padding(14)
-            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
+            .scrollBounceBehavior(.basedOnSize)
 
             Button("完成") { onDone() }
                 .font(.headline.bold())
@@ -905,6 +1013,10 @@ private struct PlateCardView: View {
                     CorrectedPlateView(cgImage: result.correctedPlateImage, text: result.text)
                     Spacer(minLength: 0)
                     Text("#\(index)").font(.caption).foregroundStyle(.secondary)
+                    if result.votes > 1 {
+                        // Sampled video frames that agreed on this reading.
+                        Text("\(result.votes) 帧").font(.caption2).foregroundStyle(.tertiary)
+                    }
                     Text("\(Int(result.confidence * 100))%").font(.caption).foregroundStyle(.secondary)
                 }
                 ConfidenceBar(value: result.confidence)
@@ -934,6 +1046,12 @@ struct CameraResultsView: View {
         return f
     }()
 
+    /// Rows rendered at most. The aggregator keeps up to 300 entries (so the count in the
+    /// header stays honest), but the camera tab sits below a live preview and is re-rendered
+    /// while plates are in view — building 300 rows five times a second is wasted work for
+    /// a list nobody scrolls that far. The newest entries are the ones that matter.
+    private static let displayLimit = 50
+
     var body: some View {
         let history = controller.recognitionHistory
         if history.isEmpty {
@@ -943,11 +1061,18 @@ struct CameraResultsView: View {
                 HStack(spacing: 8) {
                     Text("识别历史（\(history.count)）").font(.headline)
                     Spacer(minLength: 0)
-                    Text("最新在上").font(.caption).foregroundStyle(.tertiary)
+                    // The header count is the aggregator's real total; only `displayLimit`
+                    // rows are rendered, so say so instead of letting "识别历史（180）" sit
+                    // above a 50-row list that silently ends.
+                    Text(history.count > Self.displayLimit
+                         ? "仅显示最新 \(Self.displayLimit) 条"
+                         : "最新在上")
+                        .font(.caption).foregroundStyle(.tertiary)
                 }
                 .padding(.horizontal)
                 // Newest first: `recognitionHistory` is appended chronologically, so reverse it.
-                ForEach(Array(history.reversed().enumerated()), id: \.element.id) { pair in
+                ForEach(Array(history.reversed().prefix(Self.displayLimit).enumerated()),
+                        id: \.element.id) { pair in
                     HistoryCardView(entry: pair.element)
                         .padding(.horizontal)
                 }
@@ -980,8 +1105,14 @@ private struct HistoryCardView: View {
                     // the detector produced no keypoint quad for this frame).
                     CorrectedPlateView(cgImage: entry.result.correctedPlateImage, text: entry.result.text)
                     Spacer(minLength: 0)
-                    Text(CameraResultsView.timeFormatter.string(from: entry.date))
-                        .font(.caption).foregroundStyle(.secondary)
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(CameraResultsView.timeFormatter.string(from: entry.date))
+                            .font(.caption).foregroundStyle(.secondary)
+                        // Agreeing frames / all frames that saw this plate: the reading is
+                        // the majority vote, so `5/6` means one frame disagreed.
+                        Text("\(entry.votes)/\(entry.totalVotes) 帧")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
                     Text("\(Int(entry.result.confidence * 100))%")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -1091,20 +1222,5 @@ struct PlateQuadShape: Shape {
         path.addLines(points)
         path.closeSubpath()
         return path
-    }
-}
-
-extension UIImage {
-    /// Returns a CGImage whose pixels are physically rotated/flopped to match
-    /// `imageOrientation`, so downstream coordinate math lines up with what SwiftUI
-    /// actually draws. `cgImage` alone ignores the orientation tag.
-    func cgImageWithOrientationApplied() -> CGImage? {
-        let format = UIGraphicsImageRendererFormat.default()
-        format.scale = 1
-        let renderer = UIGraphicsImageRenderer(size: size, format: format)
-        let rendered = renderer.image { _ in
-            draw(in: CGRect(origin: .zero, size: size))
-        }
-        return rendered.cgImage
     }
 }

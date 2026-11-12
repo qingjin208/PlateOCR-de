@@ -2,35 +2,81 @@
 import SwiftUI
 import CoreImage
 import ImageIO
+import os
 
 /// Retains the buffer until asynchronous recognition finishes.
 private struct CameraFrame: @unchecked Sendable { let buffer: CVPixelBuffer }
 
-/// Drops frames while recognition is busy instead of creating a backlog.
+/// Drops frames while recognition is busy instead of creating a backlog, and gates the
+/// whole capture callback.
+///
+/// `enabled` exists so a camera that is idle (tab just opened), paused, or suspended can
+/// reject a frame **on the capture queue**, before any `Task { @MainActor }` hop. The
+/// previous code hopped to the main actor first and failed a `guard` inside — ~5 pointless
+/// main-thread wake-ups per second for as long as the camera tab was on screen, even with
+/// detection switched off.
+///
+/// `OSAllocatedUnfairLock` is Apple's recommended replacement for a bare `NSLock` in Swift
+/// concurrency code: it is `Sendable`, and `withLock` cannot leave the lock held across an
+/// `await` (which is exactly the bug a manual lock/unlock pair invites here). Also note
+/// `os_unfair_lock` must never be used from Swift directly — `OSAllocatedUnfairLock` is the
+/// supported wrapper.
 private final class FrameGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private var busy = false
-    private var lastStart = Date.distantPast
-    func begin() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !busy, Date().timeIntervalSince(lastStart) >= 0.2 else { return false }
-        busy = true
-        lastStart = Date()
-        return true
+    private struct State {
+        var busy = false
+        var lastStart = Date.distantPast
+        var enabled = false
     }
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    /// Cheap read used on the capture queue before touching the buffer.
+    var isEnabled: Bool { state.withLock { $0.enabled } }
+
+    /// Mirrors `active && liveEnabled && !paused` onto the capture queue.
+    func setEnabled(_ enabled: Bool) {
+        state.withLock { $0.enabled = enabled }
+    }
+
+    /// Returns true when this frame should be analysed (at most one in flight, ≥0.2 s apart).
+    func begin() -> Bool {
+        state.withLock { s in
+            guard s.enabled, !s.busy,
+                  Date().timeIntervalSince(s.lastStart) >= 0.2 else { return false }
+            s.busy = true
+            s.lastStart = Date()
+            return true
+        }
+    }
+
     func finish() {
-        lock.lock()
-        busy = false
-        lock.unlock()
+        state.withLock { $0.busy = false }
     }
 }
 
-struct CameraRecognitionLogEntry: Identifiable {
-    let id = UUID()
+struct CameraRecognitionLogEntry: Identifiable, Equatable {
+    /// Stable across vote updates (the aggregator's entry id), so a row is refreshed in
+    /// place instead of being torn down and re-created on every analysis cycle.
+    let id: UUID
     let date: Date
     let result: PlateResult
-    let detectionNumber: Int
+    /// Frames that agreed on `result.text`, and all frames that saw this plate.
+    let votes: Int
+    let totalVotes: Int
+
+    /// Equality is deliberately limited to what the row actually renders — identity,
+    /// timestamp, text, counts and the corrected-image instance. `PlateResult` carries a
+    /// fresh `UUID` per instance and an array of candidates, so a structural compare would
+    /// report a change on *every* analysis cycle; this lets the controller skip the
+    /// published assignment (and the whole list's re-render) when nothing visible moved.
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.id == rhs.id
+            && lhs.date == rhs.date
+            && lhs.votes == rhs.votes
+            && lhs.totalVotes == rhs.totalVotes
+            && lhs.result.text == rhs.result.text
+            && lhs.result.confidence == rhs.result.confidence
+            && lhs.result.correctedPlateImage === rhs.result.correctedPlateImage
+    }
 }
 
 @MainActor @Observable
@@ -41,7 +87,6 @@ final class CameraController: NSObject {
     private let recognizer: LicensePlateRecognizing
     private var didSetup = false
     @ObservationIgnored private var configurationTask: Task<Bool, Never>?
-    private var waitingForOCR = false
     private var active = false
     private var generation = 0
     private var analysisIdentifier = 0
@@ -51,7 +96,6 @@ final class CameraController: NSObject {
     var liveResults: [PlateResult] = []
     var liveDetections: [PlateDetection] = []
     var recognitionHistory: [CameraRecognitionLogEntry] = []
-    var frameSize = CGSize.zero
     var isAnalyzing = false
     var elapsedMilliseconds = 0
     var errorMessage: String?
@@ -60,20 +104,35 @@ final class CameraController: NSObject {
         didSet {
             generation += 1
             if !liveEnabled {
+                // Close the voting session first: this lists a confident one-frame sighting
+                // and drops every live track, so the next session cannot revive a plate the
+                // user saw half a minute ago.
+                publishHistory(voteAggregator.finish())
                 liveResults = []
                 liveDetections = []
                 isAnalyzing = false
-                waitingForOCR = false
                 trackedPlates.removeAll()
                 foldedFrameIdentifier = -1
                 previewView?.clearOverlay()
             }
+            refreshAnalysisGate()
         }
     }
     /// When true, analysis is halted (frozen) but the camera keeps showing the last frame,
     /// and results + overlay stay on screen. Toggled by the pause button — distinct from
     /// `liveEnabled`, which fully stops the live feature and clears everything.
-    var paused = false
+    ///
+    /// `isAnalyzing` is cleared here rather than in the view: it drives the status pill and
+    /// the scan beam, and a paused pipeline must not keep claiming "实时检测中" just because
+    /// the button that flipped the flag happened to also reset it (any other caller — a
+    /// scene-phase handler, a future auto-pause — would have left it stuck true).
+    var paused = false {
+        didSet {
+            guard paused != oldValue else { return }
+            if paused { isAnalyzing = false }
+            refreshAnalysisGate()
+        }
+    }
     weak var previewView: PreviewView?
     /// Diagnostic: echoes the exact frame the SDK analyzed (as-is, rotation included)
     /// into a corner thumbnail, with the same normalized boxes drawn on it. If the box
@@ -85,10 +144,20 @@ final class CameraController: NSObject {
         }
     }
 
-    /// Renders the software-rotated buffers. CIContext is thread-safe for rendering, so
-    /// the per-frame rotation and the debug thumbnail both draw through it. Declared
-    /// `nonisolated static` so the off-main analysis task can use it without hopping.
-    private nonisolated static let ciContext = CIContext(options: [.cacheIntermediates: false])
+    /// Unified-logging handles. `print` writes to stdout, which is slow, has no levels and
+    /// is invisible to the Console app; `Logger` + `OSSignposter` is what Apple's logging
+    /// guidance recommends, and the signpost interval shows up directly in the Instruments
+    /// Points of Interest track — the only reliable way to measure a per-frame change.
+    private nonisolated static let logger = Logger(subsystem: "com.itlogica.PlateOCR",
+                                                   category: "recognition")
+    private nonisolated static let signposter = OSSignposter(subsystem: "com.itlogica.PlateOCR",
+                                                             category: "recognition")
+
+    /// Tells the capture queue whether frames are worth analysing at all.
+    /// Called from every state change that can start or stop the live pipeline.
+    private func refreshAnalysisGate() {
+        frameGate.setEnabled(active && liveEnabled && !paused)
+    }
 
     // MARK: - Temporal detection stability
     //
@@ -114,6 +183,13 @@ final class CameraController: NSObject {
     /// tracker by the intermediate detection callback (so the final publish of the same
     /// frame reuses the tracks instead of double-counting `hits`).
     @ObservationIgnored private var foldedFrameIdentifier = -1
+
+    /// Cross-frame voting for the history list (see `PlateVoteAggregator`). Kept separate
+    /// from `trackedPlates`, which only stabilises the *overlay geometry*: this one decides
+    /// what the list shows, and runs on the results rather than on raw detections.
+    /// `@ObservationIgnored` because it is written every analysis cycle and must not make
+    /// the whole view tree re-evaluate — `recognitionHistory` is the published output.
+    @ObservationIgnored private var voteAggregator = PlateVoteAggregator()
 
     /// Cycles a box must be seen consecutively before it is drawn.
     private static let confirmationHits = 2
@@ -203,7 +279,7 @@ final class CameraController: NSObject {
     /// tracks. Results pass through untouched — a newly recognized plate keeps its label
     /// even on the confirming frame, and OCR'd plates are already validated downstream.
     private func publishLiveOverlay(detections: [PlateDetection], frameIdentifier: Int,
-                                    imageSize: CGSize, results: [PlateResult]) {
+                                    results: [PlateResult]) {
         let updateTracks = foldedFrameIdentifier != frameIdentifier
         let stabilized: [PlateDetection]
         if updateTracks {
@@ -213,53 +289,64 @@ final class CameraController: NSObject {
             stabilized = confirmedTracks()
         }
         liveDetections = stabilized
-        frameSize = imageSize
-        previewView?.draw(detections: stabilized, results: results, imageSize: imageSize)
+        previewView?.draw(detections: stabilized, results: results)
     }
 
     /// Shared context for the debug echo (thread-safe; created once).
     private nonisolated static let debugImageContext = CIContext()
 
-    /// Downscaled CGImage of the analyzed buffer, exactly as the SDK received it.
-    private nonisolated func debugThumbnail(from buffer: CVPixelBuffer) -> CGImage? {
+    /// Downscaled CGImage of the analysed buffer, in the same upright orientation the
+    /// detector saw it (so the echo can be compared against the live preview directly).
+    private nonisolated func debugThumbnail(from buffer: CVPixelBuffer,
+                                            orientation: CGImagePropertyOrientation) -> CGImage? {
         let width = CGFloat(CVPixelBufferGetWidth(buffer))
         let height = CGFloat(CVPixelBufferGetHeight(buffer))
         guard width > 0, height > 0 else { return nil }
+        // `oriented` changes the extent (and its origin); normalize to (0,0) before scaling.
+        var image = CIImage(cvPixelBuffer: buffer).oriented(orientation)
+        image = image.transformed(by: CGAffineTransform(translationX: -image.extent.minX,
+                                                       y: -image.extent.minY))
         let maxDimension: CGFloat = 360
-        let scale = min(maxDimension / width, maxDimension / height, 1)
-        let scaled = CIImage(cvPixelBuffer: buffer)
-            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let scale = min(maxDimension / image.extent.width, maxDimension / image.extent.height, 1)
+        let scaled = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         return Self.debugImageContext.createCGImage(scaled, from: scaled.extent)
     }
 
-    /// Rotates the raw sample buffer (sensor orientation, landscape for a back camera held
-    /// upright) to upright portrait, so the detector and the on-screen overlay share one
-    /// coordinate space. We do this in software rather than trust the data-output
-    /// connection's `videoRotationAngle`, which — per Apple's own behaviour and multiple
-    /// field reports — is not reliably applied: the front camera ignores it, some rear
-    /// configurations do too, and a connection can still deliver landscape buffers after
-    /// 90° was requested. Software rotation makes the mapping deterministic: a portrait
-    /// detection box then maps to screen pixels through the preview layer's native
-    /// conversion with no rotate/mirror math that can drift.
+    /// Mirrors the aggregator's listed set into the published history array.
     ///
-    /// `.right` (90° clockwise) is the rotation that turns the landscape sensor image into
-    /// the upright portrait the user sees, matching the preview connection's 90° rotation.
-    private nonisolated func rotateToPortrait(_ buffer: CVPixelBuffer) -> CVPixelBuffer? {
-        let ci = CIImage(cvPixelBuffer: buffer).oriented(.right)
-        let width = Int(ci.extent.width), height = Int(ci.extent.height)
-        guard width > 0, height > 0 else { return nil }
-        var out: CVPixelBuffer?
-        let status = CVPixelBufferCreate(
-            kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
-            [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &out)
-        guard status == kCVReturnSuccess, let out else { return nil }
-        Self.ciContext.render(ci, to: out)
-        return out
+    /// Equality-gated on purpose: the array is rebuilt on every analysis cycle (~5 fps) and
+    /// `@Observable` notifies on *every* assignment, which would re-evaluate the whole
+    /// history list — up to 300 rows — five times a second for no visible change.
+    private func publishHistory(_ aggregates: [PlateVoteAggregate]) {
+        let entries = aggregates.map {
+            CameraRecognitionLogEntry(id: $0.id, date: $0.firstSeen,
+                                      result: $0.result, votes: $0.votes,
+                                      totalVotes: $0.totalVotes)
+        }
+        guard entries != recognitionHistory else { return }
+        recognitionHistory = entries
     }
 
     func clearRecognitionHistory() {
         recognitionHistory.removeAll()
         lastPrinted.removeAll()
+        voteAggregator.reset()
+        // Invalidate the frame that may be in flight: its final publish only checks the
+        // generation token, so without this bump a pass that started before the tap would
+        // re-list its plates (and re-draw the labels) a few hundred ms later.
+        generation += 1
+        // Reset everything the list was derived from, so "清空" is a real reset and not a
+        // one-second-later reappearance:
+        //  • the overlay tracker held boxes whose `hits` were accumulated for the old
+        //    session — dropping them means the next frame re-confirms from scratch;
+        //  • the on-screen result cards/labels are part of the same accumulated state.
+        // The capture session itself keeps running (this is not 停止).
+        trackedPlates.removeAll()
+        foldedFrameIdentifier = -1
+        liveResults = []
+        liveDetections = []
+        isAnalyzing = false
+        previewView?.clearOverlay()
     }
 
     init(recognizer: LicensePlateRecognizing, mode: RecognitionMode = .fast) {
@@ -271,6 +358,7 @@ final class CameraController: NSObject {
     @discardableResult
     func setup() async -> Bool {
         active = true
+        refreshAnalysisGate()
         let activationGeneration = generation
         let granted: Bool
         switch AVCaptureDevice.authorizationStatus(for: .video) {
@@ -321,11 +409,12 @@ final class CameraController: NSObject {
         // NOTE: we deliberately do NOT set the data-output connection's `videoRotationAngle`.
         // That hardware rotation is documented as unreliable — the front camera ignores it,
         // some rear configurations do too, and a connection can still deliver landscape
-        // buffers even after 90° was requested. Instead we rotate the buffer to upright
-        // portrait in software (see `rotateToPortrait`) so the detector and the on-screen
-        // overlay always share exactly one coordinate space. The *preview* layer keeps its
-        // own portrait rotation (set in `CameraPreview.ensurePortraitOrientation`), which is
-        // a separate, reliable display path.
+        // buffers even after 90° was requested. Instead the *analysis* path keeps the raw
+        // landscape buffer and hands it to the SDK with `orientation: .right`, so the one
+        // render that produces the detector's CGImage also rotates it (no second full-frame
+        // pass, no extra 8 MB buffer). The *preview* layer keeps its own portrait rotation
+        // (set in `CameraPreview.ensurePortraitOrientation`), which is a separate, reliable
+        // display path.
         return true
     }
 
@@ -339,6 +428,10 @@ final class CameraController: NSObject {
     func suspendSession() {
         active = false
         generation += 1
+        refreshAnalysisGate()
+        // Freeze the history here too: the preview keeps its last frame, so no further
+        // analysis (and therefore no track expiry) will run until the camera returns.
+        publishHistory(voteAggregator.finish())
         trackedPlates.removeAll()
         foldedFrameIdentifier = -1
         previewView?.clearOverlay()
@@ -355,59 +448,69 @@ final class CameraController: NSObject {
                                              mode: RecognitionMode,
                                              recognizer: LicensePlateRecognizing) async {
         let started = Date()
-        // Rotate the raw buffer to upright portrait so the detector and the overlay agree
-        // on orientation (see `rotateToPortrait`). Falls back to the raw buffer if the
-        // GPU render fails — recognition still runs, only the orientation may be off.
-        let workingBuffer = rotateToPortrait(frame.buffer) ?? frame.buffer
+        let signpost = Self.signposter.beginInterval("frame")
+        // Both cleanups are deferred: a cancellation between the render and the publish
+        // would otherwise leave the gate busy forever and silently stop live detection.
+        defer { Self.signposter.endInterval("frame", signpost) }
+        defer { frameGate.finish() }
         do {
-            let result = try await recognizer.recognizeFrame(workingBuffer, orientation: .up, mode: mode, tiled: false) {
-                [weak self] detections, size in
+            // The raw buffer is the sensor's native landscape frame. Hand it to the SDK
+            // as-is with `orientation: .right` and let `CIImage.oriented` rotate it inside
+            // the render that already has to happen — the old path first rotated into a
+            // brand-new 8 MB BGRA buffer, then had the SDK render the same frame a second
+            // time. Detections still come back in upright portrait space, so the overlay
+            // mapping, the corrector and the vote tracker are unaffected.
+            let result = try await recognizer.recognizeFrame(frame.buffer, orientation: .right,
+                                                             mode: mode, tiled: false) {
+                [weak self] detections, _ in
                 Task { @MainActor in
                     guard let self, self.active, self.liveEnabled, !self.paused,
                           self.generation == token, self.analysisIdentifier == frameIdentifier else { return }
+                    // Keep the previous cycle's readings instead of publishing an empty
+                    // result set: the labels/tints are derived from `results`, so passing
+                    // `[]` here (the old behaviour) tore every chip off the preview at the
+                    // start of each analysis cycle and only put it back when OCR finished —
+                    // the text visibly blinked off for most of every ~0.4 s cycle.
                     self.publishLiveOverlay(detections: detections, frameIdentifier: frameIdentifier,
-                                            imageSize: size, results: [])
+                                            results: self.liveResults)
                 }
             }
             let latency = Int(Date().timeIntervalSince(started) * 1000)
             await MainActor.run { [weak self] in
                 guard let self, self.active, self.liveEnabled, !self.paused, self.generation == token else { return }
-                self.waitingForOCR = false
                 self.isAnalyzing = false
                 self.elapsedMilliseconds = latency
                 self.liveResults = result.plates
                 self.publishLiveOverlay(detections: result.detections, frameIdentifier: frameIdentifier,
-                                        imageSize: result.imageSize, results: result.plates)
+                                        results: result.plates)
                 self.errorMessage = nil
-                // Diagnostic echo: the analyzed (already portrait) buffer + the same boxes, so the
+                // Diagnostic echo: the analysed (upright) buffer + the same boxes, so the
                 // preview-vs-buffer alignment question can be answered on device.
                 if self.debugEchoEnabled {
-                    self.previewView?.showDebugFrame(image: self.debugThumbnail(from: workingBuffer),
-                                                    detections: result.detections)
+                    self.previewView?.showDebugFrame(
+                        image: self.debugThumbnail(from: frame.buffer, orientation: .right),
+                        detections: result.detections)
                 }
+                // Cross-frame voting decides what the history lists: a reading must repeat
+                // and hold a majority before it appears, so a one-frame misread never gets
+                // its own row, and a plate seen at 1s/3s/5s stays a single row whose text
+                // and image follow the winning vote (not whichever frame finished last).
+                self.publishHistory(self.voteAggregator.ingest(result.plates, at: Date()))
+                // Throttled per text — diagnostics only, not the list.
                 for plate in result.plates {
                     let now = Date()
-                    let locationKey = "\(Int(plate.boundingBox.midX * 10)):\(Int(plate.boundingBox.midY * 10))"
-                    let historyKey = "\(plate.text):\(locationKey)"
-                    if now.timeIntervalSince(self.lastPrinted[historyKey] ?? .distantPast) >= 2 {
-                        print("[PlateOCR] \(plate.text) confidence=\(plate.confidence) box=\(plate.boundingBox) latency=\(latency)ms")
-                        self.lastPrinted[historyKey] = now
-                        let detectionNumber = (result.detections.firstIndex { $0.rect.contains(plate.boundingBox) }
-                            ?? result.detections.firstIndex { $0.rect.intersects(plate.boundingBox) }
-                            ?? -1) + 1
-                        self.recognitionHistory.append(CameraRecognitionLogEntry(date: now, result: plate,
-                                                                                 detectionNumber: detectionNumber))
+                    if now.timeIntervalSince(self.lastPrinted[plate.text] ?? .distantPast) >= 2 {
+                        let box = String(describing: plate.boundingBox)
+                        Self.logger.debug(
+                            "plate=\(plate.text, privacy: .public) confidence=\(Double(plate.confidence)) box=\(box, privacy: .public) latency=\(latency)ms")
+                        self.lastPrinted[plate.text] = now
                     }
-                }
-                if self.recognitionHistory.count > 300 {
-                    self.recognitionHistory.removeFirst(self.recognitionHistory.count - 300)
                 }
                 self.lastPrinted = self.lastPrinted.filter { Date().timeIntervalSince($0.value) < 10 }
             }
         } catch {
             await MainActor.run { [weak self] in
                 guard let self, self.active, self.generation == token else { return }
-                self.waitingForOCR = false
                 self.isAnalyzing = false
                 self.errorMessage = error.localizedDescription
                 self.liveResults = []
@@ -417,14 +520,18 @@ final class CameraController: NSObject {
                 self.previewView?.clearOverlay()
             }
         }
-        frameGate.finish()
     }
 }
 
 extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
     nonisolated func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
                                    from connection: AVCaptureConnection) {
-        guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer), frameGate.begin() else { return }
+        // First line on the capture queue: an idle, paused or suspended camera drops the
+        // frame here. `begin()` also keeps at most one analysis in flight and enforces the
+        // 0.2 s spacing, so a dropped frame costs no rotation, no inference and no OCR.
+        guard frameGate.isEnabled,
+              let buffer = CMSampleBufferGetImageBuffer(sampleBuffer),
+              frameGate.begin() else { return }
         let frame = CameraFrame(buffer: buffer)
         // Mint the generation token and check gating on the main actor (cheap), then run the
         // heavy recognition off the main actor so the scan beam, controls and latency never
@@ -435,7 +542,6 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
             let token = self.generation
             let frameIdentifier = self.analysisIdentifier
             self.isAnalyzing = true
-            self.waitingForOCR = true
             let mode = self.mode
             let recognizer = self.recognizer
             Task.detached(priority: .userInitiated) { [weak self] in
