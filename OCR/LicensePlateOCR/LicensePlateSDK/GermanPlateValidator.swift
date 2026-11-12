@@ -96,10 +96,34 @@ public enum GermanPlateValidator {
         }
 
         if let resolved = resolveEUStrip(upper, enhancements: enhancements) { return resolved }
-        if let separated = parseSeparated(upper, enhancements: enhancements) {
+
+        // Prefix-anchored recovery: the city code is a closed set (~720 civilian codes),
+        // so a head token that names no real code is likely OCR noise (a seal glyph
+        // merged into it, a letter lost or swapped). Enumerate lexicon hits within one
+        // edit of the head and keep the ones whose remainder parses as series+number.
+        // Adopted ONLY when the literal parse's city is not a real code — a real city
+        // (even a lexicon-gap miss) always keeps the literal reading.
+        let separated = parseSeparated(upper, enhancements: enhancements)
+        let anchored: Parsed?
+        if enhancements.effectiveFoldAwareScoring {
+            anchored = anchoredParse(upper, enhancements: enhancements)
+        } else {
+            anchored = nil
+        }
+        switch (separated, anchored) {
+        case (nil, .some(let a)):
+            return a.text
+        case (.some(let s), nil):
             // City code not a real registration code? Try the umlaut variants (TÜ↔TU …)
             // before giving up on the reading.
-            return finalize(separated, enhancements: enhancements)
+            return finalize(s, enhancements: enhancements)
+        case (.some(let s), .some(let a)):
+            if GermanPlateLexicon.contains(s.city) || !GermanPlateLexicon.contains(a.city) {
+                return finalize(s, enhancements: enhancements)
+            }
+            return a.text
+        case (nil, nil):
+            break  // fall through to the umlaut-strip gamble / positional parse below
         }
 
         // Umlaut-strip gamble: a seal misread as Ä/Ö/Ü inside the identification number
@@ -149,7 +173,7 @@ public enum GermanPlateValidator {
     /// the series is a multi-character reading). `B D AB 123` → drop `D` → `B AB 123`;
     /// `ST O EK 440` → drop `O` → `ST EK 440`.
     ///
-    /// The reduced reading must BOTH validate AND hit the ~520-entry city lexicon —
+    /// The reduced reading must BOTH validate AND hit the ~720-entry city lexicon —
     /// a missing lexicon entry never deletes a token (a false removal is worse than a
     /// failed read). Leading `D`/`EU` stays `resolveEUStrip`'s business.
     private static func gambleRemoveExtraToken(_ s: String,
@@ -230,6 +254,91 @@ public enum GermanPlateValidator {
         }
         return nil
     }
+
+    // MARK: - Prefix-anchored recovery (lexicon anchor)
+
+    /// Recover a *misread* city code against the lexicon. The head token (first
+    /// `-`/space-separated token) is matched against the ~720 civilian codes within
+    /// one edit; each hit must still produce a legal series+number from the
+    /// remainder. Match classes (best first):
+    /// 0. single umlaut↔base-vowel substitution (`TU` → `TÜ` — by far the most
+    ///    common OCR confusion),
+    /// 1. deletion of a seal-misread glyph (`STO` → `ST`: a seal blob merged into
+    ///    the city code reads as `O`),
+    /// 2. any other single edit (insertion, substitution, deletion).
+    /// Ties inside a class resolve alphabetically (deterministic for tests). The
+    /// result carries a +1 anchor bonus in its score. Callers must not adopt the
+    /// reading when the literal parse already names a real code.
+    private static func anchoredParse(_ s: String,
+                                      enhancements: RecognitionEnhancements) -> Parsed? {
+        let tokens = s.split(whereSeparator: { $0 == "-" || $0 == " " || $0 == "." || $0 == "/" })
+        guard tokens.count >= 2 else { return nil }
+        let headRaw = String(tokens[0]).uppercased()
+        guard (1...3).contains(headRaw.count),
+              headRaw.contains(where: { $0.isLetter }),
+              let headFold = foldToLetters(Array(headRaw)) else { return nil }
+        let head = headFold.letters
+        // An exact head needs no recovery — `parseSeparated` already covered it.
+        guard !GermanPlateLexicon.contains(head) else { return nil }
+
+        let rest = tokens.dropFirst().joined().filter { $0.isLetter || $0.isNumber }
+        guard rest.count >= 2 else { return nil }
+        let restChars = Array(rest)
+
+        var bestHit: (city: String, reading: Parsed, klass: Int)?
+        for city in GermanPlateLexicon.fuzzyMatches(for: head) {
+            let klass = matchClass(from: head, to: city)
+            for seriesLength in 1...min(2, restChars.count - 1) {
+                let seriesChars = Array(restChars.prefix(seriesLength))
+                // Series must be real letters (see `parseSeparated`); the umlaut-in-
+                // series case stays with `gambleStripUmlauts`.
+                guard seriesChars.allSatisfy({ $0.isLetter }),
+                      let seriesFold = foldToLetters(seriesChars),
+                      let tail = parseNumberTail(Array(restChars.dropFirst(seriesLength)),
+                                                 enhancements: enhancements) else { continue }
+                let folds = headFold.folds + seriesFold.folds + tail.folds
+                let text = "\(city)-\(seriesFold.letters) \(tail.digits)\(tail.suffix.map { String($0) } ?? "")"
+                guard isValid(text) else { continue }
+                let reading = Parsed(text: text, city: city,
+                                     score: score(city: city, folds: folds, enhancements: enhancements) + 1)
+                if let current = bestHit {
+                    if klass < current.klass
+                        || (klass == current.klass && reading.score > current.reading.score)
+                        || (klass == current.klass && reading.score == current.reading.score && city < current.city) {
+                        bestHit = (city, reading, klass)
+                    }
+                } else {
+                    bestHit = (city, reading, klass)
+                }
+            }
+        }
+        return bestHit?.reading
+    }
+
+    /// Match class of an edit-distance-1 pair (see `anchoredParse`).
+    private static func matchClass(from query: String, to hit: String) -> Int {
+        if query.count == hit.count {
+            let q = Array(query), h = Array(hit)
+            let diffs = zip(q, h).filter { $0.0 != $0.1 }
+            if diffs.count == 1, umlautPairs.contains(String([diffs[0].0, diffs[0].1])) {
+                return 0
+            }
+        }
+        if hit.count == query.count - 1 {
+            let q = Array(query)
+            for i in q.indices {
+                var copy = q
+                copy.remove(at: i)
+                if String(copy) == hit, sealMisreadGlyphs.contains(q[i]) {
+                    return 1
+                }
+            }
+        }
+        return 2
+    }
+
+    /// Umlaut↔base-vowel pairs that count as a class-0 (most common) confusion.
+    private static let umlautPairs: Set<String> = ["AÄ", "ÄA", "OÖ", "ÖO", "UÜ", "ÜU"]
 
     // MARK: - Parsing
 

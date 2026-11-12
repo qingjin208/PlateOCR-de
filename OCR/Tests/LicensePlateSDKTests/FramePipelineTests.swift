@@ -195,6 +195,22 @@ final class FramePipelineTests: XCTestCase {
         XCTAssertEqual(GermanPlateValidator.canonicalize("TBB ÖEK 440", enhancements: .on), "TBB-EK 440")
     }
 
+    func testLexiconAnchoredRecoveryFixesMisreadCityCode() {
+        // A seal blob merged into the city code (`STO`) leaves no real code for the
+        // literal parse. Legacy keeps it (structurally valid); enhanced mode anchors
+        // the prefix against the lexicon: deleting the seal glyph `O` recovers `ST`
+        // (class-1 hit, beats the class-2 `SO`/`STA`/… one-edit hits).
+        XCTAssertEqual(GermanPlateValidator.canonicalize("STO EK 440"), "STO-EK 440")
+        XCTAssertEqual(GermanPlateValidator.canonicalize("STO EK 440", enhancements: .on), "ST-EK 440")
+    }
+
+    func testAnchoredRecoveryNeverOverridesRealCityCode() {
+        // `KE` is a real code (Kempten) and `K` (Köln) sits one edit away — the
+        // literal reading with a real city ALWAYS keeps precedence over the anchor.
+        XCTAssertEqual(GermanPlateValidator.canonicalize("KE BA 6024"), "KE-BA 6024")
+        XCTAssertEqual(GermanPlateValidator.canonicalize("KE BA 6024", enhancements: .on), "KE-BA 6024")
+    }
+
     func testUmlautCityVariantMapping() {
         // OCR dropping the diacritic: TU → TÜ (a real code), only when the plain
         // reading is NOT already a real code (SO, BO, KO stay untouched).
