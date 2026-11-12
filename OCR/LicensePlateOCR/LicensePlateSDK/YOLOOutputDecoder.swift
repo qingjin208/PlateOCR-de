@@ -130,8 +130,8 @@ enum YOLOOutputDecoder {
         // truncated buffer can never push an index out of bounds.
         let safeAnchorCount = min(anchorCount,
             boxes.count / max(1, 4),
-            keypointXYValues.count / max(1, numKeypoints * 2),
-            keypointConfValues.count / max(1, numKeypoints))
+            keypointsXY.count / max(1, numKeypoints * 2),
+            keypointsConf.count / max(1, numKeypoints))
         // Upstream caps pre-NMS candidates at 1000 (`YoloNASPosePostPredictionCallback`);
         // at loose confidence thresholds thousands of near-duplicate anchors can pass,
         // and `suppress` is O(kept × candidates).

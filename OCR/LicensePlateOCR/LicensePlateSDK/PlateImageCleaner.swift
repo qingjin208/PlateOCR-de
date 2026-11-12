@@ -261,8 +261,10 @@ struct PixelBuffer {
         return morphologicalClose(mask, radius: structuringRadius)
     }
 
+    /// Morphological CLOSE (dilate then erode) — joins broken strokes into solid
+    /// blobs, mirroring the Python calibration's `cv2.MORPH_CLOSE`.
     private func morphologicalClose(_ mask: [Bool], radius: Int) -> [Bool] {
-        dilate(erode(mask, radius: radius), radius: radius)
+        erode(dilate(mask, radius: radius), radius: radius)
     }
 
     private func dilate(_ mask: [Bool], radius: Int) -> [Bool] {
@@ -345,7 +347,7 @@ struct PixelBuffer {
         return total
     }
 
-    func fillRect(x0: Int, x1: Int, y0: Int, y1: Int, value: UInt8) {
+    mutating func fillRect(x0: Int, x1: Int, y0: Int, y1: Int, value: UInt8) {
         for y in y0..<min(y1, height) {
             for x in x0..<min(x1, width) {
                 let i = (y * width + x) * 4
@@ -354,7 +356,7 @@ struct PixelBuffer {
         }
     }
 
-    func fillCircle(cx: Double, cy: Double, radius: Double, value: UInt8) {
+    mutating func fillCircle(cx: Double, cy: Double, radius: Double, value: UInt8) {
         let y0 = max(0, Int(cy - radius)), y1 = min(height - 1, Int(cy + radius))
         let x0 = max(0, Int(cx - radius)), x1 = min(width - 1, Int(cx + radius))
         let r2 = radius * radius

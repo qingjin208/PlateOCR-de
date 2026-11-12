@@ -3,11 +3,16 @@
  License Plate OCR SDK — ONNX Runtime pose detector
 
  Abstract:
- Runs the trained German-plate YOLOv8-pose model (`De-plate-pose-500.onnx`) through
- ONNX Runtime (Microsoft `onnxruntime-mobile-objc`) and decodes both the detection
- box and the 4 plate corners (left_top, right_top, right_bottom, left_bottom).
+ Runs a trained German-plate corner model through ONNX Runtime (Microsoft
+ `onnxruntime-mobile-objc`) and decodes both the detection box and the 4 plate
+ corners (left_top, right_top, right_bottom, left_bottom).
 
- Output layout: `[1, 17, 8400]` = 5 (cx, cy, w, h, conf) + 4 * 3 (x, y, visibility).
+ Two export layouts are supported, auto-detected from the model's output names:
+ - Ultralytics YOLOv8-pose (`De-plate-pose-500.onnx`): single output
+   `[1, 17, 8400]` = 5 (cx, cy, w, h, conf) + 4 * 3 (x, y, visibility).
+ - LibreYOLO YOLO-NAS-pose (`De-plate-pose-libre-n512.onnx`, the default): four
+   outputs `boxes`/`scores`/`keypoints_xy`/`keypoints_conf`, 512 input,
+   bottom-right letterbox, 127 gray, BGR — see `decodeLibreYOLO`.
  The decode / NMS / remap are shared with the Core ML detector via `YOLOOutputDecoder`,
  which is now keypoint-aware.
 
