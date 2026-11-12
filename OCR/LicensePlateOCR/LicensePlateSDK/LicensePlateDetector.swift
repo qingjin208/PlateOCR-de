@@ -140,7 +140,8 @@ public struct YOLOConfig: Sendable {
         self.numKeypoints = numKeypoints
     }
     public static var germanPlate: YOLOConfig { YOLOConfig() }
-    /// German-plate keypoint (pose) model: `De-plate-pose-500`. Output is
+    /// German-plate keypoint (pose) model: Ultralytics YOLOv8-pose export (e.g. the
+    /// earlier `De-plate-pose-500`). Output is
     /// `[1, 17, 8400]` = 5 (box + conf) + 4 corners * 3 (x, y, visibility).
     /// Corner order is fixed by the training config: left_top, right_top, right_bottom, left_bottom.
     public static var germanPlatePose: YOLOConfig {
@@ -155,7 +156,7 @@ public struct YOLOConfig: Sendable {
                    confidenceThreshold: 0.25, iouThreshold: 0.7,
                    format: .xywhCenterPixels, targetClassIndices: [0], numKeypoints: 4)
     }
-    /// LibreYOLO (YOLO-NAS-pose) German-plate corner model: `De-plate-pose-libre-n512`.
+    /// LibreYOLO (YOLO-NAS-pose) German-plate corner model: `De-plate-pose.onnx`.
     /// Four separate outputs — `boxes [1,N,4]` (x1y1x2y2, input-canvas pixels),
     /// `scores [1,N,1]` (post-sigmoid), `keypoints_xy [1,N,4,2]`, `keypoints_conf [1,N,4]`
     /// — with a **512×512** input. Preprocessing differs from Ultralytics on every axis:

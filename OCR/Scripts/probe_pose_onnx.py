@@ -5,6 +5,11 @@ Goal: confirm the keypoint output range/order the iOS SDK must decode.
 We run a forward pass (random input is fine — we only care about the
 coordinate *range* the model emits, not a real detection) and print the
 best proposal's box + 4 keypoints exactly as YOLOOutputDecoder would read them.
+
+NOTE (2026-11-12): the old Ultralytics export `De-plate-pose-500.onnx` was
+removed from Resources/ (the SDK now ships the LibreYOLO export
+`De-plate-pose.onnx`). This script probes the OLD layout; point MODEL at the
+old model via git history or the original training folder to run it.
 """
 import numpy as np
 import onnxruntime as ort

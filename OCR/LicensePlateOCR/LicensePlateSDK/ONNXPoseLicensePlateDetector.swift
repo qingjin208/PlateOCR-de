@@ -8,9 +8,9 @@
  corners (left_top, right_top, right_bottom, left_bottom).
 
  Two export layouts are supported, auto-detected from the model's output names:
- - Ultralytics YOLOv8-pose (`De-plate-pose-500.onnx`): single output
-   `[1, 17, 8400]` = 5 (cx, cy, w, h, conf) + 4 * 3 (x, y, visibility).
- - LibreYOLO YOLO-NAS-pose (`De-plate-pose-libre-n512.onnx`, the default): four
+ - Ultralytics YOLOv8-pose (older exports, e.g. `De-plate-pose-500.onnx`): single
+   output `[1, 17, 8400]` = 5 (cx, cy, w, h, conf) + 4 * 3 (x, y, visibility).
+ - LibreYOLO YOLO-NAS-pose (`De-plate-pose.onnx`, the default): four
    outputs `boxes`/`scores`/`keypoints_xy`/`keypoints_conf`, 512 input,
    bottom-right letterbox, 127 gray, BGR — see `decodeLibreYOLO`.
  The decode / NMS / remap are shared with the Core ML detector via `YOLOOutputDecoder`,
@@ -40,7 +40,7 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
     private let inputSize: Int
     /// Export-layout auto-detection (at init, from the model's own output names):
     /// - `false` = Ultralytics YOLOv8-pose, single output `[1, 17, 8400]`.
-    /// - `true` = LibreYOLO YOLO-NAS-pose (`De-plate-pose-libre-n512.onnx`), four
+    /// - `true` = LibreYOLO YOLO-NAS-pose (`De-plate-pose.onnx`), four
     ///   outputs (`boxes`/`scores`/`keypoints_xy`/`keypoints_conf`), 512×512 input,
     ///   **bottom-right** letterbox with **127** gray, **BGR** channel order. See
     ///   `YOLOConfig.germanPlatePoseLibre` and `Scripts/libreyolo_onnx_probe.py`.
@@ -104,7 +104,7 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
         return cfg
     }
 
-    public init(modelName: String = "De-plate-pose-libre-n512",
+    public init(modelName: String = "De-plate-pose",
                 config: YOLOConfig = .germanPlatePoseLibre,
                 useRGB: Bool = true,
                 flipY: Bool = true) throws {

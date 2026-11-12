@@ -33,7 +33,7 @@ bash setup_mac.sh
 4. 打开 **`LicensePlateOCR.xcworkspace`** → 选设备 → ▶ 运行。
 
 ### 关于 `.onnx` 模型
-`LicensePlateOCR/LicensePlateSDK/Resources/De-plate-pose-500.onnx` 已在工程「文件夹同步」目录内，Xcode 会自动打进 App 包，**无需手动添加到 Copy Bundle Resources**。
+`LicensePlateOCR/LicensePlateSDK/Resources/De-plate-pose.onnx` 已在工程「文件夹同步」目录内，Xcode 会自动打进 App 包，**无需手动添加到 Copy Bundle Resources**。
 
 ### 关于真机签名
 工程预设 `DEVELOPMENT_TEAM = 224Z7T23JY`（Automatic）。若这台 Mac 没有该团队证书，构建会在签名阶段失败 → 在 Xcode 里把 Target → Signing & Capabilities 的 Team 改成你自己的（免费 Apple ID 即可）。
@@ -53,4 +53,4 @@ bash setup_mac.sh
 ## 本次新增 / 改动文件
 - 新增：`setup_mac.sh`（CocoaPods 一键接入）、`POSE_INTEGRATION.md`
 - 改动：`LicensePlateRecognizer.swift`、`YOLOOutputDecoder.swift`、`LicensePlateDetector.swift`、`ContentView.swift`、新增 `ONNXPoseLicensePlateDetector.swift` / `PerspectivePlateCorrector.swift` / `OCREngine.swift` / `PaddleOCRTextRecognizer.swift`
-- 资源：`Resources/De-plate-pose-500.onnx`
+- 资源：`Resources/De-plate-pose.onnx`

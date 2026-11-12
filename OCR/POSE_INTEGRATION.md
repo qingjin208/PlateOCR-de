@@ -4,9 +4,10 @@
 **Apple Vision** 与 **PaddleOCR** 之间选择 OCR 引擎并传入 SDK 的方式。
 
 > **2026-11-12 更新：默认模型已切换为 LibreYOLO（YOLO-NAS-pose）导出的
-> `De-plate-pose-libre-n512.onnx`**（512×512 输入，4 个独立输出
+> `De-plate-pose.onnx`**（512×512 输入，4 个独立输出
 > boxes/scores/keypoints_xy/keypoints_conf）。检测器按模型输出名**自动识别布局**，
-> 旧 Ultralytics 导出 `De-plate-pose-500.onnx` 仍可用（单输出 [1,17,8400]）。
+> 旧 Ultralytics 导出（单输出 [1,17,8400]）也已支持，但模型文件已从仓库移除
+> （需要时可从 git 历史找回）。
 > 两种布局的预处理差异（bottom-right 补边 + 127 灰 + BGR vs 居中 + 114 + RGB）
 > 已封装在 `ONNXPoseLicensePlateDetector` 内；实证校验脚本见
 > `Scripts/libreyolo_onnx_probe.py`。对应配置：`YOLOConfig.germanPlatePoseLibre`。
@@ -17,7 +18,8 @@
 输入帧 (CVPixelBuffer / CGImage)
    │
    ├─ 检测：ONNXPoseLicensePlateDetector
-   │     De-plate-pose-500.onnx  →  [1, 17, 8400]
+   │     De-plate-pose.onnx（LibreYOLO）→ 4 输出
+   │       boxes[1,N,4] / scores[1,N,1] / keypoints_xy[1,N,4,2] / keypoints_conf[1,N,4]
    │     解码为：目标检测框 + 4 个角点关键点
    │     角点顺序（固定，来自 data.yaml）：
    │       0 left_top  1 right_top  2 right_bottom  3 left_bottom
@@ -39,15 +41,15 @@
          plates     : 每项含 boundingBox(原检测框) + correctedPlateImage(矫正图) + text + confidence + candidates
 ```
 
-关键点模型输出 `[1, 17, 8400]`：`5(框cx,cy,w,h + conf) + 4×3(每点 x,y,可见性)`。
-解码 / NMS / 坐标重映射复用 `YOLOOutputDecoder`（现已支持关键点）。
+关键点解码 / NMS / 坐标重映射复用 `YOLOOutputDecoder`（`decodeLibreYOLO` 处理
+4 输出布局，`decode` 处理旧 Ultralytics 单输出布局；角点均按质心四象限重排）。
 
 ## 2. 依赖接入
 
 ### 2.1 ONNX Runtime（pose 检测，必选）
 
-模型已在仓库：`LicensePlateOCR/LicensePlateSDK/Resources/De-plate-pose-500.onnx`
-（若需更新，替换该文件；资源会被 Swift Package 的 `.process("Resources")` 打包）。
+模型已在仓库：`LicensePlateOCR/LicensePlateSDK/Resources/De-plate-pose.onnx`
+（若需更新，替换该文件；资源会随 Xcode 文件夹同步目录自动打进 App 包）。
 
 在本机（macOS + Xcode）添加 `onnxruntime-mobile-objc`：
 
@@ -108,7 +110,7 @@ SDK 的默认行为不变（`RecognitionEnhancements.off`）。下列三项改�
 
 ```swift
 // 建实例时打开
-let recognizer = LicensePlateRecognizer(poseModelName: "De-plate-pose-500", enhancements: .on)
+let recognizer = LicensePlateRecognizer(poseModelName: "De-plate-pose", enhancements: .on)
 // 运行时切换（下一次识别即生效，不需要重建模型 / OCR）
 recognizer.enhancements.isEnabled = false
 recognizer.enhancements.foldAwareScoring = false   // 只关其中一项
@@ -129,7 +131,7 @@ Demo App 在控制面板提供「强化识别（SDK Enhanced Mode）」总开关
 
 ## 6. 真机验证清单
 
-- [ ] 在 iPhone（iOS 18+）上用 Xcode 编译，确认 `De-plate-pose-500.onnx` 已打包。
+- [ ] 在 iPhone（iOS 18+）上用 Xcode 编译，确认 `De-plate-pose.onnx` 已打包。
 - [ ] 图片 / 视频 / 相机三种来源都能返回检测框与车牌文本。
 - [ ] 结果卡片显示「矫正图」（透视矫正后的车牌）；角点不可靠时应回退为裁剪图（无矫正图）。
 - [ ] 切换 OCR 引擎 Picker（Apple Vision / PaddleOCR），确认 PaddleOCR 在未接入时回退、接入后生效。

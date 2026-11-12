@@ -53,7 +53,7 @@ struct ContentView: View {
         let rec: LicensePlateRecognizer
         #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc)
         // ONNX Runtime linked: use the trained German-plate YOLOv8-pose model directly.
-        rec = LicensePlateRecognizer(poseModelName: "De-plate-pose-libre-n512",
+        rec = LicensePlateRecognizer(poseModelName: "De-plate-pose",
                                      engine: .appleVision,
                                      enhancements: enhancements)
         #else

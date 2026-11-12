@@ -258,11 +258,11 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     /// Convenience initializer that wires the trained German-plate corner model
     /// (running through ONNX Runtime) with the selected OCR engine.
     /// Requires the ONNX Runtime framework + the pose `.onnx` in the bundle. The
-    /// default is the LibreYOLO (YOLO-NAS-pose) export `De-plate-pose-libre-n512`;
-    /// the Ultralytics export `De-plate-pose-500` keeps working via the same
+    /// default is the LibreYOLO (YOLO-NAS-pose) export `De-plate-pose` (512 input,
+    /// four outputs); older Ultralytics exports keep working via the same
     /// detector (the layout is auto-detected from the model's output names).
     #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc)
-    public convenience init(poseModelName: String = "De-plate-pose-libre-n512",
+    public convenience init(poseModelName: String = "De-plate-pose",
                             config: YOLOConfig = .germanPlatePoseLibre,
                             engine: OCREngine = .appleVision,
                             recognitionLanguages: [Locale.Language] = [Locale.Language(identifier: "de-DE")],
