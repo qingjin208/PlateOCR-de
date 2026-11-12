@@ -33,6 +33,14 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
     private let inputName: String
     private let outputName: String
     private let inputSize: Int
+    /// Export-layout auto-detection (at init, from the model's own output names):
+    /// - `false` = Ultralytics YOLOv8-pose, single output `[1, 17, 8400]`.
+    /// - `true` = LibreYOLO YOLO-NAS-pose (`De-plate-pose-libre-n512.onnx`), four
+    ///   outputs (`boxes`/`scores`/`keypoints_xy`/`keypoints_conf`), 512×512 input,
+    ///   **bottom-right** letterbox with **127** gray, **BGR** channel order. See
+    ///   `YOLOConfig.germanPlatePoseLibre` and `Scripts/libreyolo_onnx_probe.py`.
+    private let libreLayout: Bool
+    private let libreOutputNames: [String]
     /// Channel order fed to the model. `true` = RGB, which is what Ultralytics trains on
     /// and what the proven PC reference (`Scripts/pose_pipeline_reference.py`) feeds:
     /// `img = np.array(Image.open(path).convert("RGB"))` → `/255` → NCHW. A mismatch here
@@ -91,8 +99,8 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
         return cfg
     }
 
-    public init(modelName: String = "De-plate-pose-500",
-                config: YOLOConfig = .germanPlatePose,
+    public init(modelName: String = "De-plate-pose-libre-n512",
+                config: YOLOConfig = .germanPlatePoseLibre,
                 useRGB: Bool = true,
                 flipY: Bool = true) throws {
         self.config = config
@@ -120,18 +128,42 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
         self.session = session
         // Read tensor names from the model itself (Ultralytics uses "images"/"output0",
         // but querying avoids hardcoding assumptions across export versions).
+        let names = (try? session.outputNames()) ?? []
+        if names.contains("boxes"), names.contains("keypoints_xy") {
+            // LibreYOLO YOLO-NAS-pose export: four named outputs, bottom-right
+            // letterbox, 127 gray, BGR. The channel order is fixed by the training
+            // pipeline (libreyolo `preprocess_pose_image` reverses RGB→BGR), so the
+            // legacy `useRGB` runtime toggle is intentionally ignored for this layout.
+            self.libreLayout = true
+            self.libreOutputNames = ["boxes", "scores", "keypoints_xy", "keypoints_conf"]
+                .filter { names.contains($0) }
+            self.outputName = names.first ?? "boxes"
+        } else {
+            self.libreLayout = false
+            self.libreOutputNames = []
+            self.outputName = names.first ?? "output0"
+        }
         self.inputName = (try? session.inputNames())?.first ?? "images"
-        self.outputName = (try? session.outputNames())?.first ?? "output0"
     }
+
+    /// The channel order actually fed to the model: BGR for the LibreYOLO layout,
+    /// `useRGB` for the Ultralytics one.
+    private var feedsRGB: Bool { !libreLayout && useRGB }
 
     public func detect(in image: CGImage) async throws -> [PlateDetection] {
         try Task.checkCancellation()
 
         let cfg = currentConfig()
+        // Letterbox geometry follows the export family: Ultralytics centers the resized
+        // image on a 114-gray canvas; LibreYOLO YOLO-NAS-pose anchors it top-left
+        // ("bottom-right" padding) on a 127-gray canvas. `padX/padY` are returned in
+        // both cases so `YOLOOutputDecoder.remap` needs no per-family special case.
         let prepared = try image.letterboxedUpright(size: inputSize, flipY: flipY,
-                                                    snapshot: tunables.captureSnapshot)
+                                                    snapshot: tunables.captureSnapshot,
+                                                    bottomRightPad: libreLayout,
+                                                    padValue: libreLayout ? 127 : 114)
         if let snapshot = prepared.image { snapshotBox.image = snapshot }
-        let tensorData = try Self.inputTensorData(from: prepared.buffer, useRGB: useRGB)
+        let tensorData = try Self.inputTensorData(from: prepared.buffer, useRGB: feedsRGB)
         // `shape` is NSArray<NSNumber*>: build it explicitly instead of relying on an
         // `[Int] as [NSNumber]` bridging cast.
         let shape = [1, 3, inputSize, inputSize].map { NSNumber(value: $0) }
@@ -140,6 +172,14 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
             elementType: .float,
             shape: shape
         )
+
+        if libreLayout {
+            return try detectLibreYOLO(
+                inputValue: inputValue, cfg: cfg,
+                prepared: (scale: prepared.scale, padX: prepared.padX, padY: prepared.padY),
+                imageSize: CGSize(width: image.width, height: image.height))
+        }
+
         let outputs = try session.run(
             withInputs: [inputName: inputValue],
             outputNames: [outputName],
@@ -161,6 +201,46 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
         let mapped = decoded.map {
             YOLOOutputDecoder.remap($0, scale: prepared.scale, padX: prepared.padX, padY: prepared.padY,
                 imageSize: CGSize(width: image.width, height: image.height))
+        }.filter { $0.rect.width > 0 && $0.rect.height > 0 }
+        return YOLOOutputDecoder.suppress(mapped, threshold: cfg.iouThreshold)
+    }
+
+    // MARK: - LibreYOLO (YOLO-NAS-pose) decode path
+
+    /// Runs the four-output LibreYOLO graph and decodes it. The graph already decodes
+    /// anchors into canvas-pixel xyxy boxes and applies sigmoid to scores/keypoint
+    /// confidence, so there is no per-anchor math here — only thresholding, a pre-NMS
+    /// top-K cap (upstream convention), and the shared remap + NMS.
+    private func detectLibreYOLO(inputValue: ORTValue, cfg: YOLOConfig,
+                                 prepared: (scale: CGFloat, padX: CGFloat, padY: CGFloat),
+                                 imageSize: CGSize) throws -> [PlateDetection] {
+        let outputs = try session.run(
+            withInputs: [inputName: inputValue],
+            outputNames: libreOutputNames,
+            runOptions: nil
+        )
+        func floats(_ name: String) throws -> [Float] {
+            guard let value = outputs[name] else {
+                throw LicensePlateError.invalidModelOutput("ONNX 推理未返回输出 \(name)。")
+            }
+            let data = try value.tensorData()
+            let count = data.length / MemoryLayout<Float>.size
+            return Array(UnsafeBufferPointer(start: data.bytes.assumingMemoryBound(to: Float.self),
+                                             count: count))
+        }
+        let boxValues = try floats("boxes")
+        let scoreValues = try floats("scores")
+        let keypointXYValues = try floats("keypoints_xy")
+        let keypointConfValues = try floats("keypoints_conf")
+
+        let anchorCount = scoreValues.count
+        let decoded = YOLOOutputDecoder.decodeLibreYOLO(
+            boxes: boxValues, scores: scoreValues,
+            keypointsXY: keypointXYValues, keypointsConf: keypointConfValues,
+            anchorCount: anchorCount, config: cfg)
+        let mapped = decoded.map {
+            YOLOOutputDecoder.remap($0, scale: prepared.scale, padX: prepared.padX, padY: prepared.padY,
+                imageSize: imageSize)
         }.filter { $0.rect.width > 0 && $0.rect.height > 0 }
         return YOLOOutputDecoder.suppress(mapped, threshold: cfg.iouThreshold)
     }
@@ -245,14 +325,19 @@ extension CGImage {
     /// - Parameter snapshot: also return the buffer as a `CGImage`, i.e. exactly what the
     ///   model sees. Comparing it with the PC pipeline's input settles "is the tensor
     ///   wrong, or is the decode wrong?" in one step.
+    /// - Parameter bottomRightPad: `true` = LibreYOLO YOLO-NAS-pose convention — anchor
+    ///   the resized image at the canvas top-left (`padX = padY = 0`) and leave all pad
+    ///   pixels at the right/bottom; `false` = Ultralytics convention — center the image.
+    /// - Parameter padValue: gray fill (114 Ultralytics, 127 LibreYOLO pose).
     /// - Returns: geometry (scale/pad) consistent with `YOLOOutputDecoder.remap`.
-    func letterboxedUpright(size: Int, flipY: Bool = true, snapshot: Bool = false) throws -> (buffer: CVPixelBuffer, scale: CGFloat, padX: CGFloat, padY: CGFloat, image: CGImage?) {
+    func letterboxedUpright(size: Int, flipY: Bool = true, snapshot: Bool = false,
+                            bottomRightPad: Bool = false, padValue: UInt8 = 114) throws -> (buffer: CVPixelBuffer, scale: CGFloat, padX: CGFloat, padY: CGFloat, image: CGImage?) {
         let side = CGFloat(size)
         let scale = min(side / CGFloat(width), side / CGFloat(height))
         let resizedWidth = round(CGFloat(width) * scale)
         let resizedHeight = round(CGFloat(height) * scale)
-        let padX = floor((side - resizedWidth) / 2)
-        let padY = floor((side - resizedHeight) / 2)
+        let padX = bottomRightPad ? 0 : floor((side - resizedWidth) / 2)
+        let padY = bottomRightPad ? 0 : floor((side - resizedHeight) / 2)
         var pixel: CVPixelBuffer?
         let attributes = [kCVPixelBufferCGImageCompatibilityKey: true,
                           kCVPixelBufferCGBitmapContextCompatibilityKey: true] as CFDictionary
@@ -268,7 +353,8 @@ extension CGImage {
                   bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
             throw LicensePlateError.invalidInput("无法渲染 letterbox 图像。")
         }
-        context.setFillColor(red: 114 / 255, green: 114 / 255, blue: 114 / 255, alpha: 1)
+        let gray = CGFloat(padValue) / 255.0
+        context.setFillColor(red: gray, green: gray, blue: gray, alpha: 1)
         context.fill(CGRect(x: 0, y: 0, width: side, height: side))
         if flipY {
             // `CGContext(data:...)` starts in the Quartz default system (origin

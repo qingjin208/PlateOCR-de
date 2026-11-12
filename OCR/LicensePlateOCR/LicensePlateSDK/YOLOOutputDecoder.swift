@@ -107,6 +107,82 @@ enum YOLOOutputDecoder {
         return results
     }
 
+    /// Decodes the LibreYOLO (YOLO-NAS-pose) export layout — four separate tensors —
+    /// into plate detections in **input-canvas pixel space** (the same space the legacy
+    /// `decode` produces for Ultralytics exports, so `remap` and `suppress` work
+    /// unchanged).
+    ///
+    /// Contract (verified against the training val split, `Scripts/libreyolo_onnx_probe.py`):
+    ///   • `boxes [N,4]` — x1y1x2y2, absolute pixels of the 512×512 input canvas,
+    ///     already decoded from anchors inside the graph;
+    ///   • `scores [N,1]` — post-sigmoid confidence, no extra activation needed;
+    ///   • `keypointsXY [N,4,2]` — canvas-pixel corner coordinates, row-aligned with boxes;
+    ///   • `keypointsConf [N,4]` — post-sigmoid visibility/quality per corner.
+    /// No NMS in the graph (5376 anchors), so the caller must run `suppress` afterwards.
+    /// Like the legacy path, the model's corner order is NOT trusted: `cornerOrder`
+    /// re-derives LT/RT/RB/LB from the centroid before anything downstream consumes
+    /// the quad.
+    static func decodeLibreYOLO(boxes: [Float], scores: [Float], keypointsXY: [Float],
+                                keypointsConf: [Float], anchorCount: Int, config: YOLOConfig) -> [PlateDetection] {
+        let numKeypoints = config.numKeypoints
+        var results: [PlateDetection] = []
+        // The four tensors must agree on the anchor count; trust the smallest so a
+        // truncated buffer can never push an index out of bounds.
+        let safeAnchorCount = min(anchorCount,
+            boxes.count / max(1, 4),
+            keypointXYValues.count / max(1, numKeypoints * 2),
+            keypointConfValues.count / max(1, numKeypoints))
+        // Upstream caps pre-NMS candidates at 1000 (`YoloNASPosePostPredictionCallback`);
+        // at loose confidence thresholds thousands of near-duplicate anchors can pass,
+        // and `suppress` is O(kept × candidates).
+        var candidates: [(index: Int, score: Float)] = []
+        for a in 0..<safeAnchorCount where scores[a] >= config.confidenceThreshold {
+            candidates.append((a, scores[a]))
+        }
+        if candidates.count > 1000 {
+            candidates.sort { $0.score > $1.score }
+            candidates.removeLast(candidates.count - 1000)
+        }
+        let side = CGFloat(config.inputSize)
+        for candidate in candidates {
+            let a = candidate.index
+            // Clamp to the canvas: anchors at the borders can emit out-of-range corners.
+            let x1 = min(side, max(0, CGFloat(boxes[a * 4])))
+            let y1 = min(side, max(0, CGFloat(boxes[a * 4 + 1])))
+            let x2 = min(side, max(0, CGFloat(boxes[a * 4 + 2])))
+            let y2 = min(side, max(0, CGFloat(boxes[a * 4 + 3])))
+            let rect = CGRect(x: x1, y: y1, width: x2 - x1, height: y2 - y1)
+            guard rect.width > 0, rect.height > 0,
+                  rect.minX.isFinite, rect.minY.isFinite else { continue }
+
+            var pts: [CGPoint] = []
+            var confs: [Float] = []
+            var valid = true
+            for k in 0..<numKeypoints {
+                let base = a * numKeypoints * 2 + k * 2
+                let kx = CGFloat(keypointsXY[base]), ky = CGFloat(keypointsXY[base + 1])
+                guard kx.isFinite, ky.isFinite else { valid = false; break }
+                pts.append(CGPoint(x: kx, y: ky))
+                confs.append(keypointsConf[a * numKeypoints + k])
+            }
+            guard valid, pts.count == numKeypoints else { continue }
+            // Same distrust of the model's corner order as the legacy decode.
+            let keypoints: [CGPoint]
+            let keypointConfidences: [Float]
+            if let order = Self.cornerOrder(pts) {
+                keypoints = order.map { pts[$0] }
+                keypointConfidences = order.map { confs[$0] }
+            } else {
+                keypoints = pts
+                keypointConfidences = confs
+            }
+            results.append(PlateDetection(rect: rect, confidence: candidate.score,
+                label: config.classNames.first ?? "plate",
+                keypoints: keypoints, keypointConfidences: keypointConfidences))
+        }
+        return results
+    }
+
     /// Re-orders 4 raw keypoints into `left_top, right_top, right_bottom, left_bottom`
     /// and returns the permutation (`result[slot] = index in the input`).
     ///

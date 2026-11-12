@@ -3,6 +3,14 @@
 本说明覆盖把训练好的德国车牌关键点检测模型接入 SDK 的改动，以及让 App 用户在
 **Apple Vision** 与 **PaddleOCR** 之间选择 OCR 引擎并传入 SDK 的方式。
 
+> **2026-11-12 更新：默认模型已切换为 LibreYOLO（YOLO-NAS-pose）导出的
+> `De-plate-pose-libre-n512.onnx`**（512×512 输入，4 个独立输出
+> boxes/scores/keypoints_xy/keypoints_conf）。检测器按模型输出名**自动识别布局**，
+> 旧 Ultralytics 导出 `De-plate-pose-500.onnx` 仍可用（单输出 [1,17,8400]）。
+> 两种布局的预处理差异（bottom-right 补边 + 127 灰 + BGR vs 居中 + 114 + RGB）
+> 已封装在 `ONNXPoseLicensePlateDetector` 内；实证校验脚本见
+> `Scripts/libreyolo_onnx_probe.py`。对应配置：`YOLOConfig.germanPlatePoseLibre`。
+
 ## 1. 处理管线（每帧）
 
 ```

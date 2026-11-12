@@ -155,6 +155,25 @@ public struct YOLOConfig: Sendable {
                    confidenceThreshold: 0.25, iouThreshold: 0.7,
                    format: .xywhCenterPixels, targetClassIndices: [0], numKeypoints: 4)
     }
+    /// LibreYOLO (YOLO-NAS-pose) German-plate corner model: `De-plate-pose-libre-n512`.
+    /// Four separate outputs — `boxes [1,N,4]` (x1y1x2y2, input-canvas pixels),
+    /// `scores [1,N,1]` (post-sigmoid), `keypoints_xy [1,N,4,2]`, `keypoints_conf [1,N,4]`
+    /// — with a **512×512** input. Preprocessing differs from Ultralytics on every axis:
+    /// **bottom-right** letterbox (top-left anchored, no centering), **127** gray fill,
+    /// **BGR** channel order, /255. All verified against the training val split
+    /// (IoU 0.84–0.93 with GT; see `Scripts/libreyolo_onnx_probe.py`). The detector
+    /// auto-detects this layout from the model's output names, so both configs work
+    /// through the same `ONNXPoseLicensePlateDetector`.
+    /// Corner order is fixed by the training config: left_top, right_top, right_bottom,
+    /// left_bottom (`data.yaml` / `pose_config.yaml` in the training folder).
+    public static var germanPlatePoseLibre: YOLOConfig {
+        // conf 0.25 mirrors the eval convention; the LibreYOLO head scores lower than
+        // the Ultralytics one (val max 0.36–0.67), so this gate is tuned looser than it
+        // looks — every remaining value stays runtime-tunable for on-device A/B.
+        YOLOConfig(inputSize: 512, numClasses: 1, classNames: ["plate"],
+                   confidenceThreshold: 0.25, iouThreshold: 0.7,
+                   format: .xywhCenterPixels, targetClassIndices: [0], numKeypoints: 4)
+    }
 }
 
 /// Executes the original NB graph and weights through Core ML's eligible compute units.
