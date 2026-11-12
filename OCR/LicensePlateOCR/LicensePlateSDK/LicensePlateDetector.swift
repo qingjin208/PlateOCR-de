@@ -39,6 +39,11 @@ public protocol LicensePlateDetecting: AnyObject, Sendable {
     /// Comparing this against the PC input settles "is the tensor wrong?" in one step.
     var debugSnapshot: CGImage? { get }
     var captureDebugSnapshot: Bool { get set }
+    /// Whether this detector's preprocessing actually consumes a configurable channel
+    /// order. `false` means the channel order is fixed by the model/export (LibreYOLO
+    /// YOLO-NAS-pose is BGR-only; Core ML normalizes the buffer itself), so a UI toggle
+    /// for RGB/BGR would be a no-op and should be disabled rather than shown as active.
+    var honorsChannelOrder: Bool { get }
     func detect(in image: CGImage) async throws -> [PlateDetection]
 }
 
@@ -47,6 +52,8 @@ public extension LicensePlateDetecting {
     var nmsIoUThreshold: Float { get { 0.7 } set {} }
     var debugSnapshot: CGImage? { nil }
     var captureDebugSnapshot: Bool { get { false } set {} }
+    /// Opt-in: a detector that ignores the channel order says so by overriding this.
+    var honorsChannelOrder: Bool { false }
 }
 
 /// Tiled detection for large still images.

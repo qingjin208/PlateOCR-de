@@ -99,6 +99,7 @@ public struct RecognitionEnhancements: Sendable, Equatable {
         if foldAwareScoring { parts.append("折叠排序") }
         if strictNumericPart { parts.append("数字段严格") }
         if keypointQuads { parts.append("角点四边形") }
+        if plateImageCleaning { parts.append("图像清理") }
         return parts.isEmpty ? "已开启（无生效子项）" : "已开启（\(parts.joined(separator: "、"))）"
     }
 }

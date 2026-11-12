@@ -25,7 +25,9 @@ public enum OCREngine: String, CaseIterable, Sendable {
     }
 
     /// Builds the recognizer backing this engine. With `PaddleOCR-iOS` not linked
-    /// (default build), `.paddleOCR` gracefully falls back to Apple Vision.
+    /// (default build), `.paddleOCR` gracefully falls back to Apple Vision — check
+    /// `isAvailable` first if the caller needs to know whether it really got PaddleOCR,
+    /// because a silent fallback makes the UI claim an engine that is not running.
     public func makeRecognizer(languages: [Locale.Language] = [Locale.Language(identifier: "de-DE")]) -> PlateTextRecognizing {
         switch self {
         case .appleVision:
@@ -35,6 +37,21 @@ public enum OCREngine: String, CaseIterable, Sendable {
             return PaddleOCRTextRecognizer()
             #else
             return PlateTextRecognizer(languages: languages)
+            #endif
+        }
+    }
+
+    /// Whether this engine is actually linked into the current build. `false` means
+    /// `makeRecognizer` returns an Apple Vision recognizer instead.
+    public var isAvailable: Bool {
+        switch self {
+        case .appleVision:
+            return true
+        case .paddleOCR:
+            #if canImport(PaddleOCR)
+            return true
+            #else
+            return false
             #endif
         }
     }

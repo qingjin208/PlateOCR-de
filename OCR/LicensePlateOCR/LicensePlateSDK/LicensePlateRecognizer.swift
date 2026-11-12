@@ -63,6 +63,12 @@ public struct PlateResult: Identifiable, Sendable {
     /// keypoints. `nil` for sub-boxes carved out of a multi-plate crop, where the corners
     /// of the shared region would be wrong.
     public let corners: [CGPoint]?
+    /// How many analysis frames agreed on this reading (1 = a single sighting).
+    ///
+    /// Set by `PlateVoteAggregator`, which is what turns a per-frame OCR result into a
+    /// de-duplicated, majority-voted plate list. A still image or a single frame keeps
+    /// the default of 1; video and live camera raise it to the number of agreeing frames.
+    public let votes: Int
 
     /// - Note: Declared explicitly (instead of relying on the synthesized memberwise
     ///   initializer) because Swift does not synthesize a parameter for an immutable
@@ -74,7 +80,8 @@ public struct PlateResult: Identifiable, Sendable {
                 imageSize: CGSize,
                 candidates: [PlateCandidate],
                 correctedPlateImage: CGImage? = nil,
-                corners: [CGPoint]? = nil) {
+                corners: [CGPoint]? = nil,
+                votes: Int = 1) {
         self.text = text
         self.confidence = confidence
         self.boundingBox = boundingBox
@@ -82,6 +89,22 @@ public struct PlateResult: Identifiable, Sendable {
         self.candidates = candidates
         self.correctedPlateImage = correctedPlateImage
         self.corners = corners
+        self.votes = votes
+    }
+}
+
+extension PlateResult {
+    /// Same plate reading with a different vote count — used when the vote aggregator
+    /// promotes a frame result into its majority-voted representative.
+    func withVotes(_ votes: Int) -> PlateResult {
+        PlateResult(text: text,
+                    confidence: confidence,
+                    boundingBox: boundingBox,
+                    imageSize: imageSize,
+                    candidates: candidates,
+                    correctedPlateImage: correctedPlateImage,
+                    corners: corners,
+                    votes: votes)
     }
 }
 
@@ -159,6 +182,12 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
             #endif
         }
     }
+
+    /// Whether the active detector actually honours `useRGB`. `false` for the LibreYOLO
+    /// YOLO-NAS-pose export (its training pipeline fixes BGR) and for the legacy Core ML
+    /// detector (Core ML normalizes the buffer itself, so the switch is inert). The App
+    /// disables the RGB/BGR picker in that case rather than offering a no-op control.
+    public var honorsInputChannelOrder: Bool { detector.honorsChannelOrder }
 
     /// Whether the detector's letterbox buffer is written top-row-first (see
     /// `ONNXPoseLicensePlateDetector.flipY`). Default `true`, i.e. the same layout the PC
@@ -257,19 +286,32 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
 
     /// Convenience initializer that wires the trained German-plate corner model
     /// (running through ONNX Runtime) with the selected OCR engine.
-    /// Requires the ONNX Runtime framework + the pose `.onnx` in the bundle. The
-    /// default is the LibreYOLO (YOLO-NAS-pose) export `De-plate-pose` (512 input,
-    /// four outputs); older Ultralytics exports keep working via the same
-    /// detector (the layout is auto-detected from the model's output names).
+    ///
+    /// Requires the ONNX Runtime framework + the pose `.onnx` in the bundle. The default is
+    /// the LibreYOLO (YOLO-NAS-pose) export `De-plate-pose` (512 input, four outputs); older
+    /// Ultralytics exports keep working via the same detector (the layout is auto-detected
+    /// from the model's output names).
+    /// - Parameters:
+    ///   - poseModelName: Resource name of the `.onnx` model (without extension).
+    ///   - config: YOLO output layout (default `.germanPlatePoseLibre`).
+    ///   - engine: OCR engine.
+    ///   - recognitionLanguages: OCR languages (default `[de-DE]`).
+    ///   - enhancements: Opt-in strengthening (default `.off` = legacy behaviour).
+    ///   - poseThreads: Intra-op threads for the ONNX session (default 2). ORT's own default
+    ///     is one thread per core, which keeps the performance cores saturated during a long
+    ///     live session and is the main heat contributor; 0 restores the ORT default.
     #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc)
     public convenience init(poseModelName: String = "De-plate-pose",
                             config: YOLOConfig = .germanPlatePoseLibre,
                             engine: OCREngine = .appleVision,
                             recognitionLanguages: [Locale.Language] = [Locale.Language(identifier: "de-DE")],
-                            enhancements: RecognitionEnhancements = .off) {
+                            enhancements: RecognitionEnhancements = .off,
+                            poseThreads: Int32 = 2) {
         let detector: LicensePlateDetecting
-        do { detector = try ONNXPoseLicensePlateDetector(modelName: poseModelName, config: config) }
-        catch { detector = CoreMLLicensePlateDetectorFailing(error: error) }
+        do {
+            detector = try ONNXPoseLicensePlateDetector(modelName: poseModelName, config: config,
+                                                       intraOpThreads: poseThreads)
+        } catch { detector = CoreMLLicensePlateDetectorFailing(error: error) }
         self.init(detector: detector,
                   recognizer: engine.makeRecognizer(languages: recognitionLanguages),
                   recognitionLanguages: recognitionLanguages,
@@ -336,6 +378,11 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         // Collaborators are captured as locals so each task only touches value types /
         // Sendable existentials.
         let corrector = self.corrector
+        // Captured as locals (not `self.x`) because `group.addTask` takes an *escaping*
+        // @Sendable closure: an implicit `self` capture of an immutable property is not
+        // allowed there without a qualifier, and the qualifier would drag the whole
+        // recognizer into the task. `PlateImageCleaner` is a `Sendable` value type.
+        let cleaner = self.plateImageCleaner
         // Snapshot the locked runtime state: each task only touches Sendable values, and
         // the App may flip the OCR engine / enhancements while a pass is in flight.
         let (recognizer, enhancements) = runtimeState.withLock { ($0.recognizer, $0.enhancements) }
@@ -357,7 +404,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
                     // Adaptive pre-OCR cleaning (EU strip + seals) — masked only when the
                     // feature is actually detected; plates without them pass untouched.
                     if enhancements.effectivePlateImageCleaning {
-                        ocrSource = plateImageCleaner.clean(ocrSource)
+                        ocrSource = cleaner.clean(ocrSource)
                     }
                     // Reduce interference (screws, borders, reflections) before OCR.
                     let enhanced = ocrSource.enhancedForOCR()
@@ -452,7 +499,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
                                progress: (@Sendable (Double) -> Void)? = nil) async throws -> [PlateResult] {
         let samples = try await recognizeVideoSamples(at: url, mode: mode,
                                                       maxSamples: maxSamples, progress: progress)
-        return PlatePostProcessor.deduplicate(samples.flatMap(\.plates))
+        return PlateVoteAggregator.consolidate(samples.map(\.plates))
     }
 
     /// Same sampling pass as `recognizeVideo`, but keeps every sampled frame's detections,

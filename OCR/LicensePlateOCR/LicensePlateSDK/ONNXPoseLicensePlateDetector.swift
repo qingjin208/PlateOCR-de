@@ -96,6 +96,10 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
         set { tunables.captureSnapshot = newValue }
     }
 
+    /// The LibreYOLO export bakes BGR into its training preprocessing (see `feedsRGB`),
+    /// so `useRGB` only has an effect on the Ultralytics layout.
+    public var honorsChannelOrder: Bool { !libreLayout }
+
     /// The base config with the current runtime thresholds applied.
     private func currentConfig() -> YOLOConfig {
         var cfg = config
@@ -107,7 +111,8 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
     public init(modelName: String = "De-plate-pose",
                 config: YOLOConfig = .germanPlatePoseLibre,
                 useRGB: Bool = true,
-                flipY: Bool = true) throws {
+                flipY: Bool = true,
+                intraOpThreads: Int32 = 2) throws {
         self.config = config
         self.inputSize = config.inputSize
         self.useRGB = useRGB
@@ -129,6 +134,14 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
         //   session.run(withInputs:outputNames:runOptions:) -> [String: ORTValue].
         let env = try ORTEnv(loggingLevel: .warning)
         let opts = try ORTSessionOptions()
+        // ORT defaults to one intra-op thread per core, which keeps every performance core
+        // busy for the whole session — the dominant heat source once the camera has been
+        // running for a few minutes. A 512² YOLO-NAS-pose model does not need that many:
+        // 2 threads keep latency close while leaving headroom for AVCapture + Vision.
+        // Pass 0 to restore ORT's own default when A/B-testing on device.
+        if intraOpThreads > 0 {
+            _ = try? opts.setIntraOpNumThreads(intraOpThreads)
+        }
         let session = try ORTSession(env: env, modelPath: url.path, sessionOptions: opts)
         self.session = session
         // Read tensor names from the model itself (Ultralytics uses "images"/"output0",

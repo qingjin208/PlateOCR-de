@@ -55,7 +55,9 @@ public final class PlateTextRecognizer: PlateTextRecognizing {
     }
 
     public func recognize(in image: CGImage, mode: RecognitionMode) async throws -> [PlateObservation] {
-        var request = try RecognizeTextRequest()
+        // `RecognizeTextRequest.init(_ revision: Revision? = nil)` is NOT throwing
+        // (verified against the iOS 18 Vision docs), so no `try` here.
+        var request = RecognizeTextRequest()
         request.recognitionLevel = mode.visionLevel
 
         // Only keep languages Vision actually supports on this device.

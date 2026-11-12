@@ -59,23 +59,37 @@ public struct PlateImageCleaner: Sendable {
 
     /// Returns the cleaned copy of `image`, or `image` itself when nothing was found.
     public func clean(_ image: CGImage) -> CGImage {
-        guard let buf = PixelBuffer(image: image, targetHeight: targetHeight) else { return image }
-        var pixels = buf
+        guard let probe = PixelBuffer(image: image, targetHeight: targetHeight) else { return image }
 
-        // 1) EU strip
-        let euEdge = detectEUStripEdge(pixels)
-        if euEdge > 0 {
-            pixels.fillRect(x0: 0, x1: euEdge, y0: 0, y1: pixels.height, value: 255)
+        // Both detectors run on a 128 px tall copy — the scale they were calibrated at —
+        // and the masks are then painted onto the image at its OWN resolution. Masking the
+        // probe and returning it (the old behaviour) downscaled every close-up plate to
+        // 128 px, throwing away the resolution the corrector had just upscaled to: a
+        // 960x204 crop came back as 614x128 before its most detail-rich OCR pass.
+        let euEdge = detectEUStripEdge(probe)
+        let badges = detectSeals(probe)
+        guard euEdge > 0 || !badges.isEmpty else { return image }
+
+        // Convert probe pixels to fractions so they can be applied at any resolution.
+        let probeW = Double(probe.width), probeH = Double(probe.height)
+        let euFraction = Double(euEdge) / probeW
+        let badgeFractions = badges.map { (x: $0.cx / probeW, y: $0.cy / probeH, r: $0.r / probeH) }
+
+        // Natural size == probe size for small crops: mask in place, no second buffer.
+        var canvas = (probe.width == image.width && probe.height == image.height)
+            ? probe
+            : (PixelBuffer(image: image) ?? probe)
+        let w = Double(canvas.width), h = Double(canvas.height)
+
+        if euFraction > 0 {
+            canvas.fillRect(x0: 0, x1: Int((euFraction * w).rounded()), y0: 0,
+                            y1: canvas.height, value: 255)
         }
-
-        // 2) Seals
-        let badges = detectSeals(pixels)
-        for (cx, cy, r) in badges {
-            pixels.fillCircle(cx: cx, cy: cy, radius: r * 1.15, value: 255)
+        for badge in badgeFractions {
+            canvas.fillCircle(cx: badge.x * w, cy: badge.y * h,
+                              radius: badge.r * h * 1.15, value: 255)
         }
-
-        guard euEdge > 0 || !badges.isEmpty, let out = pixels.makeImage() else { return image }
-        return out
+        return canvas.makeImage() ?? image
     }
 
     // MARK: EU strip
@@ -168,17 +182,39 @@ public struct PlateImageCleaner: Sendable {
 // MARK: - Pixel buffer
 
 /// RGBA8 pixel access with the small image ops the cleaner needs.
-/// Works on a downscaled copy (height ≤ targetHeight) — the ops are O(pixels) and the
-/// corrector already upscales, so cleaning runs on ~460×128 images in well under 1 ms.
+/// Two instances are used per call: a 128 px tall probe (the scale every threshold was
+/// calibrated at, and where the O(pixels) morphology/HSV scans run) and, unless the crop
+/// is that small already, a native-resolution canvas the masks are painted onto.
 struct PixelBuffer {
     let width: Int
     let height: Int
     private var data: [UInt8]     // RGBA, 4 bytes/pixel
 
+    /// Scaled so the image is exactly `targetHeight` tall — up **and down**.
+    ///
+    /// The scale must be unconditional: every threshold in this file (minimum blob area,
+    /// 5×5 morphology radius, seal diameter fractions, strip width limit) was calibrated on
+    /// a 128 px tall crop. The corrector upscales plates to ≥128 px, so a close-up crop can
+    /// be 400 px tall — running the detectors there changes the effective blob area by
+    /// (400/128)² ≈ 10×, which is how seals start slipping through `minArea` while noise
+    /// starts passing it. The old `max(1, …)` guard (never shrink) silently did exactly
+    /// that. Working at 128 px is also cheaper: the O(pixels) HSV/morphology scans get
+    /// ~10× fewer pixels, and the masks are painted onto the native-resolution canvas
+    /// afterwards, so the OCR input keeps its full detail.
     init?(image: CGImage, targetHeight: CGFloat) {
-        let scale = max(1, Double(targetHeight) / Double(image.height))
-        let w = max(1, Int((Double(image.width) * scale).rounded()))
-        let h = max(1, Int((Double(image.height) * scale).rounded()))
+        let sourceHeight = max(1, Double(image.height))
+        let scale = Double(targetHeight) / sourceHeight
+        self.init(image: image,
+                  width: max(1, Int((Double(image.width) * scale).rounded())),
+                  height: max(1, Int((sourceHeight * scale).rounded())))
+    }
+
+    /// Native resolution — used to paint masks without changing the OCR source's size.
+    init?(image: CGImage) {
+        self.init(image: image, width: image.width, height: image.height)
+    }
+
+    private init?(image: CGImage, width w: Int, height h: Int) {
         guard let ctx = CGContext(data: nil, width: w, height: h,
                                   bitsPerComponent: 8, bytesPerRow: w * 4,
                                   space: CGColorSpaceCreateDeviceRGB(),

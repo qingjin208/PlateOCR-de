@@ -267,4 +267,226 @@ final class FramePipelineTests: XCTestCase {
         XCTAssertEqual(results.first?.boundingBox, region)
         XCTAssertEqual(results.first?.text, "HH-AB 1234")
     }
+
+    // MARK: - Cross-frame voting (PlateVoteAggregator)
+    //
+    // The history list must be a de-duplicated *set* of plates, not a per-frame log: a
+    // plate seen at 1s/3s/5s is one row, and a reading that only one frame produced (a
+    // one-glyph misread that is still structurally valid) must never be listed.
+
+    private let voteBoxA = CGRect(x: 0.20, y: 0.40, width: 0.30, height: 0.10)
+    private let voteBoxB = CGRect(x: 0.60, y: 0.40, width: 0.30, height: 0.10)
+
+    private func plate(_ text: String, _ confidence: Float, _ box: CGRect) -> PlateResult {
+        PlateResult(text: text, confidence: confidence, boundingBox: box,
+                    imageSize: CGSize(width: 1000, height: 600), candidates: [])
+    }
+
+    func testVoteAggregatorListsOneRowPerPlateAcrossFrames() {
+        var aggregator = PlateVoteAggregator()
+        let start = Date(timeIntervalSinceReferenceDate: 0)
+        var listed: [PlateVoteAggregate] = []
+        for frame in 0..<5 {
+            listed = aggregator.ingest([plate("M-AB 1234", 0.9, voteBoxA)],
+                                       at: start.addingTimeInterval(Double(frame) * 0.2))
+        }
+        XCTAssertEqual(listed.count, 1)
+        XCTAssertEqual(listed.first?.result.text, "M-AB 1234")
+        // Confirmed on the second sighting, then the count keeps growing in place.
+        XCTAssertEqual(listed.first?.votes, 5)
+        XCTAssertEqual(listed.first?.totalVotes, 5)
+        XCTAssertEqual(listed.first?.agreement ?? 0, 1.0, accuracy: 0.0001)
+    }
+
+    func testVoteAggregatorNeverListsAOneOffMisread() {
+        var aggregator = PlateVoteAggregator()
+        let start = Date(timeIntervalSinceReferenceDate: 0)
+        var listed: [PlateVoteAggregate] = []
+        for frame in 0..<4 {
+            listed = aggregator.ingest([plate("M-AB 1234", 0.92, voteBoxA)],
+                                       at: start.addingTimeInterval(Double(frame) * 0.2))
+        }
+        // Same plate, one digit off, from a single frame.
+        listed = aggregator.ingest([plate("M-AB 1235", 0.60, voteBoxA)],
+                                   at: start.addingTimeInterval(0.8))
+        XCTAssertEqual(listed.count, 1)
+        XCTAssertEqual(listed.first?.result.text, "M-AB 1234")
+        XCTAssertEqual(listed.first?.votes, 4)
+        XCTAssertEqual(listed.first?.totalVotes, 5)
+    }
+
+    func testVoteAggregatorKeepsConcurrentPlatesApart() {
+        // Two plates in frame at the same time, one confusable glyph apart. They must stay
+        // two rows — merging by text alone would drop a car.
+        var aggregator = PlateVoteAggregator()
+        let start = Date(timeIntervalSinceReferenceDate: 0)
+        var listed: [PlateVoteAggregate] = []
+        for frame in 0..<4 {
+            listed = aggregator.ingest([plate("M-AB 1234", 0.9, voteBoxA),
+                                        plate("M-AB 123A", 0.9, voteBoxB)],
+                                       at: start.addingTimeInterval(Double(frame) * 0.2))
+        }
+        XCTAssertEqual(listed.count, 2)
+        XCTAssertEqual(Set(listed.map(\.result.text)), ["M-AB 1234", "M-AB 123A"])
+    }
+
+    func testVoteAggregatorCorrectsAnEarlyWrongMajority() {
+        var aggregator = PlateVoteAggregator()
+        let start = Date(timeIntervalSinceReferenceDate: 0)
+        var listed: [PlateVoteAggregate] = []
+        for frame in 0..<2 {
+            listed = aggregator.ingest([plate("M-AB 123A", 0.70, voteBoxA)],
+                                       at: start.addingTimeInterval(Double(frame) * 0.2))
+        }
+        XCTAssertEqual(listed.first?.result.text, "M-AB 123A") // confirmed by two votes
+        for frame in 2..<6 {
+            listed = aggregator.ingest([plate("M-AB 1234", 0.90, voteBoxA)],
+                                       at: start.addingTimeInterval(Double(frame) * 0.2))
+        }
+        // The majority reading takes the row over instead of adding a second row.
+        XCTAssertEqual(listed.count, 1)
+        XCTAssertEqual(listed.first?.result.text, "M-AB 1234")
+        XCTAssertEqual(listed.first?.votes, 4)
+    }
+
+    func testVoteAggregatorReusesTheRowWhenAPlateReturns() {
+        var aggregator = PlateVoteAggregator()
+        let start = Date(timeIntervalSinceReferenceDate: 0)
+        for frame in 0..<4 {
+            _ = aggregator.ingest([plate("M-AB 1234", 0.9, voteBoxA)],
+                                  at: start.addingTimeInterval(Double(frame) * 0.2))
+        }
+        // Gone for longer than the track timeout (2 s by default), then back in view.
+        var listed: [PlateVoteAggregate] = []
+        for frame in 0..<2 {
+            listed = aggregator.ingest([plate("M-AB 1234", 0.9, voteBoxA)],
+                                       at: start.addingTimeInterval(3.0 + Double(frame) * 0.2))
+        }
+        XCTAssertEqual(listed.count, 1)
+        XCTAssertEqual(listed.first?.votes, 6)
+    }
+
+    func testVideoConsolidationAbsorbsAMinorityVariant() {
+        let frames: [[PlateResult]] = [
+            [plate("M-AB 1234", 0.90, voteBoxA)],
+            [plate("M-AB 1234", 0.88, voteBoxA)],
+            [plate("M-AB 1234", 0.86, voteBoxA)],
+            [plate("M-AB 123A", 0.70, voteBoxA)] // one frame read 4 as A
+        ]
+        let results = PlateVoteAggregator.consolidate(frames)
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results.first?.text, "M-AB 1234")
+        XCTAssertEqual(results.first?.votes, 4)
+    }
+
+    func testVideoConsolidationKeepsTwoEvenlySeenPlates() {
+        let frames: [[PlateResult]] = [
+            [plate("M-AB 1234", 0.9, voteBoxA), plate("M-AB 123A", 0.9, voteBoxB)],
+            [plate("M-AB 1234", 0.9, voteBoxA), plate("M-AB 123A", 0.9, voteBoxB)]
+        ]
+        let results = PlateVoteAggregator.consolidate(frames)
+        XCTAssertEqual(results.count, 2)
+    }
+
+    func testVideoConsolidationCountsOneVotePerTextPerFrame() {
+        // A merged detection reading the same plate twice in one frame must not outvote a
+        // frame where it was read once.
+        let frames: [[PlateResult]] = [
+            [plate("M-AB 1234", 0.9, voteBoxA), plate("M-AB 1234", 0.8, voteBoxA.insetBy(dx: 0.01, dy: 0.01))],
+            [plate("M-AB 123A", 0.95, voteBoxB)]
+        ]
+        let results = PlateVoteAggregator.consolidate(frames)
+        XCTAssertEqual(results.count, 2)
+        XCTAssertEqual(results.first { $0.text == "M-AB 1234" }?.votes, 1)
+    }
+
+    func testVideoConsolidationDropsAWeakSingleSighting() {
+        // One sampled frame that read a plate with low confidence is as likely to be a
+        // one-off misread as a real plate; the live aggregator does not list it either.
+        let frames: [[PlateResult]] = [
+            [plate("M-AB 1234", 0.92, voteBoxA), plate("M-AB 1235", 0.55, voteBoxB)],
+            [plate("M-AB 1234", 0.90, voteBoxA)]
+        ]
+        let results = PlateVoteAggregator.consolidate(frames)
+        XCTAssertEqual(results.map(\.text), ["M-AB 1234"])
+        XCTAssertEqual(results.first?.votes, 2)
+    }
+
+    func testVideoConsolidationKeepsAConfidentSingleSighting() {
+        // A passing car legitimately shows up in one sampled frame; a confident reading is
+        // still listed (same escape hatch as the live aggregator's provisional threshold).
+        let frames: [[PlateResult]] = [[plate("M-AB 1234", 0.9, voteBoxA)]]
+        XCTAssertEqual(PlateVoteAggregator.consolidate(frames).first?.text, "M-AB 1234")
+        XCTAssertEqual(PlateVoteAggregator.consolidate(frames, minimumVotes: 1).count, 1)
+    }
+
+    // MARK: - Session end (`finish`)
+    //
+    // A frozen camera runs no analysis, so nothing would ever expire a track. The session
+    // must end explicitly: list the plate that only flashed by once, and leave no track
+    // behind for the next session to revive.
+
+    func testFinishListsAConfidentSingleSighting() {
+        var aggregator = PlateVoteAggregator()
+        let start = Date(timeIntervalSinceReferenceDate: 0)
+        let listed = aggregator.ingest([plate("M-AB 1234", 0.92, voteBoxA)], at: start)
+        XCTAssertTrue(listed.isEmpty)   // one vote is not enough while the session runs
+
+        let finished = aggregator.finish()
+        XCTAssertEqual(finished.count, 1)
+        XCTAssertEqual(finished.first?.result.text, "M-AB 1234")
+        XCTAssertEqual(finished.first?.votes, 1)
+    }
+
+    func testFinishPreventsTheNextSessionFromRevivingAStalePlate() {
+        var aggregator = PlateVoteAggregator()
+        let start = Date(timeIntervalSinceReferenceDate: 0)
+        _ = aggregator.ingest([plate("M-AB 1234", 0.92, voteBoxA)], at: start)
+        XCTAssertEqual(aggregator.finish().count, 1)
+
+        // New session half a minute later, first frame sees nothing: the stale track must
+        // not be expired into a *second* listing.
+        let listed = aggregator.ingest([], at: start.addingTimeInterval(30))
+        XCTAssertEqual(listed.count, 1)
+        XCTAssertEqual(listed.first?.result.text, "M-AB 1234")
+    }
+
+    func testReturningPlateAdoptsAStrongerConfusableReading() {
+        // Two frames read 4 as A (row listed as …123A), the plate leaves, returns and is
+        // read correctly. Text, image and counts must move together — updating the image
+        // alone left a row showing one text with another text's vote count.
+        var aggregator = PlateVoteAggregator()
+        let start = Date(timeIntervalSinceReferenceDate: 0)
+        for frame in 0..<2 {
+            _ = aggregator.ingest([plate("M-AB 123A", 0.70, voteBoxA)],
+                                  at: start.addingTimeInterval(Double(frame) * 0.2))
+        }
+        var listed: [PlateVoteAggregate] = []
+        for frame in 0..<2 {
+            listed = aggregator.ingest([plate("M-AB 1234", 0.93, voteBoxA)],
+                                       at: start.addingTimeInterval(2.0 + Double(frame) * 0.2))
+        }
+        XCTAssertEqual(listed.count, 1)
+        XCTAssertEqual(listed.first?.result.text, "M-AB 1234")
+        XCTAssertEqual(listed.first?.votes, 2)
+        XCTAssertEqual(listed.first?.totalVotes, 2)
+    }
+
+    func testWeakerReturningVariantOnlyCountsInTheDenominator() {
+        var aggregator = PlateVoteAggregator()
+        let start = Date(timeIntervalSinceReferenceDate: 0)
+        for frame in 0..<4 {
+            _ = aggregator.ingest([plate("M-AB 1234", 0.92, voteBoxA)],
+                                  at: start.addingTimeInterval(Double(frame) * 0.2))
+        }
+        var listed: [PlateVoteAggregate] = []
+        for frame in 0..<2 {
+            listed = aggregator.ingest([plate("M-AB 123A", 0.60, voteBoxA)],
+                                       at: start.addingTimeInterval(2.0 + Double(frame) * 0.2))
+        }
+        XCTAssertEqual(listed.count, 1)
+        XCTAssertEqual(listed.first?.result.text, "M-AB 1234")
+        XCTAssertEqual(listed.first?.votes, 4)
+        XCTAssertEqual(listed.first?.totalVotes, 6)
+    }
 }
