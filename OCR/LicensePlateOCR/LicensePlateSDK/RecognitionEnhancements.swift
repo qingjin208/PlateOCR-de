@@ -46,6 +46,18 @@ public struct RecognitionEnhancements: Sendable, Equatable {
     /// spaces are not linearly related.
     public var keypointQuads: Bool
 
+    /// Adaptive cleaning of the rectified plate image before OCR.
+    ///
+    /// Masks the two geometrically-determined interference sources on a German plate:
+    /// the EU blue strip (its "D" otherwise lands inside the read text) and circular
+    /// registration/inspection seals (otherwise read as `O`/`B`/`8`/`D`/`E`). Both are
+    /// detected adaptively — masking happens ONLY when the feature is actually found,
+    /// so plates without seals (new cars, front plates only, blurry shots) are passed
+    /// through untouched. Parameters calibrated on real crops (Scripts/plate_cleaner_
+    /// calibration.py): 4/13 seals masked, 0 characters damaged, EU strip correct in
+    /// every crop that has one.
+    public var plateImageCleaning: Bool
+
     /// - Parameters:
     ///   - isEnabled: Master switch (default `false`, i.e. legacy behaviour).
     ///   - foldAwareScoring: See `foldAwareScoring`.
@@ -54,11 +66,13 @@ public struct RecognitionEnhancements: Sendable, Equatable {
     public init(isEnabled: Bool = false,
                 foldAwareScoring: Bool = true,
                 strictNumericPart: Bool = true,
-                keypointQuads: Bool = true) {
+                keypointQuads: Bool = true,
+                plateImageCleaning: Bool = true) {
         self.isEnabled = isEnabled
         self.foldAwareScoring = foldAwareScoring
         self.strictNumericPart = strictNumericPart
         self.keypointQuads = keypointQuads
+        self.plateImageCleaning = plateImageCleaning
     }
 
     /// Legacy behaviour: every strengthening switch bypassed.
@@ -76,6 +90,7 @@ public struct RecognitionEnhancements: Sendable, Equatable {
     public var effectiveFoldAwareScoring: Bool { isEnabled && foldAwareScoring }
     public var effectiveStrictNumericPart: Bool { isEnabled && strictNumericPart }
     public var effectiveKeypointQuads: Bool { isEnabled && keypointQuads }
+    public var effectivePlateImageCleaning: Bool { isEnabled && plateImageCleaning }
 
     /// Short human-readable state, for on-device diagnostics.
     public var summary: String {

@@ -99,6 +99,13 @@ public struct PlatePostProcessor: Sendable {
         // Prefer the assembled complete plate, then emit other distinct valid plates
         // (two plates read from one crop) — but skip fragments that are substrings of a
         // plate we already emitted (e.g. "AB1234" inside "HH-AB 1234").
+        //
+        // Candidate rescoring: a reading whose city code is a real registration code
+        // (lexicon hit) outranks a higher raw OCR confidence without one — Vision's
+        // confidence knows nothing about German plate syntax.
+        let lexiconRank: (String) -> Int = { text in
+            GermanPlateLexicon.contains(String(text.prefix { $0 != "-" })) ? 1 : 0
+        }
         let flatNorm: (String) -> String = {
             $0.uppercased().replacingOccurrences(of: " ", with: "").replacingOccurrences(of: "-", with: "")
         }
@@ -108,7 +115,9 @@ public struct PlatePostProcessor: Sendable {
         }
         let remaining = best
             .filter { $0.key != assembledText }
-            .sorted { $0.value.confidence > $1.value.confidence }
+            .sorted {
+                (lexiconRank($0.key), $0.value.confidence) > (lexiconRank($1.key), $1.value.confidence)
+            }
         for (text, info) in remaining {
             let n = flatNorm(text)
             let redundant = emitted.contains {
@@ -122,7 +131,9 @@ public struct PlatePostProcessor: Sendable {
         guard !chosen.isEmpty else { return [] }
 
         let candidates = best.map { PlateCandidate(text: $0.key, confidence: $0.value.confidence) }
-            .sorted { $0.confidence > $1.confidence }
+            .sorted {
+                (lexiconRank($0.text), $0.confidence) > (lexiconRank($1.text), $1.confidence)
+            }
 
         return chosen.map { item in
             // Only the plate that fills the crop can inherit the region's box / corners;

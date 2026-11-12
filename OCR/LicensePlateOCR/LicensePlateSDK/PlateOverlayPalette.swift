@@ -109,8 +109,10 @@ public extension PlateDetection {
         guard minX < maxX, minY < maxY else { return self }
         let width = maxX - minX, height = maxY - minY
         // Plausibility gate (same spirit as `PerspectivePlateCorrector.validatedQuad`):
-        // a plate is a wide, convex quadrilateral. Anything else — keep the box.
-        guard width / max(height, 1e-6) >= 1.0, width / max(height, 1e-6) <= 14 else { return self }
+        // a plate is a convex quadrilateral. Lower bound covers two-row plates
+        // (zweizeilig, FZV 180×200 mm → aspect 0.9) with keypoint error headroom.
+        // Anything else — keep the box.
+        guard width / max(height, 1e-6) >= 0.9, width / max(height, 1e-6) <= 14 else { return self }
         let a = quad[0], b = quad[1], c = quad[2], d = quad[3]
         let doubleArea = (a.x*b.y - b.x*a.y) + (b.x*c.y - c.x*b.y)
             + (c.x*d.y - d.x*c.y) + (d.x*a.y - a.x*d.y)

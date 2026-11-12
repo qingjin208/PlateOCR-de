@@ -127,6 +127,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     private let detector: LicensePlateDetecting
     private let postProcessor: PlatePostProcessor
     private let corrector: PerspectivePlateCorrector
+    private let plateImageCleaner = PlateImageCleaner()
     private let recognitionLanguages: [Locale.Language]
     private let context = CIContext(options: [.cacheIntermediates: false])
     private let runtimeState: OSAllocatedUnfairLock<RuntimeState>
@@ -352,7 +353,12 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
                     // Rectify using this detection's own 4 corner keypoints (preferred),
                     // else fall back to a padded bounding-box crop.
                     let corrected = corrector.correctedPlate(from: source.image, detection: detection)
-                    let ocrSource = corrected ?? source.image.cropRegion(detection.rect, padding: 0.05)
+                    var ocrSource = corrected ?? source.image.cropRegion(detection.rect, padding: 0.05)
+                    // Adaptive pre-OCR cleaning (EU strip + seals) — masked only when the
+                    // feature is actually detected; plates without them pass untouched.
+                    if enhancements.effectivePlateImageCleaning {
+                        ocrSource = plateImageCleaner.clean(ocrSource)
+                    }
                     // Reduce interference (screws, borders, reflections) before OCR.
                     let enhanced = ocrSource.enhancedForOCR()
                     let observations = try await recognizer.recognize(in: enhanced, mode: mode)

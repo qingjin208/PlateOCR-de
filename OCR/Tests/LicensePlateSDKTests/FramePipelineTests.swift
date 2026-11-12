@@ -173,6 +173,37 @@ final class FramePipelineTests: XCTestCase {
         XCTAssertEqual(GermanPlateValidator.canonicalize("B AB 1000", enhancements: .on), "B-AB 1000")
     }
 
+    // MARK: Seal-misread gambles (city seal read as an extra glyph / umlaut)
+
+    func testSealGambleRemovesExtraMiddleToken() {
+        // The city seal sits BETWEEN city code and number; OCR often reads it as its
+        // own token. Legacy mode misparses (`B-DA 8123`); enhanced mode gambles it away
+        // and the reduced reading must name a real registration code.
+        XCTAssertEqual(GermanPlateValidator.canonicalize("B D AB 123", enhancements: .on), "B-AB 123")
+        XCTAssertEqual(GermanPlateValidator.canonicalize("TBB O EK 440", enhancements: .on), "TBB-EK 440")
+        // A trailing E/H is the suffix, never a removable seal glyph.
+        XCTAssertEqual(GermanPlateValidator.canonicalize("B D AB 123 E", enhancements: .on), "B-AB 123E")
+    }
+
+    func testSeriesUmlautIsNoiseNotAPlate() {
+        // FZV: umlauts exist only in the city code, never in the identification number.
+        // Legacy: rejected outright (no valid structure carries a umlaut in the number).
+        // Enhanced: the umlaut-strip gamble recovers the reading when the de-umlauted
+        // form names a real city code (city seal misread as Ö inside the number).
+        XCTAssertNil(GermanPlateValidator.canonicalize("B AB Ö123"))
+        XCTAssertEqual(GermanPlateValidator.canonicalize("B AB Ö123", enhancements: .on), "B-AB 123")
+        XCTAssertEqual(GermanPlateValidator.canonicalize("TBB ÖEK 440", enhancements: .on), "TBB-EK 440")
+    }
+
+    func testUmlautCityVariantMapping() {
+        // OCR dropping the diacritic: TU → TÜ (a real code), only when the plain
+        // reading is NOT already a real code (SO, BO, KO stay untouched).
+        XCTAssertEqual(GermanPlateValidator.canonicalize("SO AB 123", enhancements: .on),
+                       GermanPlateValidator.canonicalize("SO AB 123"))
+        XCTAssertEqual(GermanPlateValidator.canonicalize("TU AB 123", enhancements: .on),
+                       GermanPlateValidator.canonicalize("TÜ AB 123"))
+    }
+
     func testEnhancedMasterSwitchGatesEverySubSwitch() {
         // Sub-switches alone must not change anything while the master switch is off.
         let gated = RecognitionEnhancements(isEnabled: false, foldAwareScoring: true,

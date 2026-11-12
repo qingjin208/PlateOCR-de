@@ -28,7 +28,13 @@ public enum GermanPlateValidator {
     ///
     /// The trailing suffix is restricted to `E` (Elektrofahrzeug) and `H` (Oldtimer).
     /// An arbitrary `[A-Z]` used to be accepted, which let OCR noise pass as a plate.
-    private static let pattern = "^[A-ZÄÖÜ]{1,3}-[A-ZÄÖÜ]{1,2}[ ]?[0-9]{1,4}[EH]?$"
+    ///
+    /// The series deliberately excludes Ä/Ö/Ü: FZV only allows umlauts in the
+    /// distinguishing mark (city code), never in the identification number — so a
+    /// umlaut there is always a misread (typically the city seal) or noise. Umlaut
+    /// readings in the series are handled by the strip-umlauts gamble below instead
+    /// of being accepted as a plate.
+    private static let pattern = "^[A-ZÄÖÜ]{1,3}-[A-Z]{1,2}[ ]?[0-9]{1,4}[EH]?$"
 
     /// Whether `text` already matches the canonical German plate format.
     public static func isValid(_ text: String) -> Bool {
@@ -68,11 +74,14 @@ public enum GermanPlateValidator {
     ///
     /// Steps (interference handling):
     /// 1. Uppercase and drop stray symbols / frame noise.
-    /// 2. Resolve a leading EU-strip artefact (`D` / `EU`) against the reading that keeps
+    /// 2. Remove one excess token via the seal-misread gamble (below) — a circular
+    ///    seal read as an extra `D`/`O`/`B`/… token between city code and number.
+    /// 3. Resolve a leading EU-strip artefact (`D` / `EU`) against the reading that keeps
     ///    it as a city code (`D AB 1234` is Dresden, not "A-B 1234").
-    /// 3. Use the explicit separators Vision preserved, when there are any.
-    /// 4. Otherwise parse the structure positionally: letters, then digits, then an
+    /// 4. Use the explicit separators Vision preserved, when there are any.
+    /// 5. Otherwise parse the structure positionally: letters, then digits, then an
     ///    optional `E`/`H`, folding confusable characters along the way.
+    /// 6. When the city code is not in the lexicon, try umlaut variants (below).
     ///
     /// - Parameter enhancements: Opt-in strengthening (default `.off` = legacy output).
     public static func canonicalize(_ raw: String,
@@ -80,8 +89,25 @@ public enum GermanPlateValidator {
         let upper = raw.uppercased().trimmingCharacters(in: .whitespacesAndNewlines)
         guard !upper.isEmpty else { return nil }
 
+        // Seal gamble first: with an extra token present the plain parsers either fail
+        // outright or produce a *plausible but wrong* split (`B D AB 123` → `B-DA 8123`).
+        if let gambled = gambleRemoveExtraToken(upper, enhancements: enhancements) {
+            return gambled
+        }
+
         if let resolved = resolveEUStrip(upper, enhancements: enhancements) { return resolved }
-        if let separated = parseSeparated(upper, enhancements: enhancements) { return separated }
+        if let separated = parseSeparated(upper, enhancements: enhancements) {
+            // City code not a real registration code? Try the umlaut variants (TÜ↔TU …)
+            // before giving up on the reading.
+            return finalize(separated, enhancements: enhancements)
+        }
+
+        // Umlaut-strip gamble: a seal misread as Ä/Ö/Ü inside the identification number
+        // makes every structural parse fail (the series never carries umlauts — FZV).
+        // Stripping them and re-parsing is only trusted when it names a real city code.
+        if let stripped = gambleStripUmlauts(upper, enhancements: enhancements) {
+            return stripped
+        }
 
         let alnum = upper.filter { $0.isLetter || $0.isNumber }
         guard !alnum.isEmpty else { return nil }
@@ -102,7 +128,107 @@ public enum GermanPlateValidator {
         if let known = alternatives.first(where: { GermanPlateLexicon.contains($0.city) }) {
             return known.text
         }
-        return full?.text ?? alternatives.first?.text
+        if let winner = full ?? alternatives.first {
+            return withUmlautVariants(winner, enhancements: enhancements)?.text ?? winner.text
+        }
+        return nil
+    }
+
+    // MARK: - Seal-misread gamble (extra token removal)
+
+    /// Glyphs the circular seals are typically read as. Conservative set: only single-
+    /// character tokens from here may be gambled away, and the result must name a real
+    /// registration code — a missing lexicon entry never deletes a token.
+    private static let sealMisreadGlyphs: Set<Character> = ["D", "O", "Q", "B", "8", "E", "Ä", "Ö", "Ü"]
+
+    /// When the token count exceeds the legal structure (city + number [+ suffix]),
+    /// one *middle* token is interference — the city seal always sits BETWEEN the city
+    /// code and the number, never before the city code or after the number. So only
+    /// tokens `1…count-2` may be gambled away, and only when they are a single glyph
+    /// from the seal-misread set (a seal is one round blob; a real middle token like
+    /// the series is a multi-character reading). `B D AB 123` → drop `D` → `B AB 123`;
+    /// `ST O EK 440` → drop `O` → `ST EK 440`.
+    ///
+    /// The reduced reading must BOTH validate AND hit the ~520-entry city lexicon —
+    /// a missing lexicon entry never deletes a token (a false removal is worse than a
+    /// failed read). Leading `D`/`EU` stays `resolveEUStrip`'s business.
+    private static func gambleRemoveExtraToken(_ s: String,
+                                               enhancements: RecognitionEnhancements) -> String? {
+        let tokens = s.split(whereSeparator: { $0 == "-" || $0 == " " || $0 == "." || $0 == "/" })
+        // Legal structure: 2–3 tokens ("ST AB 123" / "B AB 123 E"); an excess token
+        // means 4+, i.e. at least one removable middle token exists.
+        guard tokens.count >= 4 else { return nil }
+        // New gambles are opt-in: legacy mode (enhancements off) keeps the old output.
+        guard enhancements.effectiveFoldAwareScoring else { return nil }
+        var reduced: [Parsed] = []
+        for index in 1..<(tokens.count - 1) {
+            guard tokens[index].count == 1, let glyph = tokens[index].first,
+                  sealMisreadGlyphs.contains(glyph) else { continue }
+            let remaining = tokens.enumerated()
+                .filter { $0.offset != index }
+                .map { $0.element }
+                .joined(separator: " ")
+            if let parsed = best(from: candidates(in: remaining.filter { $0.isLetter || $0.isNumber },
+                                                  enhancements: enhancements)),
+               GermanPlateLexicon.contains(parsed.city) {
+                reduced.append(parsed)
+            }
+        }
+        return best(from: reduced)?.text
+    }
+
+    // MARK: - Umlaut variants
+
+    /// Strips Ä/Ö/Ü from every token and re-parses (`ST ÖEK 440` → `ST EK 440`).
+    /// Adopted only when the reduced reading names a real registration code, so
+    /// genuine umlaut city codes (TÜ, GÖ, AÖ, BÖ …) are unaffected — their umlauts
+    /// sit in the *first* token, where the strip also applies but the lexicon check
+    /// would compare the de-umlauted form (TU, GO) and simply not hit, leaving the
+    /// normal parse (which keeps the umlaut) in charge.
+    private static func gambleStripUmlauts(_ s: String,
+                                           enhancements: RecognitionEnhancements) -> String? {
+        guard enhancements.effectiveFoldAwareScoring else { return nil }
+        guard s.contains(where: { "ÄÖÜ".contains($0) }) else { return nil }
+        let tokens = s.split(whereSeparator: { $0 == "-" || $0 == " " || $0 == "." || $0 == "/" })
+        let stripped = tokens
+            .map { String($0.filter { !"ÄÖÜ".contains($0) }) }
+            .filter { !$0.isEmpty }
+        guard stripped.count == tokens.count, stripped.count >= 2 else { return nil }
+        let rejoined = stripped.joined(separator: " ")
+        let parsed = parseSeparated(rejoined, enhancements: enhancements)
+            ?? best(from: candidates(in: rejoined.filter { $0.isLetter || $0.isNumber },
+                                    enhancements: enhancements))
+        guard let parsed, GermanPlateLexicon.contains(parsed.city) else { return nil }
+        return parsed.text
+    }
+
+    /// OCR engines sometimes render umlauts as their decomposed forms (`Ö` → `OE`) or
+    /// drop the diacritic entirely; conversely a seal misread can inject a umlaut into
+    /// the number part. When the parsed city code is not in the lexicon, try mapping it
+    /// both ways (Ö→O / O→Ö for codes like GÖ, Ü→U / U→Ü for codes like TÜ) and adopt
+    /// the variant that names a real registration code.
+    private static func withUmlautVariants(_ parsed: Parsed,
+                                           enhancements: RecognitionEnhancements) -> Parsed? {
+        guard !GermanPlateLexicon.contains(parsed.city) else { return nil }
+        let map: [Character: Character] = ["Ö": "O", "Ü": "U", "Ä": "A"]
+        let base = parsed.city.map { map[$0] ?? $0 }
+        var candidates: [String] = [String(base)]
+        // Base → umlaut direction: only positions where the lexicon actually has a
+        // umlaut code, so `B` never becomes `B̈`-nonsense.
+        for (index, char) in base.enumerated() where "OUA".contains(char) {
+            var variant = base
+            let umlaut: Character = char == "O" ? "Ö" : char == "U" ? "Ü" : "Ä"
+            variant[index] = umlaut
+            candidates.append(String(variant))
+        }
+        for city in candidates where GermanPlateLexicon.contains(city) {
+            // Rebuild the canonical text with the corrected city code.
+            let body = parsed.text.drop(while: { $0 != "-" })
+            let text = city + body
+            guard isValid(text) else { continue }
+            return Parsed(text: text, city: city, score: parsed.score + 1)
+        }
+        return nil
     }
 
     // MARK: - Parsing
@@ -133,8 +259,9 @@ public enum GermanPlateValidator {
     }
 
     /// Uses the separators Vision preserved (`-`, spaces) to fix the city/series boundary.
+    /// Returns the best structured reading (text via `finalize` at the call sites).
     private static func parseSeparated(_ s: String,
-                                       enhancements: RecognitionEnhancements) -> String? {
+                                       enhancements: RecognitionEnhancements) -> Parsed? {
         let tokens = s.split(whereSeparator: { $0 == "-" || $0 == " " || $0 == "." || $0 == "/" })
         guard tokens.count >= 2 else { return nil }
         let head = Array(tokens[0])
@@ -163,7 +290,15 @@ public enum GermanPlateValidator {
             readings.append(Parsed(text: text, city: city,
                                    score: score(city: city, folds: folds, enhancements: enhancements)))
         }
-        return best(from: readings)?.text
+        return best(from: readings)
+    }
+
+    /// Applies the umlaut-variant rescue to a parsed reading (a no-op for readings whose
+    /// city code is already a real registration code).
+    private static func finalize(_ parsed: Parsed?,
+                                 enhancements: RecognitionEnhancements) -> String? {
+        guard let parsed else { return nil }
+        return withUmlautVariants(parsed, enhancements: enhancements)?.text ?? parsed.text
     }
 
     /// Structural parse with no reliable separator: every plausible city/series boundary

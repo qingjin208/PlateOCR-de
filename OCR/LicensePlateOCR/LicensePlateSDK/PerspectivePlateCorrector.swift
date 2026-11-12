@@ -38,15 +38,22 @@ public struct PerspectivePlateCorrector: Sendable {
     private let hardMinVisibility: Float
     /// Upper bound for the long edge of the rectified crop handed to OCR.
     private let maxOutputEdge: CGFloat
+    /// Target short-edge height for the rectified crop. Real-world crops are often tiny
+    /// (26–57 px tall in the calibrated sample set, characters 15–30 px), which starves
+    /// both OCR engines. The corrector now *upscales* to this height (was capped at 1:1
+    /// before, silently handing 121×34 crops to OCR).
+    private let targetOutputHeight: CGFloat
 
     public init(context: CIContext = CIContext(options: [.cacheIntermediates: false]),
                 minAverageVisibility: Float = 0.3,
                 hardMinVisibility: Float = 0.1,
-                maxOutputEdge: CGFloat = 960) {
+                maxOutputEdge: CGFloat = 960,
+                targetOutputHeight: CGFloat = 128) {
         self.context = context
         self.minAverageVisibility = minAverageVisibility
         self.hardMinVisibility = hardMinVisibility
         self.maxOutputEdge = maxOutputEdge
+        self.targetOutputHeight = targetOutputHeight
     }
 
     /// Rectifies a detected plate using its 4 corner keypoints.
@@ -163,9 +170,13 @@ public struct PerspectivePlateCorrector: Sendable {
 
         let width = (top + bottom) / 2, height = (left + right) / 2
         let aspect = width / height
-        // German plates are ~4.7:1; strong foreshortening can halve that, but anything
-        // near 1:1 or 12:1 is not a plate.
-        guard aspect >= 1.2, aspect <= 12 else { return nil }
+        // Legal German plate families: single-row ~4.7:1, two-row (motorcycle / restricted
+        // space) 0.9–2.0 (FZV sizes 340×200 / 280×200 / 180×200 / 255×130 mm). Keypoint
+        // error is proportional on small targets, so the lower bound is tiered by quad
+        // size: well-sized quads get the tighter bound, tiny/foreshortened ones the wider
+        // one. The remaining gates (convexity, coverage, centroid) still guard the rest.
+        let aspectFloor: CGFloat = min(top, bottom, left, right) >= 40 ? 0.8 : 0.7
+        guard aspect >= aspectFloor, aspect <= 12 else { return nil }
 
         // The quad must roughly coincide with the detector's box, otherwise the corners
         // belong to something else in the crop.
@@ -184,7 +195,11 @@ public struct PerspectivePlateCorrector: Sendable {
                      dy: -boxInPixelsSlack * box.height * imageSize.height)
         guard boxInPixels.contains(centroid) else { return nil }
 
-        let scale = min(1, maxEdge / max(width, height))
+        // Upscale small crops to the OCR-friendly target height (Core Image resamples
+        // the warp in one pass, so upscaling here costs nothing extra), but never exceed
+        // `maxOutputEdge`. Large crops keep their natural size (scale ≤ 1).
+        let upscaleScale = max(targetOutputHeight / max(1, height), 1)
+        let scale = min(maxEdge / max(width, height), upscaleScale)
         return CGSize(width: max(16, (width * scale).rounded()),
                       height: max(8, (height * scale).rounded()))
     }
