@@ -482,10 +482,16 @@ public struct PlateVoteAggregator: Sendable {
     ///     `PlateVoteSettings.provisionalConfidence`).
     ///   - mergeRatio: How much stronger the leader must be before a confusable variant
     ///     is absorbed into it (default 4:1).
+    ///   - singleFrameFallback: When every reading failed the bars above but the sampled
+    ///     frames did contain OCR results, list the best readings with their (weak) vote
+    ///     counts instead of returning an empty page. A blank result list after the model
+    ///     demonstrably read something is a debugging dead end — the UI shows "1/1 帧"
+    ///     so the weakness stays visible. Default `true`.
     public static func consolidate(_ frames: [[PlateResult]],
                                    minimumVotes: Int = 2,
                                    provisionalConfidence: Float = 0.85,
-                                   mergeRatio: Double = 4) -> [PlateResult] {
+                                   mergeRatio: Double = 4,
+                                   singleFrameFallback: Bool = true) -> [PlateResult] {
         var counts: [String: Int] = [:]
         var best: [String: PlateResult] = [:]
         for frame in frames {
@@ -534,6 +540,17 @@ public struct PlateVoteAggregator: Sendable {
                 || (clusterVotes == 1 && result.confidence >= provisionalConfidence)
             guard listed else { continue }
             output.append(result.withVotes(clusterVotes))
+        }
+
+        // Never return a blank page when the model did read something: list the best
+        // readings as-is (their `votes` reflect the weak evidence). This is the escape
+        // hatch for videos where the plate only becomes readable in a couple of frames.
+        if singleFrameFallback, output.isEmpty, !counts.isEmpty {
+            for text in ordered.prefix(3) {
+                if let result = best[text] {
+                    output.append(result.withVotes(counts[text] ?? 1))
+                }
+            }
         }
 
         return output.sorted {

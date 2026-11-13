@@ -506,8 +506,7 @@
               <div class="plate-tag" id="camTag1" style="display:none;left:37.4%;top:58.9%">#1 SB AB 1234</div>
               <div class="plate-tag" id="camTag2" style="display:none;left:75.4%;top:59.4%">#2 M CE 2020</div>
 
-              <!-- 扫描光带 -->
-              <div class="scanbeam-root" id="beam" style="display:none"><div class="scanbeam"></div></div>
+              <!-- 扫描光带已移除（2026-11-13 用户反馈蓝色线条碍眼，App 同步删除） -->
 
               <!-- 遥测 pill -->
               <div class="pill status" id="statusPill" style="display:none">
@@ -819,9 +818,7 @@
 
     const analyzing = live && state.camera === 'live';
     const paused = state.camera === 'paused';
-    // 光带 / 状态点只跟随「会话状态」，不跟随每帧的 isAnalyzing（真机上那会让光带
-    // 每 0.2s 重建、动画从 0 重新开始，看起来是抖动）。
-    $('#beam').style.display = live && !paused ? 'block' : 'none';
+    // 扫描光带已随 App 移除；状态点只跟随「会话状态」，不跟随每帧的 isAnalyzing。
     $('#statusPill').style.display = live ? 'block' : 'none';
     $('#latencyPill').style.display = live ? 'block' : 'none';
     $('#statusDot').className = 'dot' + (paused ? ' paused' : '');

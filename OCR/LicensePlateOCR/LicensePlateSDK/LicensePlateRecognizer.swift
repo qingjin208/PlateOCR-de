@@ -177,7 +177,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         get { runtimeState.withLock { $0.useRGB } }
         set {
             runtimeState.withLock { $0.useRGB = newValue }
-            #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc)
+            #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc) || canImport(onnxruntime_objc)
             if let det = detector as? ONNXPoseLicensePlateDetector { det.useRGB = newValue }
             #endif
         }
@@ -189,6 +189,17 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     /// disables the RGB/BGR picker in that case rather than offering a no-op control.
     public var honorsInputChannelOrder: Bool { detector.honorsChannelOrder }
 
+    #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc) || canImport(onnxruntime_objc)
+    /// Highest raw anchor score of the most recent detection pass, before the confidence
+    /// threshold. Diagnostic only: on a device where the same image detects fine on the PC
+    /// script, this one value splits "the model saw nothing plate-like in the input"
+    /// (≈0.01-0.1 — wrong preprocessing/orientation on device) from "the model sees the
+    /// plate but the decode/validation drops it" (≥0.25 — a Swift-side bug).
+    public var detectorTopScore: Float? {
+        (detector as? ONNXPoseLicensePlateDetector)?.lastTopScore
+    }
+    #endif
+
     /// Whether the detector's letterbox buffer is written top-row-first (see
     /// `ONNXPoseLicensePlateDetector.flipY`). Default `true`, i.e. the same layout the PC
     /// reference feeds the model. Flip it only for an A/B test on device: with the wrong
@@ -197,7 +208,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         get { runtimeState.withLock { $0.flipY } }
         set {
             runtimeState.withLock { $0.flipY = newValue }
-            #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc)
+            #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc) || canImport(onnxruntime_objc)
             if let det = detector as? ONNXPoseLicensePlateDetector { det.flipY = newValue }
             #endif
         }
@@ -300,7 +311,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     ///   - poseThreads: Intra-op threads for the ONNX session (default 2). ORT's own default
     ///     is one thread per core, which keeps the performance cores saturated during a long
     ///     live session and is the main heat contributor; 0 restores the ORT default.
-    #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc)
+    #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc) || canImport(onnxruntime_objc)
     public convenience init(poseModelName: String = "De-plate-pose",
                             config: YOLOConfig = .germanPlatePoseLibre,
                             engine: OCREngine = .appleVision,

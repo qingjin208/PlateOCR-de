@@ -420,6 +420,28 @@ final class FramePipelineTests: XCTestCase {
         XCTAssertEqual(PlateVoteAggregator.consolidate(frames, minimumVotes: 1).count, 1)
     }
 
+    func testVideoConsolidationFallsBackToSingleSightingsInsteadOfABlankPage() {
+        // The plate was only readable in one frame and below the provisional confidence:
+        // dropped by the majority rule, but an empty page after the model demonstrably
+        // read something is a debugging dead end. The fallback lists it with its (weak)
+        // vote count so the UI shows "1/1 帧" instead of nothing at all.
+        let frames: [[PlateResult]] = [[plate("M-AB 1234", 0.55, voteBoxA)]]
+        let results = PlateVoteAggregator.consolidate(frames)
+        XCTAssertEqual(results.map(\.text), ["M-AB 1234"])
+        XCTAssertEqual(results.first?.votes, 1)
+
+        // The fallback only fires when NOTHING clears the bars — it must not resurrect
+        // weak misreads next to a confirmed majority reading.
+        let withMajority: [[PlateResult]] = [
+            [plate("M-AB 1234", 0.92, voteBoxA), plate("M-AB 1235", 0.55, voteBoxB)],
+            [plate("M-AB 1234", 0.90, voteBoxA)]
+        ]
+        XCTAssertEqual(PlateVoteAggregator.consolidate(withMajority).map(\.text), ["M-AB 1234"])
+
+        // And callers that prefer the strict behaviour can switch it off.
+        XCTAssertTrue(PlateVoteAggregator.consolidate(frames, singleFrameFallback: false).isEmpty)
+    }
+
     // MARK: - Session end (`finish`)
     //
     // A frozen camera runs no analysis, so nothing would ever expire a track. The session

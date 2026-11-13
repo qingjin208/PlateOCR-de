@@ -1,4 +1,4 @@
-#if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc)
+#if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc) || canImport(onnxruntime_objc)
 /*
  License Plate OCR SDK — ONNX Runtime pose detector
 
@@ -29,6 +29,8 @@ import CoreML
 import onnxruntime
 #elseif canImport(onnxruntime_mobile_objc)
 import onnxruntime_mobile_objc
+#elseif canImport(onnxruntime_objc)
+import onnxruntime_objc
 #endif
 
 public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @unchecked Sendable {
@@ -73,6 +75,12 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
         var confidence: Float
         var iou: Float
         var captureSnapshot = false
+        /// Highest raw anchor score of the most recent pass, BEFORE the confidence
+        /// threshold. The one number that splits "the model saw nothing like a plate in
+        /// this input" (≈0.01-0.1) from "the model sees the plate but decode/validation
+        /// drops it" (≥0.25) on a device where the PC pipeline works — no snapshot
+        /// comparison needed.
+        var topScore: Float?
         init(confidence: Float, iou: Float) { self.confidence = confidence; self.iou = iou }
     }
     private let tunables: Tunables
@@ -91,6 +99,9 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
         set { tunables.iou = newValue }
     }
     public var debugSnapshot: CGImage? { snapshotBox.image }
+    /// Highest raw anchor score of the last `detect` pass (threshold-independent). `nil`
+    /// until the LibreYOLO path has run at least once.
+    public var lastTopScore: Float? { tunables.topScore }
     public var captureDebugSnapshot: Bool {
         get { tunables.captureSnapshot }
         set { tunables.captureSnapshot = newValue }
@@ -248,6 +259,9 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
         }
         let boxValues = try floats("boxes")
         let scoreValues = try floats("scores")
+        // Diagnostic: the best raw anchor score, regardless of threshold. Surfaced via
+        // `lastTopScore` so a "detects nothing on device" report can be triaged in one run.
+        tunables.topScore = scoreValues.max()
         let keypointXYValues = try floats("keypoints_xy")
         let keypointConfValues = try floats("keypoints_conf")
 

@@ -51,7 +51,7 @@ struct ContentView: View {
         // The Demo starts with the enhancements on; the toggle below can turn them off.
         let enhancements = RecognitionEnhancements.on
         let rec: LicensePlateRecognizer
-        #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc)
+        #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc) || canImport(onnxruntime_objc)
         // ONNX Runtime linked: use the trained German-plate YOLOv8-pose model directly.
         rec = LicensePlateRecognizer(poseModelName: "De-plate-pose",
                                      engine: .appleVision,
@@ -175,6 +175,16 @@ struct ContentView: View {
                 Text("检测诊断 · conf \(String(format: "%.2f", confidenceThreshold)) · IoU \(String(format: "%.2f", nmsIoU)) · 原始框 \(rawDetections.count)")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
+                // Which detector implementation actually ran, and the best raw anchor
+                // score before the threshold (ONNX pose only). On a device where the PC
+                // script detects the same image, these two values locate the failure:
+                // Core ML name → the ONNX path never compiled in / failed to init;
+                // top score ≈ 0 → the model never saw a plate-like input (wrong
+                // preprocessing/orientation on device); top score ≥ 0.25 → the model
+                // sees the plate and the decode/validation side must be dropping it.
+                Text("检测器 \(detectorTriage)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.tertiary)
                 if let debugSnapshotImage {
                     Image(uiImage: debugSnapshotImage)
                         .resizable()
@@ -494,12 +504,18 @@ struct ContentView: View {
         } else if (source == .image && displayImage != nil) || (source == .video && videoURL != nil) {
             // Media loaded but nothing recognized → give explicit feedback so it does not
             // look like "nothing happened". Show the detection count: >0 means the model
-            // found candidates but OCR/validation rejected them.
+            // found candidates but OCR/validation rejected them. The detector identity +
+            // best raw anchor score triages "nothing shows up on device but the PC script
+            // works" in one line: a Core ML name here means the ONNX path never compiled
+            // in / failed to init; a near-zero top score means the model never saw a
+            // plate-like input (preprocessing/orientation), not a threshold problem.
             VStack(alignment: .leading, spacing: 8) {
                 Text(lastDetectionCount > 0
                      ? "未识别到车牌：模型检测到 \(lastDetectionCount) 个候选框，但 OCR 未确认（请尝试切换 OCR 引擎或识别模式）。"
                      : "未检测到车牌。可尝试更换素材、切换识别模式或 OCR 引擎后重试。")
                     .font(.footnote).foregroundStyle(.secondary)
+                Text("检测器：\(detectorTriage)")
+                    .font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
                 // The reselection button must be reachable here too: with no results the
                 // list above never renders, which previously left the loaded photo/video
                 // stuck on screen until the app was restarted.
@@ -509,6 +525,18 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal)
         }
+    }
+
+    /// Detector identity + best raw anchor score, for the on-device triage lines. The
+    /// score only exists on the ONNX pose detector (see `LicensePlateRecognizer`).
+    private var detectorTriage: String {
+        var text = recognizer.detectorInfo
+        #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc) || canImport(onnxruntime_objc)
+        if let score = recognizer.detectorTopScore {
+            text += String(format: " · 模型最高分 %.2f", score)
+        }
+        #endif
+        return text
     }
 
     private func clearResults() {

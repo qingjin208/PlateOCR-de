@@ -99,6 +99,13 @@ final class CameraController: NSObject {
     var isAnalyzing = false
     var elapsedMilliseconds = 0
     var errorMessage: String?
+    /// Live triage values (see the status pill): which detector implementation actually
+    /// runs, and the model's best raw anchor score before the confidence threshold. On a
+    /// device where the PC script detects the same scene, a Core ML name means the ONNX
+    /// path never compiled in / failed to init; a near-zero top score means the model
+    /// never saw a plate-like input (preprocessing/orientation), not a threshold problem.
+    var detectorName: String = ""
+    var lastTopScore: Float?
     var mode: RecognitionMode = .fast
     var liveEnabled = true {
         didSet {
@@ -480,6 +487,13 @@ final class CameraController: NSObject {
                 guard let self, self.active, self.liveEnabled, !self.paused, self.generation == token else { return }
                 self.isAnalyzing = false
                 self.elapsedMilliseconds = latency
+                // Triage values for the status pill (see `lastTopScore`).
+                if let plateRecognizer = recognizer as? LicensePlateRecognizer {
+                    self.detectorName = plateRecognizer.detectorInfo
+                }
+                #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc) || canImport(onnxruntime_objc)
+                self.lastTopScore = (recognizer as? LicensePlateRecognizer)?.detectorTopScore
+                #endif
                 self.liveResults = result.plates
                 self.publishLiveOverlay(detections: result.detections, frameIdentifier: frameIdentifier,
                                         results: result.plates)

@@ -21,8 +21,6 @@ struct CameraView: View {
         VStack(spacing: 0) {
             if controller.isAuthorized && !controller.setupFailed {
                 CameraPreview(controller: controller)
-                    // Scanning beam is detection visualisation, not a control — keep on feed.
-                    .overlay(alignment: .top) { scanBeam }
                     // Live telemetry: tiny pills pinned to the two top corners, so the
                     // numbers stay visible without stealing a whole row of height.
                     .overlay(alignment: .topLeading) { statusPill }
@@ -61,7 +59,14 @@ struct CameraView: View {
                     .frame(width: 6, height: 6)
                 Text(controller.paused ? "已暂停" : "实时检测中")
                     .fontWeight(.semibold)
-                Text("框 \(controller.liveDetections.count) · 牌 \(controller.liveResults.count)")
+                // "峰值" = the model's best raw anchor score before the confidence
+                // threshold. When 框 stays 0 it answers "why" at a glance: score ≈ 0.0-0.1
+                // → the model never saw a plate-like input; ≥0.25 → it does see the plate
+                // and the decode/validation side is dropping it.
+                Text(controller.lastTopScore.map {
+                        "框 \(controller.liveDetections.count) · 牌 \(controller.liveResults.count) · 峰值 \(String(format: "%.2f", $0))"
+                     }
+                     ?? "框 \(controller.liveDetections.count) · 牌 \(controller.liveResults.count)")
                     .foregroundStyle(.white.opacity(0.72))
             }
             .font(.system(size: 11, design: .monospaced))
@@ -77,55 +82,28 @@ struct CameraView: View {
     @ViewBuilder
     private var latencyPill: some View {
         if controller.liveEnabled {
-            Text("\(controller.elapsedMilliseconds) ms")
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.88))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(.black.opacity(0.45), in: Capsule())
-                .padding(.trailing, 10)
-                .padding(.top, 10)
-        }
-    }
-
-    // MARK: - Scanning beam (detection visualisation, kept on the feed)
-
-    @ViewBuilder
-    private var scanBeam: some View {
-        // Bound to the *session*, not to `isAnalyzing`: that flag is true only while a
-        // frame is in flight, so the beam was being created and destroyed ~5 times a
-        // second — each recreation restarted its animation from y = 0, which read as a
-        // stuttering jump rather than a sweep.
-        if controller.liveEnabled && !controller.paused {
-            ScanBeam()
-        }
-    }
-}
-
-/// Thin accent line that sweeps down the preview while analysis is running, echoing the
-/// HTML mockup's scanning beam. Purely decorative — it does not affect the overlay boxes.
-/// The sweep distance is derived from the actual preview height so the beam stays centred
-/// even if the preview container is resized (the previous hard-coded 160 drifted off-centre).
-private struct ScanBeam: View {
-    @State private var offset: CGFloat = 0
-    @State private var maxOffset: CGFloat = 150
-
-    var body: some View {
-        GeometryReader { geo in
-            Rectangle()
-                .fill(LinearGradient(colors: [.clear, appAccent, .clear],
-                                    startPoint: .leading, endPoint: .trailing))
-                .frame(height: 3)
-                .shadow(color: appAccent, radius: 6)
-                .offset(y: offset)
-                .onAppear {
-                    maxOffset = max(40, geo.size.height * 0.42)
-                    withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true)) {
-                        offset = maxOffset
-                    }
+            HStack(spacing: 6) {
+                Text("\(controller.elapsedMilliseconds) ms")
+                // The pose pipeline depends on the ONNX runtime compiling in and the
+                // session initializing on device. If the fallback Core ML detector is
+                // what actually runs, say so in the pill — it is the #1 cause of
+                // "no keypoints, no results" reports that cannot be reproduced offline.
+                if controller.detectorName.contains("CoreML") {
+                    Text("检测器未走 ONNX")
+                        .foregroundStyle(.yellow)
                 }
+            }
+            .font(.system(size: 11, design: .monospaced))
+            .foregroundStyle(.white.opacity(0.88))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(.black.opacity(0.45), in: Capsule())
+            .padding(.trailing, 10)
+            .padding(.top, 10)
         }
     }
+
+    // MARK: - Camera transport + history controls.
 }
 
 /// Camera transport + history controls.
