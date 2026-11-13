@@ -82,22 +82,38 @@ struct CameraView: View {
     @ViewBuilder
     private var latencyPill: some View {
         if controller.liveEnabled {
-            HStack(spacing: 6) {
-                Text("\(controller.elapsedMilliseconds) ms")
-                // The pose pipeline depends on the ONNX runtime compiling in and the
-                // session initializing on device. If the fallback Core ML detector is
-                // what actually runs, say so in the pill — it is the #1 cause of
-                // "no keypoints, no results" reports that cannot be reproduced offline.
+            VStack(alignment: .trailing, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text("\(controller.elapsedMilliseconds) ms")
+                    // The pose pipeline depends on the ONNX runtime compiling in and the
+                    // session initializing on device. If the fallback Core ML detector is
+                    // what actually runs, say so in the pill — it is the #1 cause of
+                    // "no keypoints, no results" reports that cannot be reproduced offline.
+                    if controller.detectorName.contains("CoreML") {
+                        Text("检测器未走 ONNX")
+                            .foregroundStyle(.yellow)
+                    }
+                }
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.88))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(.black.opacity(0.45), in: Capsule())
+                // The actual fallback cause, surfaced from the recognizer (model missing
+                // from the bundle vs. ORT session failure — different fixes). Kept small
+                // and capped so a long error message cannot cover the feed.
                 if controller.detectorName.contains("CoreML") {
-                    Text("检测器未走 ONNX")
-                        .foregroundStyle(.yellow)
+                    Text(controller.detectorName)
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.yellow.opacity(0.85))
+                        .lineLimit(5)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: 300, alignment: .trailing)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
                 }
             }
-            .font(.system(size: 11, design: .monospaced))
-            .foregroundStyle(.white.opacity(0.88))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(.black.opacity(0.45), in: Capsule())
             .padding(.trailing, 10)
             .padding(.top, 10)
         }

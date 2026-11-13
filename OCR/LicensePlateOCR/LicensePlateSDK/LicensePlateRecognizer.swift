@@ -215,7 +215,19 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     }
 
     /// Human-readable description of the active detector (on-device diagnostics).
-    public var detectorInfo: String { String(describing: type(of: detector)) }
+    ///
+    /// When detector init failed (e.g. the ONNX model never made it into the app bundle,
+    /// or the ORT session could not be created) the recognizer silently falls back to the
+    /// failing stub — the *reason* used to be swallowed here, which made the on-device
+    /// yellow "检测器未走 ONNX" warning undiagnosable. The stub carries the original
+    /// error, so append it verbatim.
+    public var detectorInfo: String {
+        let name = String(describing: type(of: detector))
+        if let failing = detector as? CoreMLLicensePlateDetectorFailing {
+            return "\(name)(\(failing.failureDescription))"
+        }
+        return name
+    }
 
     /// Confidence gate on the raw model output (see `LicensePlateDetecting`).
     /// Default 0.25, matching the PC reference's Ultralytics default.
@@ -571,6 +583,10 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
 private final class CoreMLLicensePlateDetectorFailing: LicensePlateDetecting {
     private let error: Error
     init(error: Error) { self.error = error }
+    /// Human-readable cause for the UI triage line (see `detectorInfo`).
+    /// `localizedDescription` (not `String(describing:)`) so `LicensePlateError`'s
+    /// Chinese `errorDescription` — or an ORT NSError's message — is what shows up.
+    var failureDescription: String { error.localizedDescription }
     func detect(in image: CGImage) async throws -> [PlateDetection] {
         throw error
     }
