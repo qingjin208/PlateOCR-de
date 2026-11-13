@@ -148,11 +148,14 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     }
 
     private let detector: LicensePlateDetecting
-    /// Set when the preferred detector could not be created and a working fallback is
-    /// running instead (see `init(poseModelName:)`). Rendered by the App's triage line
+    /// Set at init when the preferred detector could not be created and a working fallback
+    /// is running instead (see `init(poseModelName:)`). Rendered by the App's triage line
     /// next to the detector name, so the reason reaches the device screen instead of
     /// being swallowed by a `catch`.
-    public var detectorFallbackNote: String?
+    ///
+    /// `let`, not `var`: the class refines `Sendable`, which requires all stored
+    /// properties to be immutable (see the class documentation above).
+    public let detectorFallbackNote: String?
     private let postProcessor: PlatePostProcessor
     private let corrector: PerspectivePlateCorrector
     private let plateImageCleaner = PlateImageCleaner()
@@ -285,10 +288,12 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
                 recognitionLanguages: [Locale.Language] = [Locale.Language(identifier: "de-DE")],
                 ocrEngine: OCREngine = .appleVision,
                 postProcessor: PlatePostProcessor = PlatePostProcessor(),
-                enhancements: RecognitionEnhancements = .off) {
+                enhancements: RecognitionEnhancements = .off,
+                detectorFallbackNote: String? = nil) {
         self.detector = detector
         self.recognitionLanguages = recognitionLanguages
         self.postProcessor = postProcessor
+        self.detectorFallbackNote = detectorFallbackNote
         self.corrector = PerspectivePlateCorrector()
         self.runtimeState = OSAllocatedUnfairLock(initialState: RuntimeState(
             recognizer: recognizer, engine: ocrEngine, useRGB: true, flipY: true,
@@ -367,8 +372,8 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
                   recognitionLanguages: recognitionLanguages,
                   ocrEngine: engine,
                   postProcessor: PlatePostProcessor(),
-                  enhancements: enhancements)
-        self.detectorFallbackNote = note
+                  enhancements: enhancements,
+                  detectorFallbackNote: note)
     }
     #endif
 
