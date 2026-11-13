@@ -11,6 +11,7 @@ private struct TensorValues {
         case .float16: return Float(array.dataPointer.assumingMemoryBound(to: Float16.self)[offset])
         case .double: return Float(array.dataPointer.assumingMemoryBound(to: Double.self)[offset])
         case .int32: return Float(array.dataPointer.assumingMemoryBound(to: Int32.self)[offset])
+        case .int8: return Float(array.dataPointer.assumingMemoryBound(to: Int8.self)[offset])
         @unknown default: return array[offset].floatValue
         }
     }

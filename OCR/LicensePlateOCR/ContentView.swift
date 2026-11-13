@@ -132,24 +132,43 @@ struct ContentView: View {
     // The body is split into small, explicitly typed pieces: the full modifier chain used
     // to blow past the compiler's type-check budget ("unable to type-check this expression
     // in reasonable time"). Each concern now lives in its own property / method below.
+    // NOTE: the state reactions are grouped across three computed properties — a single
+    // consolidated `.onChange` chain grows with every new setting and WILL hit the budget
+    // again (that is exactly the error this file already fixed once). Keep groups ≤ ~6.
     var body: some View {
+        sessionReactions
+            .task { await initialSetup() }
+    }
+
+    /// Decoration only: scroll content + settings sheet + its animation.
+    private var decoratedContent: some View {
         scrollContent
             .overlay { settingsOverlay }
             .animation(.easeInOut(duration: 0.3), value: showSettings)
-            .onChange(of: imageItem) { _, newItem in handleImageItemChange(newItem) }
-            .onChange(of: videoItem) { _, newItem in handleVideoItemChange(newItem) }
-            .onChange(of: mode) { _, newMode in handleModeChange(newMode) }
-            .onChange(of: ocrEngine) { _, newEngine in handleOCREngineChange(newEngine) }
+    }
+
+    /// Tunable→SDK sync reactions (every slider/toggle that writes straight into the
+    /// recognizer without further handling logic).
+    private var tuningReactions: some View {
+        decoratedContent
             .onChange(of: useRGB) { _, newValue in handleUseRGBChange(newValue) }
             .onChange(of: flipLetterbox) { _, newValue in handleFlipLetterboxChange(newValue) }
             .onChange(of: confidenceThreshold) { _, v in recognizer.confidenceThreshold = Float(v) }
             .onChange(of: nmsIoU) { _, v in recognizer.nmsIoUThreshold = Float(v) }
             .onChange(of: showDiagnostics) { _, v in recognizer.captureDebugSnapshot = v }
             .onChange(of: enhancements) { _, newValue in handleEnhancementsChange(newValue) }
+    }
+
+    /// Media-source, engine and app-session reactions.
+    private var sessionReactions: some View {
+        tuningReactions
+            .onChange(of: imageItem) { _, newItem in handleImageItemChange(newItem) }
+            .onChange(of: videoItem) { _, newItem in handleVideoItemChange(newItem) }
+            .onChange(of: mode) { _, newMode in handleModeChange(newMode) }
+            .onChange(of: ocrEngine) { _, newEngine in handleOCREngineChange(newEngine) }
             .onChange(of: videoURL) { _, newURL in handleVideoURLChange(newURL) }
             .onChange(of: source) { _, newSource in handleSourceChange(newSource) }
             .onChange(of: scenePhase) { _, phase in handleScenePhaseChange(phase) }
-            .task { await initialSetup() }
     }
 
     private var scrollContent: some View {
