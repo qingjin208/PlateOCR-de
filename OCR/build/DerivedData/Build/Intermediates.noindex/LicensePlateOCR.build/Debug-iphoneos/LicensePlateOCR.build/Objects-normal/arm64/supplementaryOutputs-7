@@ -1,0 +1,23 @@
+{
+  "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/LicensePlateOCR/ContentView.swift" : {
+    "const-values" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/ContentView.swiftconstvalues",
+    "dependencies" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/ContentView.d",
+    "diagnostics" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/ContentView.dia",
+    "object" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/ContentView.o",
+    "swift-dependencies" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/ContentView.swiftdeps"
+  },
+  "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/LicensePlateOCR/LicensePlateSDK/RecognitionEnhancements.swift" : {
+    "const-values" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/RecognitionEnhancements.swiftconstvalues",
+    "dependencies" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/RecognitionEnhancements.d",
+    "diagnostics" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/RecognitionEnhancements.dia",
+    "object" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/RecognitionEnhancements.o",
+    "swift-dependencies" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/RecognitionEnhancements.swiftdeps"
+  },
+  "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/LicensePlateOCR/LicensePlateSDK/YOLOOutputDecoder.swift" : {
+    "const-values" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/YOLOOutputDecoder.swiftconstvalues",
+    "dependencies" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/YOLOOutputDecoder.d",
+    "diagnostics" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/YOLOOutputDecoder.dia",
+    "object" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/YOLOOutputDecoder.o",
+    "swift-dependencies" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/YOLOOutputDecoder.swiftdeps"
+  }
+}

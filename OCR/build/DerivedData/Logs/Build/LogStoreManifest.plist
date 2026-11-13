@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>logFormatVersion</key>
+	<integer>11</integer>
+	<key>logs</key>
+	<dict>
+		<key>3C73A301-35C9-4031-973C-F09E4613581D</key>
+		<dict>
+			<key>className</key>
+			<string>IDECommandLineBuildLog</string>
+			<key>documentTypeString</key>
+			<string>&lt;nil&gt;</string>
+			<key>domainType</key>
+			<string>Xcode.IDEActivityLogDomainType.BuildLog</string>
+			<key>fileName</key>
+			<string>3C73A301-35C9-4031-973C-F09E4613581D.xcactivitylog</string>
+			<key>hasPrimaryLog</key>
+			<true/>
+			<key>primaryObservable</key>
+			<dict>
+				<key>highLevelStatus</key>
+				<string>S</string>
+				<key>totalNumberOfAnalyzerIssues</key>
+				<integer>0</integer>
+				<key>totalNumberOfErrors</key>
+				<integer>0</integer>
+				<key>totalNumberOfTestFailures</key>
+				<integer>0</integer>
+				<key>totalNumberOfWarnings</key>
+				<integer>0</integer>
+			</dict>
+			<key>schemeIdentifier-containerName</key>
+			<string>LicensePlateOCR project</string>
+			<key>schemeIdentifier-schemeName</key>
+			<string>LicensePlateOCR</string>
+			<key>schemeIdentifier-sharedScheme</key>
+			<integer>1</integer>
+			<key>signature</key>
+			<string>Building workspace LicensePlateOCR with scheme LicensePlateOCR and configuration Debug</string>
+			<key>timeStartedRecording</key>
+			<real>816266667.15011203</real>
+			<key>timeStoppedRecording</key>
+			<real>816266677.99231195</real>
+			<key>title</key>
+			<string>Building workspace LicensePlateOCR with scheme LicensePlateOCR and configuration Debug</string>
+			<key>uniqueIdentifier</key>
+			<string>3C73A301-35C9-4031-973C-F09E4613581D</string>
+		</dict>
+		<key>75184A3F-B3F7-497F-8187-75793424B6EA</key>
+		<dict>
+			<key>className</key>
+			<string>IDECommandLineBuildLog</string>
+			<key>documentTypeString</key>
+			<string>&lt;nil&gt;</string>
+			<key>domainType</key>
+			<string>Xcode.IDEActivityLogDomainType.BuildLog</string>
+			<key>fileName</key>
+			<string>75184A3F-B3F7-497F-8187-75793424B6EA.xcactivitylog</string>
+			<key>hasPrimaryLog</key>
+			<true/>
+			<key>primaryObservable</key>
+			<dict>
+				<key>highLevelStatus</key>
+				<string>S</string>
+				<key>totalNumberOfAnalyzerIssues</key>
+				<integer>0</integer>
+				<key>totalNumberOfErrors</key>
+				<integer>0</integer>
+				<key>totalNumberOfTestFailures</key>
+				<integer>0</integer>
+				<key>totalNumberOfWarnings</key>
+				<integer>0</integer>
+			</dict>
+			<key>schemeIdentifier-containerName</key>
+			<string>LicensePlateOCR project</string>
+			<key>schemeIdentifier-schemeName</key>
+			<string>LicensePlateOCR</string>
+			<key>schemeIdentifier-sharedScheme</key>
+			<integer>1</integer>
+			<key>signature</key>
+			<string>Building workspace LicensePlateOCR with scheme LicensePlateOCR and configuration Debug</string>
+			<key>timeStartedRecording</key>
+			<real>816267263.63056195</real>
+			<key>timeStoppedRecording</key>
+			<real>816267277.89227402</real>
+			<key>title</key>
+			<string>Building workspace LicensePlateOCR with scheme LicensePlateOCR and configuration Debug</string>
+			<key>uniqueIdentifier</key>
+			<string>75184A3F-B3F7-497F-8187-75793424B6EA</string>
+		</dict>
+	</dict>
+</dict>
+</plist>

@@ -1,0 +1,21 @@
+// Self-contained Clang module for the onnxruntime-objc CocoaPod (full runtime).
+//
+// Why this file exists:
+// CocoaPods generates the pod's modulemap as a `framework module` whose
+// umbrella header lives in "Pods/Target Support Files/onnxruntime-objc/"
+// — a directory that is NOT laid out as a framework, so clang fails with
+// `umbrella header 'onnxruntime-objc-umbrella.h' not found` whenever
+// Swift tries to import the module. The static library still links fine, but
+// every `canImport(onnxruntime*)` in the SDK evaluates to false and
+// the app silently builds the "no detector" fallback.
+//
+// This plain module map (no `framework module`, single top-level header whose
+// own quoted #imports resolve relative to the header's real directory) makes
+// `import onnxruntime_objc` work. The Podfile's post_install hook adds
+// this directory to SWIFT_INCLUDE_PATHS on every `pod install`.
+//
+// Relative to this file: ../Pods/onnxruntime-objc/objectivec/include/
+module onnxruntime_objc {
+    header "../Pods/onnxruntime-objc/objectivec/include/onnxruntime.h"
+    export *
+}

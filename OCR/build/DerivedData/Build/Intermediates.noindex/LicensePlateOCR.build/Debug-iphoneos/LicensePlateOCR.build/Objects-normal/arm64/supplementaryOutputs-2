@@ -1,0 +1,23 @@
+{
+  "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/LicensePlateOCR/Camera/VideoPlatePreview.swift" : {
+    "const-values" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/VideoPlatePreview.swiftconstvalues",
+    "dependencies" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/VideoPlatePreview.d",
+    "diagnostics" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/VideoPlatePreview.dia",
+    "object" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/VideoPlatePreview.o",
+    "swift-dependencies" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/VideoPlatePreview.swiftdeps"
+  },
+  "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/LicensePlateOCR/LicensePlateSDK/GermanPlateLexicon.swift" : {
+    "const-values" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/GermanPlateLexicon.swiftconstvalues",
+    "dependencies" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/GermanPlateLexicon.d",
+    "diagnostics" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/GermanPlateLexicon.dia",
+    "object" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/GermanPlateLexicon.o",
+    "swift-dependencies" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/GermanPlateLexicon.swiftdeps"
+  },
+  "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/LicensePlateOCR/LicensePlateSDK/GermanPlateValidator.swift" : {
+    "const-values" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/GermanPlateValidator.swiftconstvalues",
+    "dependencies" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/GermanPlateValidator.d",
+    "diagnostics" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/GermanPlateValidator.dia",
+    "object" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/GermanPlateValidator.o",
+    "swift-dependencies" : "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/build/DerivedData/Build/Intermediates.noindex/LicensePlateOCR.build/Debug-iphoneos/LicensePlateOCR.build/Objects-normal/arm64/GermanPlateValidator.swiftdeps"
+  }
+}

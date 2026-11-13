@@ -1,0 +1,376 @@
+{
+  "source": "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/LicensePlateOCR/ContentView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "检测诊断 · conf %@ · IoU %@ · 原始框 %lld",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 200
+        }
+      },
+      {
+        "comment": "",
+        "key": "检测器 %@",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 210
+        }
+      },
+      {
+        "comment": "",
+        "key": "↑ 送入模型的 640 输入",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 220
+        }
+      },
+      {
+        "comment": "",
+        "key": "车牌识别",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 352
+        }
+      },
+      {
+        "comment": "",
+        "key": "视频预览（彩色区域为采样帧识别到的车牌，结果见下方列表）",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 450
+        }
+      },
+      {
+        "comment": "",
+        "key": "共识别到 %lld 块车牌",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 515
+        }
+      },
+      {
+        "comment": "",
+        "key": "重新选择",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 520
+        }
+      },
+      {
+        "comment": "",
+        "key": "检测器：%@",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 556
+        }
+      },
+      {
+        "comment": "",
+        "key": "未识别到车牌：模型检测到 %lld 个候选框，但 OCR 未确认（请尝试切换 OCR 引擎或识别模式）。",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 553
+        }
+      },
+      {
+        "comment": "",
+        "key": "未检测到车牌。可尝试更换素材、切换识别模式或 OCR 引擎后重试。",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 554
+        }
+      },
+      {
+        "comment": "",
+        "key": "重新选择",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 564
+        }
+      },
+      {
+        "comment": "",
+        "key": "高级设置",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 834
+        }
+      },
+      {
+        "comment": "",
+        "key": "常用参数已前置，其余为进阶选项（默认即可）",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 836
+        }
+      },
+      {
+        "comment": "",
+        "key": "调试选项",
+        "location": {
+          "startingColumn": 37,
+          "startingLine": 892
+        }
+      },
+      {
+        "comment": "",
+        "key": "识别模式",
+        "location": {
+          "startingColumn": 32,
+          "startingLine": 847
+        }
+      },
+      {
+        "comment": "",
+        "key": "极速",
+        "location": {
+          "startingColumn": 34,
+          "startingLine": 848
+        }
+      },
+      {
+        "comment": "",
+        "key": "精准",
+        "location": {
+          "startingColumn": 34,
+          "startingLine": 849
+        }
+      },
+      {
+        "comment": "",
+        "key": "OCR 引擎",
+        "location": {
+          "startingColumn": 36,
+          "startingLine": 861
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lld",
+        "location": {
+          "startingColumn": 42,
+          "startingLine": 896
+        }
+      },
+      {
+        "comment": "",
+        "key": "",
+        "location": {
+          "startingColumn": 40,
+          "startingLine": 903
+        }
+      },
+      {
+        "comment": "",
+        "key": "输入通道",
+        "location": {
+          "startingColumn": 40,
+          "startingLine": 909
+        }
+      },
+      {
+        "comment": "",
+        "key": "RGB",
+        "location": {
+          "startingColumn": 42,
+          "startingLine": 910
+        }
+      },
+      {
+        "comment": "",
+        "key": "BGR",
+        "location": {
+          "startingColumn": 42,
+          "startingLine": 911
+        }
+      },
+      {
+        "comment": "",
+        "key": "Letterbox 朝向",
+        "location": {
+          "startingColumn": 40,
+          "startingLine": 921
+        }
+      },
+      {
+        "comment": "",
+        "key": "正向",
+        "location": {
+          "startingColumn": 42,
+          "startingLine": 922
+        }
+      },
+      {
+        "comment": "",
+        "key": "反向",
+        "location": {
+          "startingColumn": 42,
+          "startingLine": 923
+        }
+      },
+      {
+        "comment": "",
+        "key": "",
+        "location": {
+          "startingColumn": 40,
+          "startingLine": 930
+        }
+      },
+      {
+        "comment": "",
+        "key": "强化识别（SDK Enhanced Mode）",
+        "location": {
+          "startingColumn": 38,
+          "startingLine": 945
+        }
+      },
+      {
+        "comment": "",
+        "key": "折叠感知排序 · 数字段严格校验 · 关键点四边形叠层 · 图像清理",
+        "location": {
+          "startingColumn": 38,
+          "startingLine": 946
+        }
+      },
+      {
+        "comment": "",
+        "key": "折叠感知排序（修正 3 位 / E·H 误读）",
+        "location": {
+          "startingColumn": 40,
+          "startingLine": 952
+        }
+      },
+      {
+        "comment": "",
+        "key": "数字段严格校验（拒绝前导 0）",
+        "location": {
+          "startingColumn": 40,
+          "startingLine": 954
+        }
+      },
+      {
+        "comment": "",
+        "key": "关键点四边形叠层（用 pose 角点）",
+        "location": {
+          "startingColumn": 40,
+          "startingLine": 956
+        }
+      },
+      {
+        "comment": "",
+        "key": "图像清理（遮 EU 蓝条 / 年检圆章）",
+        "location": {
+          "startingColumn": 40,
+          "startingLine": 960
+        }
+      },
+      {
+        "comment": "",
+        "key": "完成",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 981
+        }
+      },
+      {
+        "comment": "",
+        "key": "★★★★★",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 1023
+        }
+      },
+      {
+        "comment": "",
+        "key": "★★★★★",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 1024
+        }
+      },
+      {
+        "comment": "",
+        "key": "D",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 1025
+        }
+      },
+      {
+        "comment": "",
+        "key": "#%lld",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 1116
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lld 帧",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 1119
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lld%%",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 1121
+        }
+      },
+      {
+        "comment": "",
+        "key": "识别历史（%lld）",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 1163
+        }
+      },
+      {
+        "comment": "",
+        "key": "仅显示最新 %lld 条",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 1169
+        }
+      },
+      {
+        "comment": "",
+        "key": "最新在上",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 1170
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lld%%",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 1217
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lld/%lld 帧",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 1214
+        }
+      },
+      {
+        "comment": "",
+        "key": "#%lld %@",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 1267
+        }
+      }
+    ]
+  },
+  "version": 1
+}

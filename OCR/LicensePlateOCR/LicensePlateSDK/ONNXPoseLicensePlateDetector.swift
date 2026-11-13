@@ -493,7 +493,7 @@ extension CGImage {
         // object directly. The raw C-struct memberwise initializer declares `colorSpace`
         // as `Unmanaged<CGColorSpace>!`, so a bare `CGColorSpace` would NOT type-check
         // against it — use the overlay initializer.
-        guard let format = vImage_CGImageFormat(
+        guard var format = vImage_CGImageFormat(
                   bitsPerComponent: 8, bitsPerPixel: 32,
                   colorSpace: CGColorSpaceCreateDeviceRGB(),
                   bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue

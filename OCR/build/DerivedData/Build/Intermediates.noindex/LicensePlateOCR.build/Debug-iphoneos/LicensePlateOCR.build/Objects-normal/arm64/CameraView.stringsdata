@@ -1,0 +1,144 @@
+{
+  "source": "/Users/zhenzhipeng/Downloads/PlateOCR-de/OCR/LicensePlateOCR/Camera/CameraView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "相机不可用",
+        "location": {
+          "startingColumn": 40,
+          "startingLine": 30
+        }
+      },
+      {
+        "comment": "",
+        "key": "相机初始化失败，请检查设备。",
+        "location": {
+          "startingColumn": 64,
+          "startingLine": 31
+        }
+      },
+      {
+        "comment": "",
+        "key": "请允许相机访问权限。",
+        "location": {
+          "startingColumn": 111,
+          "startingLine": 31
+        }
+      },
+      {
+        "comment": "",
+        "key": "框 %lld · 牌 %lld",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 66
+        }
+      },
+      {
+        "comment": "",
+        "key": "帧 %lld",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 74
+        }
+      },
+      {
+        "comment": "",
+        "key": "已暂停",
+        "location": {
+          "startingColumn": 42,
+          "startingLine": 60
+        }
+      },
+      {
+        "comment": "",
+        "key": "实时检测中",
+        "location": {
+          "startingColumn": 56,
+          "startingLine": 60
+        }
+      },
+      {
+        "comment": "",
+        "key": "框 %lld · 牌 %lld · 峰值 %@",
+        "location": {
+          "startingColumn": 25,
+          "startingLine": 67
+        }
+      },
+      {
+        "comment": "",
+        "key": "框 %lld · 牌 %lld",
+        "location": {
+          "startingColumn": 25,
+          "startingLine": 69
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lld ms",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 92
+        }
+      },
+      {
+        "comment": "",
+        "key": "检测器未走 ONNX",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 99
+        }
+      },
+      {
+        "comment": "",
+        "key": "开始实时识别",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 166
+        }
+      },
+      {
+        "comment": "",
+        "key": "开始实时识别",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 182
+        }
+      },
+      {
+        "comment": "",
+        "key": "继续",
+        "location": {
+          "startingColumn": 42,
+          "startingLine": 201
+        }
+      },
+      {
+        "comment": "",
+        "key": "暂停",
+        "location": {
+          "startingColumn": 53,
+          "startingLine": 201
+        }
+      },
+      {
+        "comment": "",
+        "key": "停止",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 221
+        }
+      },
+      {
+        "comment": "",
+        "key": "清空检测历史",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 238
+        }
+      }
+    ]
+  },
+  "version": 1
+}

@@ -1,6 +1,11 @@
 platform :ios, '18.0'
 target 'LicensePlateOCR' do
-  pod 'onnxruntime-mobile-objc', '1.18.0'
+  # NOTE: use the FULL runtime (onnxruntime-objc → onnxruntime-c), not
+  # onnxruntime-mobile-objc/-c. The "-mobile-" pods are prebuilt with
+  # ORT_FORMAT_ONLY: they reject .onnx models at session creation with
+  # "ONNX models are not supported in this build." The full pods load
+  # .onnx directly — exactly what the LibreYOLO pose detector needs.
+  pod 'onnxruntime-objc', '1.18.0'
 end
 
 post_install do |installer|
@@ -11,6 +16,29 @@ post_install do |installer|
   installer.pods_project.targets.each do |target|
     target.build_configurations.each do |config|
       config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '18.0'
+    end
+  end
+
+  # onnxruntime-mobile-objc is a STATIC pod (no use_frameworks!), so CocoaPods
+  # generates its Clang modulemap inside "Target Support Files" but never adds
+  # that directory to SWIFT_INCLUDE_PATHS. Result: the static library is linked
+  # fine, but Swift cannot see the module — every `canImport(onnxruntime*)`
+  # evaluates to false and the app silently compiles in the "no detector"
+  # fallback (red "未链接 onnxruntime" triage line at runtime).
+  #
+  # Fix: expose the shim modulemap in `${SRCROOT}/onnxruntime-shim/` (a plain
+  # `module` map — CocoaPods' own `framework module` map cannot even be loaded
+  # from a non-framework directory: clang reports "umbrella header not found")
+  # to the app's Swift compiler, so `import onnxruntime_mobile_objc` resolves.
+  installer.aggregate_targets.each do |agg_target|
+    agg_target.xcconfigs.each do |config_name, xcconfig|
+      shim_path = '"${SRCROOT}/onnxruntime-shim"'
+      existing = xcconfig.attributes['SWIFT_INCLUDE_PATHS'].to_s
+      unless existing.include?('onnxruntime-shim')
+        xcconfig.attributes['SWIFT_INCLUDE_PATHS'] =
+          [existing.presence, shim_path].compact.join(' ')
+      end
+      xcconfig.save_as(agg_target.xcconfig_path(config_name))
     end
   end
 end

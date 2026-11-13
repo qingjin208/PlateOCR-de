@@ -1,0 +1,10 @@
+Target dependency graph (4 targets)
+Target 'LicensePlateOCR' in project 'LicensePlateOCR'
+➜ Explicit dependency on target 'Pods-LicensePlateOCR' in project 'Pods'
+➜ Implicit dependency on target 'onnxruntime-objc' in project 'Pods' via options '-lonnxruntime-objc' in build setting 'OTHER_LDFLAGS'
+Target 'Pods-LicensePlateOCR' in project 'Pods'
+➜ Explicit dependency on target 'onnxruntime-c' in project 'Pods'
+➜ Explicit dependency on target 'onnxruntime-objc' in project 'Pods'
+Target 'onnxruntime-objc' in project 'Pods'
+➜ Explicit dependency on target 'onnxruntime-c' in project 'Pods'
+Target 'onnxruntime-c' in project 'Pods' (no dependencies)
