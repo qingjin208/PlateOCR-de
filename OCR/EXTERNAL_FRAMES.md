@@ -1,5 +1,7 @@
 # External frame recognition
 
+> **NOTE (2026-11):** The Core ML detector described below has been retired. This branch now ships exactly one detector: the LibreYOLO YOLO-NAS-pose ONNX export `De-plate-pose.onnx` (four plate-corner keypoints) run through ONNX Runtime. The text below is kept as the historical provenance record of the old `.nb` → Core ML conversion.
+
 The default pipeline uses VINRecognizeSDK's original `yolo.nb` graph and weights converted to `license_plate_yolo.mlmodel`, followed by Apple's Vision `RecognizeTextRequest`. Detection runs through Core ML with eligible compute units set to `.all`. This branch has no Paddle runtime dependency. The SDK does not create a camera or request camera permission. Only the demo's `CameraController` owns an `AVCaptureSession`.
 
 ## Input and results

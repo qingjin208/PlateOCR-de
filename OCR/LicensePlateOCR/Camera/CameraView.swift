@@ -90,11 +90,12 @@ struct CameraView: View {
             VStack(alignment: .trailing, spacing: 3) {
                 HStack(spacing: 6) {
                     Text("\(controller.elapsedMilliseconds) ms")
-                    // The pose pipeline depends on the ONNX runtime compiling in and the
-                    // session initializing on device. If the fallback Core ML detector is
-                    // what actually runs, say so in the pill — it is the #1 cause of
-                    // "no keypoints, no results" reports that cannot be reproduced offline.
-                    if controller.detectorName.contains("CoreML") {
+                    // The SDK has exactly one detector (the LibreYOLO ONNX pose model).
+                    // Anything else running means the ONNX path did not come up — say so
+                    // in the pill; it is the #1 cause of "no keypoints, no results".
+                    // (The stub's name, e.g. LicensePlateDetectorUnavailable(原因), does
+                    // not contain "ONNX", so the warning fires exactly when needed.)
+                    if !controller.detectorName.hasPrefix("ONNXPoseLicensePlateDetector") {
                         Text("检测器未走 ONNX")
                             .foregroundStyle(.yellow)
                     }
@@ -104,10 +105,10 @@ struct CameraView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 5)
                 .background(.black.opacity(0.45), in: Capsule())
-                // The actual fallback cause, surfaced from the recognizer (model missing
+                // The actual failure cause, surfaced from the recognizer (model missing
                 // from the bundle vs. ORT session failure — different fixes). Kept small
                 // and capped so a long error message cannot cover the feed.
-                if controller.detectorName.contains("CoreML") {
+                if !controller.detectorName.hasPrefix("ONNXPoseLicensePlateDetector") {
                     Text(controller.detectorName)
                         .font(.system(size: 9, design: .monospaced))
                         .foregroundStyle(.yellow.opacity(0.85))

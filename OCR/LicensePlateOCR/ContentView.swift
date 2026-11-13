@@ -57,9 +57,15 @@ struct ContentView: View {
                                      engine: .appleVision,
                                      enhancements: enhancements)
         #else
-        // ONNX Runtime not linked yet: fall back to the legacy Core ML detector until the
-        // pose model + onnxruntime framework are added (see POSE_INTEGRATION.md).
-        rec = LicensePlateRecognizer()
+        // No ONNX runtime linked: the SDK has exactly one detector (the LibreYOLO ONNX
+        // pose model), so without the pod there is NO detector at all. Build around the
+        // unavailable-stub so the app still runs and the triage line explains why
+        // nothing can be detected instead of crashing.
+        rec = LicensePlateRecognizer(detector: LicensePlateDetectorUnavailable(error:
+                LicensePlateError.invalidInput(
+                    "未链接 onnxruntime：请先运行 pod install，然后用 LicensePlateOCR.xcworkspace 编译。")),
+                                     recognizer: OCREngine.appleVision.makeRecognizer(
+                                        languages: [Locale.Language(identifier: "de-DE")]))
         rec.enhancements = enhancements
         #endif
         _recognizer = State(initialValue: rec)

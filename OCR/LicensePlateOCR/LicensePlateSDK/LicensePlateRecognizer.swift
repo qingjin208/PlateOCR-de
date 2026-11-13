@@ -148,14 +148,6 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     }
 
     private let detector: LicensePlateDetecting
-    /// Set at init when the preferred detector could not be created and a working fallback
-    /// is running instead (see `init(poseModelName:)`). Rendered by the App's triage line
-    /// next to the detector name, so the reason reaches the device screen instead of
-    /// being swallowed by a `catch`.
-    ///
-    /// `let`, not `var`: the class refines `Sendable`, which requires all stored
-    /// properties to be immutable (see the class documentation above).
-    public let detectorFallbackNote: String?
     private let postProcessor: PlatePostProcessor
     private let corrector: PerspectivePlateCorrector
     private let plateImageCleaner = PlateImageCleaner()
@@ -225,19 +217,13 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     /// Human-readable description of the active detector (on-device diagnostics).
     ///
     /// When detector init failed (e.g. the ONNX model never made it into the app bundle,
-    /// or the ORT session could not be created) the recognizer silently falls back to the
-    /// failing stub — the *reason* used to be swallowed here, which made the on-device
-    /// yellow "检测器未走 ONNX" warning undiagnosable. The stub carries the original
-    /// error, so append it verbatim.
+    /// or the ORT session could not be created) the recognizer is built around the
+    /// `LicensePlateDetectorUnavailable` stub — the *reason* must not be swallowed:
+    /// the stub carries the original error, so append it verbatim.
     public var detectorInfo: String {
         let name = String(describing: type(of: detector))
-        if let failing = detector as? CoreMLLicensePlateDetectorFailing {
+        if let failing = detector as? LicensePlateDetectorUnavailable {
             return "\(name)(\(failing.failureDescription))"
-        }
-        // Running fallback: the preferred detector failed but a working one took over —
-        // say why, otherwise the yellow "检测器未走 ONNX" warning is undiagnosable.
-        if let note = detectorFallbackNote {
-            return "\(name) · \(note)"
         }
         return name
     }
@@ -273,62 +259,31 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         set { runtimeState.withLock { $0.enhancements = newValue } }
     }
 
-    /// The default pipeline uses the original plate model converted to Core ML and Apple OCR.
-    public convenience init() {
-        let detector: LicensePlateDetecting
-        do { detector = try CoreMLLicensePlateDetector() }
-        catch { detector = CoreMLLicensePlateDetectorFailing(error: error) }
-        self.init(detector: detector,
-                  recognizer: OCREngine.appleVision.makeRecognizer(),
-                  recognitionLanguages: [Locale.Language(identifier: "de-DE")])
-    }
-
     public init(detector: LicensePlateDetecting,
                 recognizer: PlateTextRecognizing,
                 recognitionLanguages: [Locale.Language] = [Locale.Language(identifier: "de-DE")],
                 ocrEngine: OCREngine = .appleVision,
                 postProcessor: PlatePostProcessor = PlatePostProcessor(),
-                enhancements: RecognitionEnhancements = .off,
-                detectorFallbackNote: String? = nil) {
+                enhancements: RecognitionEnhancements = .off) {
         self.detector = detector
         self.recognitionLanguages = recognitionLanguages
         self.postProcessor = postProcessor
-        self.detectorFallbackNote = detectorFallbackNote
         self.corrector = PerspectivePlateCorrector()
         self.runtimeState = OSAllocatedUnfairLock(initialState: RuntimeState(
             recognizer: recognizer, engine: ocrEngine, useRGB: true, flipY: true,
             enhancements: enhancements))
     }
 
-    /// Convenience initializer for the common setup: Core ML YOLO detector + Vision OCR,
-    /// German (`de-DE`) recognition.
-    /// - Parameters:
-    ///   - modelName: Resource name for an explicitly supplied Core ML YOLO model.
-    ///   - config: YOLO output layout (default `.germanPlate`).
-    ///   - recognitionLanguages: OCR languages (default `[de-DE]`).
-    ///   - enhancements: Opt-in strengthening (default `.off` = legacy behaviour).
-    public convenience init(modelName: String,
-                            config: YOLOConfig = .germanPlate,
-                            recognitionLanguages: [Locale.Language] = [Locale.Language(identifier: "de-DE")],
-                            enhancements: RecognitionEnhancements = .off) {
-        let detector: LicensePlateDetecting
-        do { detector = try CoreMLLicensePlateDetector(modelName: modelName, config: config) }
-        catch { detector = CoreMLLicensePlateDetectorFailing(error: error) }
-        self.init(detector: detector,
-                  recognizer: PlateTextRecognizer(languages: recognitionLanguages),
-                  recognitionLanguages: recognitionLanguages,
-                  ocrEngine: .appleVision,
-                  postProcessor: PlatePostProcessor(),
-                  enhancements: enhancements)
-    }
-
     /// Convenience initializer that wires the trained German-plate corner model
     /// (running through ONNX Runtime) with the selected OCR engine.
     ///
-    /// Requires the ONNX Runtime framework + the pose `.onnx` in the bundle. The default is
-    /// the LibreYOLO (YOLO-NAS-pose) export `De-plate-pose` (512 input, four outputs); older
-    /// Ultralytics exports keep working via the same detector (the layout is auto-detected
-    /// from the model's output names).
+    /// The SDK has exactly ONE detector: the LibreYOLO (YOLO-NAS-pose) export
+    /// `De-plate-pose` (512 input, four outputs; older Ultralytics exports keep working
+    /// via the same detector — the layout is auto-detected from the model's output
+    /// names). If it cannot be initialized (model not in the bundle, ORT session
+    /// failure, …) the recognizer is built around `LicensePlateDetectorUnavailable`,
+    /// whose `detect` throws — the reason is readable from `detectorInfo` on the
+    /// device UI instead of being swallowed.
     /// - Parameters:
     ///   - poseModelName: Resource name of the `.onnx` model (without extension).
     ///   - config: YOLO output layout (default `.germanPlatePoseLibre`).
@@ -345,35 +300,19 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
                             recognitionLanguages: [Locale.Language] = [Locale.Language(identifier: "de-DE")],
                             enhancements: RecognitionEnhancements = .off,
                             poseThreads: Int32 = 2) {
-        // Preferred: the ONNX pose detector. If it cannot be created (model not in the
-        // bundle, ORT session failure, …) fall back to the legacy Core ML detector so the
-        // app keeps detecting plates instead of dying on the first frame: the old code
-        // assigned the failing stub directly, which made every `detect` throw instantly —
-        // the "框 0 · 牌 0 · 0 ms, nothing ever happens" report. The reason is kept in
-        // `detectorFallbackNote` and shown on the triage line.
-        var note: String?
         let detector: LicensePlateDetecting
         do {
             detector = try ONNXPoseLicensePlateDetector(modelName: poseModelName, config: config,
                                                        intraOpThreads: poseThreads)
-        } catch let onnxError {
-            do {
-                detector = try CoreMLLicensePlateDetector()
-                note = "ONNX 不可用（\(onnxError.localizedDescription)），已回退 Core ML"
-            } catch let coreMLError {
-                detector = CoreMLLicensePlateDetectorFailing(error: LicensePlateError.invalidInput(
-                    "ONNX 与 Core ML 检测器均初始化失败。ONNX：\(onnxError.localizedDescription)；"
-                    + "Core ML：\(coreMLError.localizedDescription)"))
-                note = nil
-            }
+        } catch {
+            detector = LicensePlateDetectorUnavailable(error: error)
         }
         self.init(detector: detector,
                   recognizer: engine.makeRecognizer(languages: recognitionLanguages),
                   recognitionLanguages: recognitionLanguages,
                   ocrEngine: engine,
                   postProcessor: PlatePostProcessor(),
-                  enhancements: enhancements,
-                  detectorFallbackNote: note)
+                  enhancements: enhancements)
     }
     #endif
 
@@ -612,15 +551,18 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     }
 }
 
-/// Preserves initialization failures so the UI can display the actual cause.
-private final class CoreMLLicensePlateDetectorFailing: LicensePlateDetecting {
+/// The SDK ships exactly one detector: the LibreYOLO YOLO-NAS-pose ONNX export. When it
+/// cannot be initialized (model missing from the bundle, ORT session failure, no
+/// onnxruntime linked) this stub keeps the recognizer constructible and surfaces the
+/// cause through `detectorInfo` instead of crashing or failing silently.
+public final class LicensePlateDetectorUnavailable: LicensePlateDetecting, @unchecked Sendable {
     private let error: Error
-    init(error: Error) { self.error = error }
+    public init(error: Error) { self.error = error }
     /// Human-readable cause for the UI triage line (see `detectorInfo`).
     /// `localizedDescription` (not `String(describing:)`) so `LicensePlateError`'s
     /// Chinese `errorDescription` — or an ORT NSError's message — is what shows up.
-    var failureDescription: String { error.localizedDescription }
-    func detect(in image: CGImage) async throws -> [PlateDetection] {
+    public var failureDescription: String { error.localizedDescription }
+    public func detect(in image: CGImage) async throws -> [PlateDetection] {
         throw error
     }
 }

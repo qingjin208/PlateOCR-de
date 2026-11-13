@@ -1,8 +1,8 @@
 # 德国车牌识别：车牌检测 + Apple Vision OCR
 
-当前 `feature/coreml-plate-detection` 分支使用由原 **`yolo.nb` 计算图和权重转换的 `license_plate_yolo.mlmodel`**，通过 Apple Core ML 执行车牌检测。129 个 FP32 参数张量与原模型逐字节一致，没有替换检测模型。检测后逐个裁剪车牌区域，继续交给 Apple Vision `RecognizeTextRequest` 识别字符。
+当前分支使用 **LibreYOLO（YOLO-NAS-pose）导出的 `De-plate-pose.onnx`**（4 角点关键点模型），通过 ONNX Runtime 执行车牌检测——这是 SDK 唯一的检测器。检测后用 4 角点做透视矫正，再交给 Apple Vision `RecognizeTextRequest` 识别字符。旧 Core ML 检测器（`license_plate_yolo.mlmodel`）已随本分支退役并从包中移除。
 
-> **新增：德国车牌关键点（Pose）检测 + 可切换 OCR**。已接入训练好的 `De-plate-pose.onnx`（4 角点关键点模型），通过 ONNX Runtime 推理，用 4 角点做透视矫正后再 OCR；App 可在 **Apple Vision / PaddleOCR** 间选择引擎并传入 SDK。详见 [POSE_INTEGRATION.md](POSE_INTEGRATION.md)。默认构建仍走原 Core ML 检测器，链接 `onnxruntime` 后自动改用 pose 模型。
+> **新增：德国车牌关键点（Pose）检测 + 可切换 OCR**。已接入训练好的 `De-plate-pose.onnx`（4 角点关键点模型），通过 ONNX Runtime 推理，用 4 角点做透视矫正后再 OCR；App 可在 **Apple Vision / PaddleOCR** 间选择引擎并传入 SDK。详见 [POSE_INTEGRATION.md](POSE_INTEGRATION.md)。链接 `onnxruntime`（`pod install`）后 ONNX pose 模型即为实际检测器；未链接时 App 仍可启动，但检测器为不可用桩并在界面上显示原因。
 
 `main` 保留原 Paddle Lite / `.nb` 方案，基准提交为 `9ec6f24`。本分支不链接 Paddle Lite，也不向 App 打包 `.nb`；原 `.nb` 仅保留在 `Models/source/` 作为离线转换输入。
 
@@ -37,7 +37,7 @@ for plate in frame.plates {
 
 ## 项目文件
 
-- `LicensePlateOCR/LicensePlateSDK/Resources/license_plate_yolo.mlmodel`：由原 `.nb` 转换的 Core ML 车牌检测模型。
+- `LicensePlateOCR/LicensePlateSDK/Resources/De-plate-pose.onnx`：LibreYOLO YOLO-NAS-pose 车牌 4 角点关键点模型（SDK 唯一检测器）。
 - `Models/source/yolo.nb`：原模型，仅供离线转换和一致性验证。
 - `Models/nb-coreml-provenance.json`：模型 SHA-256、原始参数映射和转换元数据。
 - `Models/nb-coreml-validation.json`：CPU 图计算一致性验证结果。

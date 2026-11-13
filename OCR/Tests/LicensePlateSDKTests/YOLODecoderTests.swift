@@ -129,49 +129,4 @@ final class YOLODecoderTests: XCTestCase {
         let malformed = try MLMultiArray(shape: [1, 4, 8400], dataType: .float32)
         XCTAssertThrowsError(try YOLOOutputDecoder.decode(malformed, config: .germanPlate))
     }
-
-    func testOriginalConvertedModelCompilesAndLoads() throws {
-        XCTAssertNoThrow(try CoreMLLicensePlateDetector(computeUnits: .cpuOnly))
-    }
-
-    func testAppleCPUPredictionAgainstOriginalGraphFixtures() async throws {
-        let detector = try CoreMLLicensePlateDetector(computeUnits: .cpuOnly)
-        for (name, gray) in [("nb-reference-black", UInt8(0)), ("nb-reference-gray", UInt8(114))] {
-            var pixel: CVPixelBuffer?
-            XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, 640, 640, kCVPixelFormatType_32BGRA,
-                nil, &pixel), kCVReturnSuccess)
-            let buffer = try XCTUnwrap(pixel)
-            CVPixelBufferLockBaseAddress(buffer, [])
-            if let base = CVPixelBufferGetBaseAddress(buffer)?.assumingMemoryBound(to: UInt8.self) {
-                let row = CVPixelBufferGetBytesPerRow(buffer)
-                for y in 0..<640 {
-                    for x in 0..<640 {
-                        let offset = y * row + x * 4
-                        base[offset] = gray; base[offset + 1] = gray; base[offset + 2] = gray; base[offset + 3] = 255
-                    }
-                }
-            }
-            CVPixelBufferUnlockBaseAddress(buffer, [])
-            let url = try XCTUnwrap(Bundle.module.url(forResource: name, withExtension: "f32"))
-            let bytes = try Data(contentsOf: url)
-            XCTAssertEqual(bytes.count, 5 * 8400 * 4)
-            let output = try await detector.prediction(on: buffer)
-            XCTAssertEqual(output.shape.map(\.intValue), [1, 5, 8400])
-            var maxCoordinateError: Float = 0, maxScoreError: Float = 0
-            bytes.withUnsafeBytes { raw in
-                for channel in 0..<5 {
-                    for anchor in 0..<8400 {
-                        let offset = (channel * 8400 + anchor) * 4
-                        let bits = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: offset, as: UInt32.self))
-                        let expected = Float(bitPattern: bits)
-                        let actual = output[[0, NSNumber(value: channel), NSNumber(value: anchor)]].floatValue
-                        if channel == 4 { maxScoreError = max(maxScoreError, abs(actual - expected)) }
-                        else { maxCoordinateError = max(maxCoordinateError, abs(actual - expected)) }
-                    }
-                }
-            }
-            XCTAssertLessThan(maxCoordinateError, 0.02, name)
-            XCTAssertLessThan(maxScoreError, 0.0001, name)
-        }
-    }
 }
