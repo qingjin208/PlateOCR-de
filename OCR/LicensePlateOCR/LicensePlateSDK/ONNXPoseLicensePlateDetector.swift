@@ -25,6 +25,7 @@ import Foundation
 import CoreGraphics
 import CoreImage
 import CoreML
+import Accelerate
 #if canImport(onnxruntime)
 import onnxruntime
 #elseif canImport(onnxruntime_mobile_objc)
@@ -66,7 +67,9 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
     /// the buffer — the model then sees a vertically mirrored scene. The PC pipeline has
     /// no such flip, which is exactly why "the PC detects everything, the phone does not".
     /// The flip is kept runtime-settable so the two behaviours can be A/B-tested on device
-    /// without rebuilding.
+    /// without rebuilding. With the vImage letterbox this is implemented by reversing the
+    /// scaled rows after the resample (see `CGImage.letterboxedUpright`); the legacy
+    /// CGContext fallback honours it as the original drawing transform.
     var flipY: Bool
 
     /// Mutable thresholds in a box: a `Sendable` class may not have mutable stored
@@ -173,6 +176,21 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
             self.outputName = names.first ?? "output0"
         }
         self.inputName = (try? session.inputNames())?.first ?? "images"
+
+        // Prewarm (standard practice in well-performing ONNX Runtime mobile
+        // deployments): graph optimisation, arena allocation and kernel selection all
+        // happen on the FIRST `run` and can cost hundreds of milliseconds on device.
+        // Without this, the first real frame pays that bill — which reads as "aimed at
+        // the plate and nothing happens for a second". A zero-filled tensor is enough;
+        // any failure here is non-fatal (`try?`), real inference still works.
+        let warmupOutputs = libreOutputNames.isEmpty ? [outputName] : libreOutputNames
+        if let zeros = NSMutableData(length: 3 * inputSize * inputSize * MemoryLayout<Float>.size) {
+            if let warmup = try? ORTValue(tensorData: zeros, elementType: .float,
+                                          shape: [1, 3, inputSize, inputSize].map { NSNumber(value: $0) }) {
+                _ = try? session.run(withInputs: [inputName: warmup],
+                                     outputNames: Set(warmupOutputs), runOptions: nil)
+            }
+        }
     }
 
     /// The channel order actually fed to the model: BGR for the LibreYOLO layout,
@@ -211,7 +229,9 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
 
         let outputs = try session.run(
             withInputs: [inputName: inputValue],
-            outputNames: [outputName],
+            // `runWithInputs:outputNames:` takes an `NSSet<NSString*>*` — Swift `Set<String>`,
+            // NOT an array. An array literal here is a compile error.
+            outputNames: Set([outputName]),
             runOptions: nil
         )
         guard let outValue = outputs[outputName] else {
@@ -245,7 +265,7 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
                                  imageSize: CGSize) throws -> [PlateDetection] {
         let outputs = try session.run(
             withInputs: [inputName: inputValue],
-            outputNames: libreOutputNames,
+            outputNames: Set(libreOutputNames),
             runOptions: nil
         )
         func floats(_ name: String) throws -> [Float] {
@@ -348,15 +368,27 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
 }
 
 extension CGImage {
-    /// Letterbox into a 640x640 buffer for the pose model.
+    /// Letterbox into a `size`×`size` buffer for the pose model, resampling with
+    /// **Accelerate vImage**.
     ///
-    /// - Parameter flipY: write the picture top-row-first (`true`, the Ultralytics /
-    ///   OpenCV / PC-reference layout: row 0 = visual top, `padY` measured from the top)
-    ///   instead of letting the Quartz default (bottom-left origin) mirror it vertically.
-    ///   See `ONNXPoseLicensePlateDetector.flipY`.
-    /// - Parameter snapshot: also return the buffer as a `CGImage`, i.e. exactly what the
-    ///   model sees. Comparing it with the PC pipeline's input settles "is the tensor
-    ///   wrong, or is the decode wrong?" in one step.
+    /// Why vImage: the reference pipelines (LibreYOLO `preprocess_numpy`, the PC
+    /// scripts) resize with PIL `Image.resize(..., BILINEAR)`, which antialiases on
+    /// downscale (area-weighted averaging). The previous `CGContext.draw` path used
+    /// Core Graphics' plain linear interpolation with no antialiasing, so large
+    /// downscales aliased thin character strokes away — exactly the features the pose
+    /// model's corner heads latch onto. `vImageScale_ARGB8888` +
+    /// `kvImageHighQualityResampling` is an area-averaged, antialiased resample with
+    /// the same character as PIL's downscale.
+    ///
+    /// The destination is always written **top-row-first** (vImage row 0 = first row
+    /// in memory, matching the PC / OpenCV / PIL layout), which removes the Quartz
+    /// bottom-left-origin flip hazard the CGContext path had to work around.
+    /// `flipY == false` remains available for on-device A/B testing and emulates the
+    /// old bottom-first write by reversing the scaled rows after the resample.
+    ///
+    /// - Parameter snapshot: also return the buffer as a `CGImage`, i.e. exactly what
+    ///   the model sees. Comparing it with the PC pipeline's input settles "is the
+    ///   tensor wrong, or is the decode wrong?" in one step.
     /// - Parameter bottomRightPad: `true` = LibreYOLO YOLO-NAS-pose convention — anchor
     ///   the resized image at the canvas top-left (`padX = padY = 0`) and leave all pad
     ///   pixels at the right/bottom; `false` = Ultralytics convention — center the image.
@@ -364,6 +396,103 @@ extension CGImage {
     /// - Returns: geometry (scale/pad) consistent with `YOLOOutputDecoder.remap`.
     func letterboxedUpright(size: Int, flipY: Bool = true, snapshot: Bool = false,
                             bottomRightPad: Bool = false, padValue: UInt8 = 114) throws -> (buffer: CVPixelBuffer, scale: CGFloat, padX: CGFloat, padY: CGFloat, image: CGImage?) {
+        let side = CGFloat(size)
+        let scale = min(side / CGFloat(width), side / CGFloat(height))
+        let resizedWidth = Int(round(CGFloat(width) * scale))
+        let resizedHeight = Int(round(CGFloat(height) * scale))
+        let padX = bottomRightPad ? 0 : floor((side - CGFloat(resizedWidth)) / 2)
+        let padY = bottomRightPad ? 0 : floor((side - CGFloat(resizedHeight)) / 2)
+        guard resizedWidth > 0, resizedHeight > 0 else {
+            throw LicensePlateError.invalidInput("源图像尺寸退化，无法 letterbox。")
+        }
+        var pixel: CVPixelBuffer?
+        let attributes = [kCVPixelBufferCGImageCompatibilityKey: true,
+                          kCVPixelBufferCGBitmapContextCompatibilityKey: true] as CFDictionary
+        guard CVPixelBufferCreate(kCFAllocatorDefault, size, size, kCVPixelFormatType_32BGRA, attributes, &pixel) == kCVReturnSuccess,
+              let buffer = pixel else {
+            throw LicensePlateError.invalidInput("无法分配 letterbox 缓冲。")
+        }
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+        guard let base = CVPixelBufferGetBaseAddress(buffer) else {
+            throw LicensePlateError.invalidInput("无法读取 letterbox 缓冲。")
+        }
+        let bpr = CVPixelBufferGetBytesPerRow(buffer)
+
+        // Fill the whole canvas with the pad gray (BGRA little-endian: B = G = R = pad).
+        // The tensor builder only reads B/G/R, but the alpha bytes are set opaque so an
+        // optional snapshot renders without a surprise 50% dim.
+        memset(base, Int32(padValue), bpr * size)
+        for y in 0..<size {
+            let row = base.advanced(by: y * bpr).assumingMemoryBound(to: UInt8.self)
+            for x in 0..<size { row[x * 4 + 3] = 255 }
+        }
+
+        // Decode the source into a little-endian ARGB8888 vImage buffer — the same
+        // in-memory layout as `kCVPixelFormatType_32BGRA`, so scaling moves bytes
+        // without touching channel order. `vImageBuffer_InitWithCGImage` converts any
+        // CGImage flavour (16-bit, grayscale, Display-P3) the way the old CGContext
+        // render did. The temporary buffer is one uncompressed copy of the source and
+        // is freed right after the scale.
+        // Apple ships a Swift-specific failable initializer that takes the `CGColorSpace`
+        // object directly. The raw C-struct memberwise initializer declares `colorSpace`
+        // as `Unmanaged<CGColorSpace>!`, so a bare `CGColorSpace` would NOT type-check
+        // against it — use the overlay initializer.
+        guard let format = vImage_CGImageFormat(
+                  bitsPerComponent: 8, bitsPerPixel: 32,
+                  colorSpace: CGColorSpaceCreateDeviceRGB(),
+                  bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                            | CGBitmapInfo.byteOrder32Little.rawValue),
+                  renderingIntent: .defaultIntent) else {
+            return try legacyLetterbox(size: size, flipY: flipY, snapshot: snapshot,
+                                       bottomRightPad: bottomRightPad, padValue: padValue)
+        }
+        var src = vImage_Buffer()
+        if vImageBuffer_InitWithCGImage(&src, &format, nil, self, vImage_Flags(kvImageNoFlags)) != kvImageNoError {
+            return try legacyLetterbox(size: size, flipY: flipY, snapshot: snapshot,
+                                       bottomRightPad: bottomRightPad, padValue: padValue)
+        }
+        defer { if let p = src.data { free(p) } }
+
+        // Resample straight into the canvas region the decoder's geometry expects:
+        // top-left anchored for the LibreYOLO layout (padX = padY = 0), centered
+        // otherwise. vImage writes row 0 first, so no flip is involved anywhere.
+        var dst = vImage_Buffer(data: base.advanced(by: Int(padY) * bpr + Int(padX) * 4),
+                                height: vImagePixelCount(resizedHeight),
+                                width: vImagePixelCount(resizedWidth),
+                                rowBytes: bpr)
+        let scaleError = vImageScale_ARGB8888(&src, &dst, nil, vImage_Flags(kvImageHighQualityResampling))
+        if scaleError != kvImageNoError {
+            // Scaling should not fail for 8-bit same-layout buffers, but a silent
+            // all-gray canvas is the worst possible failure mode (detections just
+            // vanish), so fall back to the proven CGContext path instead.
+            return try legacyLetterbox(size: size, flipY: flipY, snapshot: snapshot,
+                                       bottomRightPad: bottomRightPad, padValue: padValue)
+        }
+
+        if !flipY {
+            // A/B diagnostic mode: emulate the old bottom-first (upside-down) write so
+            // the flip question can still be re-tested on device without rebuilding.
+            var scratch = [UInt8](repeating: 0, count: resizedWidth * 4)
+            let regionStart = base.advanced(by: Int(padY) * bpr + Int(padX) * 4)
+            for i in 0..<resizedHeight / 2 {
+                let top = regionStart.advanced(by: i * bpr)
+                let bottom = regionStart.advanced(by: (resizedHeight - 1 - i) * bpr)
+                memcpy(&scratch, top, resizedWidth * 4)
+                memcpy(top, bottom, resizedWidth * 4)
+                memcpy(bottom, &scratch, resizedWidth * 4)
+            }
+        }
+
+        let snap = snapshot ? Self.uprightSnapshot(base: base, side: size, bytesPerRow: bpr) : nil
+        return (buffer, scale, padX, padY, snap)
+    }
+
+    /// The pre-vImage `CGContext` implementation, kept as a fallback for sources
+    /// `vImageBuffer_InitWithCGImage` cannot convert, and as the ground truth for
+    /// A/B-testing the resampler on device.
+    private func legacyLetterbox(size: Int, flipY: Bool, snapshot: Bool,
+                                 bottomRightPad: Bool, padValue: UInt8) throws -> (buffer: CVPixelBuffer, scale: CGFloat, padX: CGFloat, padY: CGFloat, image: CGImage?) {
         let side = CGFloat(size)
         let scale = min(side / CGFloat(width), side / CGFloat(height))
         let resizedWidth = round(CGFloat(width) * scale)
@@ -400,6 +529,17 @@ extension CGImage {
         // `makeImage()` bakes in the current transform, i.e. it returns the buffer exactly
         // as laid out in memory — what the model actually sees, flip and all.
         return (buffer, scale, padX, padY, snapshot ? context.makeImage() : nil)
+    }
+
+    /// Wraps an already-written BGRA buffer (top row first in memory) as a `CGImage`.
+    /// No drawing happens on this context, so no transform is baked in: the returned
+    /// image is the raw memory, i.e. exactly what the model sees.
+    private static func uprightSnapshot(base: UnsafeMutableRawPointer, side: Int, bytesPerRow: Int) -> CGImage? {
+        guard let ctx = CGContext(data: base, width: side, height: side, bitsPerComponent: 8,
+                                  bytesPerRow: bytesPerRow, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                            | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
+        return ctx.makeImage()
     }
 }
 #endif

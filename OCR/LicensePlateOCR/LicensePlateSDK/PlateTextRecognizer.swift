@@ -60,6 +60,14 @@ public final class PlateTextRecognizer: PlateTextRecognizing {
         var request = RecognizeTextRequest()
         request.recognitionLevel = mode.visionLevel
 
+        // Plates are always German glyph territory: pin the language model instead of
+        // letting Vision run its language detector first (default in the iOS 18 request
+        // can attempt detection to pick "the appropriate model"). A wrong auto-detection
+        // silently swaps the recognition model for one frame — e.g. the EU-strip
+        // fragments steering it towards a neighbouring script — and the detection pass
+        // is per-crop work the reference implementations avoid by pinning the locale.
+        request.automaticallyDetectsLanguage = false
+
         // Only keep languages Vision actually supports on this device.
         let supported = request.supportedRecognitionLanguages
         let chosen = languages.filter { supported.contains($0) }
