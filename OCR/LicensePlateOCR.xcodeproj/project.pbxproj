@@ -385,7 +385,7 @@
 		};
 		LPR00000000000000000000B1 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = D0506ABCA56D588BC7620CAE /* SampleCode.xcconfig */;
+			baseConfigurationReference = E5CEE3008D4FCDB9239C0720 /* Pods-LicensePlateOCR.debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -422,7 +422,7 @@
 		};
 		LPR00000000000000000000B2 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = D0506ABCA56D588BC7620CAE /* SampleCode.xcconfig */;
+			baseConfigurationReference = E7E80A76A563AE2644F78404 /* Pods-LicensePlateOCR.release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
