@@ -148,6 +148,11 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     }
 
     private let detector: LicensePlateDetecting
+    /// Set when the preferred detector could not be created and a working fallback is
+    /// running instead (see `init(poseModelName:)`). Rendered by the App's triage line
+    /// next to the detector name, so the reason reaches the device screen instead of
+    /// being swallowed by a `catch`.
+    public var detectorFallbackNote: String?
     private let postProcessor: PlatePostProcessor
     private let corrector: PerspectivePlateCorrector
     private let plateImageCleaner = PlateImageCleaner()
@@ -225,6 +230,11 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         let name = String(describing: type(of: detector))
         if let failing = detector as? CoreMLLicensePlateDetectorFailing {
             return "\(name)(\(failing.failureDescription))"
+        }
+        // Running fallback: the preferred detector failed but a working one took over —
+        // say why, otherwise the yellow "检测器未走 ONNX" warning is undiagnosable.
+        if let note = detectorFallbackNote {
+            return "\(name) · \(note)"
         }
         return name
     }
@@ -330,17 +340,35 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
                             recognitionLanguages: [Locale.Language] = [Locale.Language(identifier: "de-DE")],
                             enhancements: RecognitionEnhancements = .off,
                             poseThreads: Int32 = 2) {
+        // Preferred: the ONNX pose detector. If it cannot be created (model not in the
+        // bundle, ORT session failure, …) fall back to the legacy Core ML detector so the
+        // app keeps detecting plates instead of dying on the first frame: the old code
+        // assigned the failing stub directly, which made every `detect` throw instantly —
+        // the "框 0 · 牌 0 · 0 ms, nothing ever happens" report. The reason is kept in
+        // `detectorFallbackNote` and shown on the triage line.
+        var note: String?
         let detector: LicensePlateDetecting
         do {
             detector = try ONNXPoseLicensePlateDetector(modelName: poseModelName, config: config,
                                                        intraOpThreads: poseThreads)
-        } catch { detector = CoreMLLicensePlateDetectorFailing(error: error) }
+        } catch let onnxError {
+            do {
+                detector = try CoreMLLicensePlateDetector()
+                note = "ONNX 不可用（\(onnxError.localizedDescription)），已回退 Core ML"
+            } catch let coreMLError {
+                detector = CoreMLLicensePlateDetectorFailing(error: LicensePlateError.invalidInput(
+                    "ONNX 与 Core ML 检测器均初始化失败。ONNX：\(onnxError.localizedDescription)；"
+                    + "Core ML：\(coreMLError.localizedDescription)"))
+                note = nil
+            }
+        }
         self.init(detector: detector,
                   recognizer: engine.makeRecognizer(languages: recognitionLanguages),
                   recognitionLanguages: recognitionLanguages,
                   ocrEngine: engine,
                   postProcessor: PlatePostProcessor(),
                   enhancements: enhancements)
+        self.detectorFallbackNote = note
     }
     #endif
 
