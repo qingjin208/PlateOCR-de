@@ -508,8 +508,17 @@ struct ContentView: View {
                 HStack(spacing: 8) {
                     Text("共识别到 \(results.count) 块车牌").font(.headline)
                     Spacer(minLength: 0)
-                    Button("重新选择") { clearResults() }
-                        .font(.subheadline).foregroundStyle(appAccent)
+                    // Padded + contentShape so the tap target is larger than the glyphs
+                    // (plain text buttons are hard to hit; Apple recommends ≥44pt).
+                    Button { clearResults() } label: {
+                        Text("重新选择")
+                            .font(.subheadline)
+                            .foregroundStyle(appAccent)
+                            .padding(.vertical, 10)
+                            .padding(.horizontal, 6)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
                 .padding(.horizontal)
                 ForEach(Array(results.enumerated()), id: \.element.id) { pair in
@@ -538,8 +547,17 @@ struct ContentView: View {
                 // The reselection button must be reachable here too: with no results the
                 // list above never renders, which previously left the loaded photo/video
                 // stuck on screen until the app was restarted.
-                Button("重新选择") { clearResults() }
-                    .font(.subheadline).foregroundStyle(appAccent)
+                // Padded + contentShape so the tap target is larger than the glyphs
+                // (plain text buttons are hard to hit; Apple recommends ≥44pt).
+                Button { clearResults() } label: {
+                    Text("重新选择")
+                        .font(.subheadline)
+                        .foregroundStyle(appAccent)
+                        .padding(.vertical, 10)
+                        .padding(.horizontal, 6)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal)
@@ -927,12 +945,22 @@ private struct SettingsSheet: View {
             }
             .scrollBounceBehavior(.basedOnSize)
 
-            Button("完成") { onDone() }
-                .font(.headline.bold())
-                .frame(maxWidth: .infinity)
-                .padding(14)
-                .background(appAccent, in: RoundedRectangle(cornerRadius: 14))
-                .foregroundStyle(.white)
+            // Styling lives INSIDE the label: `Button("完成"){...}.frame(...)` keeps the
+            // tappable area at the text itself, so taps on the padded/background part of
+            // the wide button did nothing. With the modifiers on the label (plus an
+            // explicit contentShape covering the padded rect) the whole pill is tappable.
+            Button {
+                onDone()
+            } label: {
+                Text("完成")
+                    .font(.headline.bold())
+                    .frame(maxWidth: .infinity)
+                    .padding(14)
+                    .background(appAccent, in: RoundedRectangle(cornerRadius: 14))
+                    .foregroundStyle(.white)
+                    .contentShape(RoundedRectangle(cornerRadius: 14))
+            }
+            .buttonStyle(.plain)
         }
         .padding(20)
         .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
