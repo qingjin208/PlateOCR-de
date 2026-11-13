@@ -293,7 +293,7 @@ struct PixelBuffer {
         let sorted = grays.sorted()
         let median = Double(sorted[sorted.count / 2])
         let threshold = max(60, median * 0.62)
-        var mask = grays.map { Double($0) < threshold }
+        let mask = grays.map { Double($0) < threshold }
         return morphologicalClose(mask, radius: structuringRadius)
     }
 
@@ -332,7 +332,9 @@ struct PixelBuffer {
                     guard yy >= 0, yy < height else { hit = false; break }
                     for dx in -radius...radius where dx*dx + dy*dy <= radius*radius {
                         let xx = x + dx
-                        if !(xx >= 0, xx < width) || !mask[yy * width + xx] { hit = false; break outer }
+                        // Note: `!(a, b)` would negate a *tuple*, not chain the
+                        // conditions — that is a compile error, not a style issue.
+                        if !(xx >= 0 && xx < width) || !mask[yy * width + xx] { hit = false; break outer }
                     }
                 }
                 out[y * width + x] = hit

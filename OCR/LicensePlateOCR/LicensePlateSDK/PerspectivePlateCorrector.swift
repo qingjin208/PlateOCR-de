@@ -79,7 +79,8 @@ public struct PerspectivePlateCorrector: Sendable {
         guard let outputSize = Self.validatedQuad(keypoints,
                                                   imageSize: imageSize,
                                                   box: detection.rect,
-                                                  maxEdge: maxOutputEdge) else { return nil }
+                                                  maxEdge: maxOutputEdge,
+                                                  targetOutputHeight: targetOutputHeight) else { return nil }
 
         // Detection keypoints are normalized, top-left origin (y-down). Core Image uses a
         // bottom-left origin in pixels, so flip Y: ciY = height * (1 - ny).
@@ -127,7 +128,8 @@ public struct PerspectivePlateCorrector: Sendable {
     private static func validatedQuad(_ keypoints: [CGPoint],
                                       imageSize: CGSize,
                                       box: CGRect,
-                                      maxEdge: CGFloat) -> CGSize? {
+                                      maxEdge: CGFloat,
+                                      targetOutputHeight: CGFloat) -> CGSize? {
         guard keypoints.count == 4, imageSize.width > 0, imageSize.height > 0 else { return nil }
         let p = keypoints.map { CGPoint(x: $0.x * imageSize.width, y: $0.y * imageSize.height) }
         guard p.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { return nil }
