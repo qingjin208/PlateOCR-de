@@ -185,6 +185,15 @@ final class FramePipelineTests: XCTestCase {
         XCTAssertEqual(GermanPlateValidator.canonicalize("B D AB 123 E", enhancements: .on), "B-AB 123E")
     }
 
+    func testSealGambleNeverEatsASplitNumberChunk() {
+        // A stray separator inside the number (`B-AB 84 E` OCR'd as `B AB 8 4 E`) must
+        // not have its digit chunk removed as a "seal": the seal physically sits before
+        // the first digit, and removing `8` used to turn the reading into the lexicon
+        // valid — but wrong — `BA-B 4E`.
+        let result = GermanPlateValidator.canonicalize("B AB 8 4 E", enhancements: .on)
+        XCTAssertNotEqual(result, "BA-B 4E")
+    }
+
     func testSeriesUmlautIsNoiseNotAPlate() {
         // FZV: umlauts exist only in the city code, never in the identification number.
         // Legacy: rejected outright (no valid structure carries a umlaut in the number).
@@ -458,6 +467,18 @@ final class FramePipelineTests: XCTestCase {
         XCTAssertEqual(finished.count, 1)
         XCTAssertEqual(finished.first?.result.text, "M-AB 1234")
         XCTAssertEqual(finished.first?.votes, 1)
+    }
+
+    func testFinishDoesNotListASplitTwoFrameTrack() {
+        // Two frames, two different readings (1 vs 1): `evaluate` refuses to list while
+        // the track lives, and retirement must not sneak the confident variant in through
+        // the single-sighting escape hatch — that path requires `totalVotes == 1`, not
+        // just a winning text with one vote.
+        var aggregator = PlateVoteAggregator()
+        let start = Date(timeIntervalSinceReferenceDate: 0)
+        _ = aggregator.ingest([plate("M-AB 1234", 0.93, voteBoxA)], at: start)
+        _ = aggregator.ingest([plate("M-AB 123A", 0.70, voteBoxA)], at: start.addingTimeInterval(0.2))
+        XCTAssertTrue(aggregator.finish().isEmpty)
     }
 
     func testFinishPreventsTheNextSessionFromRevivingAStalePlate() {

@@ -167,8 +167,9 @@ public enum GermanPlateValidator {
 
     /// When the token count exceeds the legal structure (city + number [+ suffix]),
     /// one *middle* token is interference — the city seal always sits BETWEEN the city
-    /// code and the number, never before the city code or after the number. So only
-    /// tokens `1…count-2` may be gambled away, and only when they are a single glyph
+    /// code and the number, never before the city code, after the number, or past the
+    /// first digit. So only tokens `1…count-2` that precede the first digit-bearing
+    /// token may be gambled away, and only when they are a single glyph
     /// from the seal-misread set (a seal is one round blob; a real middle token like
     /// the series is a multi-character reading). `B D AB 123` → drop `D` → `B AB 123`;
     /// `ST O EK 440` → drop `O` → `ST EK 440`.
@@ -184,8 +185,16 @@ public enum GermanPlateValidator {
         guard tokens.count >= 4 else { return nil }
         // New gambles are opt-in: legacy mode (enhancements off) keeps the old output.
         guard enhancements.effectiveFoldAwareScoring else { return nil }
+        // The seal physically sits between the city code and the series+number block, so
+        // a removable token must come BEFORE the first token that contains a digit. This
+        // keeps a stray separator inside the number (`B AB 8 4 E` OCR'd from a real
+        // `B-AB 84 E`) from having its digit chunk gambled away into a different — and
+        // lexicon-valid — plate (`BA-B 4E`).
+        let firstDigitToken = tokens.firstIndex(where: { $0.contains(where: { $0.isNumber }) }) ?? tokens.count
+        // Nothing to gamble when a digit sits in the head token or right behind it.
+        guard firstDigitToken > 1 else { return nil }
         var reduced: [Parsed] = []
-        for index in 1..<(tokens.count - 1) {
+        for index in 1..<min(tokens.count - 1, firstDigitToken) {
             guard tokens[index].count == 1, let glyph = tokens[index].first,
                   sealMisreadGlyphs.contains(glyph) else { continue }
             let remaining = tokens.enumerated()

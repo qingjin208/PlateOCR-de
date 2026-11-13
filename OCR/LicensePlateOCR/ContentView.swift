@@ -533,7 +533,12 @@ struct ContentView: View {
                 }
             }
         } else if isBusy {
-            ProgressView(source == .video ? "视频识别中…" : "识别中…")
+            // Video recognition streams a progress callback (0...1); show it so a slow
+            // sample pass does not look hung. Image recognition has no progress source.
+            let label = source == .video
+                ? String(format: "视频识别中… %.0f%%", videoProgress * 100)
+                : "识别中…"
+            ProgressView(label)
                 .padding(.horizontal)
         } else if (source == .image && displayImage != nil) || (source == .video && videoURL != nil) {
             // Media loaded but nothing recognized → give explicit feedback so it does not
@@ -624,9 +629,15 @@ struct ContentView: View {
         // Clear the selection once we've consumed it, so re-selecting the same asset
         // (a common re-test) produces a fresh change and re-triggers recognition.
         defer { if imageItem == item { imageItem = nil } }
+        // Claim the busy flag up front: the import/decode below can fail early, and if a
+        // superseded pass already set `isBusy` (its CancellationError handler deliberately
+        // leaves it alone because "the replacement owns it"), a failure here is the last
+        // writer — it must clear the flag or 识别中… would stick forever.
+        isBusy = true
         do {
             guard let data = try await item.loadTransferable(type: Data.self) else {
                 guard !Task.isCancelled else { return }
+                isBusy = false
                 errorMessage = "无法读取图片"
                 return
             }
@@ -637,6 +648,7 @@ struct ContentView: View {
             // photo twice and allocated a second full-resolution bitmap (≈190 MB for 48 MP).
             guard let oriented = Self.uprightCGImage(from: data) else {
                 guard !Task.isCancelled else { return }
+                isBusy = false
                 errorMessage = "无法读取图片"
                 return
             }
@@ -648,7 +660,6 @@ struct ContentView: View {
             results = []
             lastDetectionCount = 0
             errorMessage = nil
-            isBusy = true
             recognizer.captureDebugSnapshot = showDiagnostics
             // Feed the upright CGImage straight into the detector. The old path built a
             // CVPixelBuffer first, which the SDK then had to render back into a CGImage —
@@ -669,16 +680,24 @@ struct ContentView: View {
             // A newer selection (or 重新选择) cancelled this pass — it owns `isBusy` now, so
             // touching it here would fight the replacement task.
         } catch {
-            isBusy = false
-            errorMessage = error.localizedDescription
+            // Same rule for a non-cancellation error thrown after cancellation: the
+            // replacement task owns the busy flag and the error surface now.
+            if !Task.isCancelled {
+                isBusy = false
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
     private func runVideo(_ item: PhotosPickerItem) async {
         defer { if videoItem == item { videoItem = nil } }
+        // Same contract as `runImage`: claim busy up front, clear it on every non-cancelled
+        // early exit so a failing pass can never strand 识别中… on screen.
+        isBusy = true
         do {
             guard let movie = try await item.loadTransferable(type: ImportedMovie.self) else {
                 guard !Task.isCancelled else { return }
+                isBusy = false
                 errorMessage = "无法读取视频"
                 return
             }
@@ -696,7 +715,6 @@ struct ContentView: View {
             videoSamples = []
             lastDetectionCount = 0
             errorMessage = nil
-            isBusy = true
             videoProgress = 0
             recognizer.captureDebugSnapshot = showDiagnostics
             let samples = try await recognizer.recognizeVideoSamples(at: dst, mode: mode,
@@ -714,8 +732,10 @@ struct ContentView: View {
         } catch is CancellationError {
             // Superseded — see `runImage`.
         } catch {
-            isBusy = false
-            errorMessage = error.localizedDescription
+            if !Task.isCancelled {
+                isBusy = false
+                errorMessage = error.localizedDescription
+            }
         }
     }
 }

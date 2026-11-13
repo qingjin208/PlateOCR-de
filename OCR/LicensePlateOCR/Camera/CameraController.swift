@@ -441,6 +441,10 @@ final class CameraController: NSObject {
     func suspendSession() {
         active = false
         generation += 1
+        // A frame caught mid-analysis will never publish (its completion guards on
+        // `generation == token`), so reset the "分析中" indicator here — the same reason
+        // `liveEnabled` and `paused` reset it in their didSet blocks.
+        isAnalyzing = false
         refreshAnalysisGate()
         // Freeze the history here too: the preview keeps its last frame, so no further
         // analysis (and therefore no track expiry) will run until the camera returns.

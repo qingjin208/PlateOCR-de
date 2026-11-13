@@ -349,7 +349,10 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         // the "right on the PC, wrong on the phone" case.
         let primary = try await detector.detect(in: image)
         let merged: [PlateDetection]
-        if tiled {
+        // Tiling only adds information when the picture actually exceeds one tile
+        // (`detectTiled`'s own 1024-px default): for a smaller image it degenerates to a
+        // second identical full-frame `detect` pass, so skip it and save an inference.
+        if tiled, max(image.width, image.height) > 1024 {
             let tiledDetections = try await detector.detectTiled(in: image)
             merged = (primary + tiledDetections)
         } else {
@@ -446,13 +449,20 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
                                onDetections: (@Sendable ([PlateDetection], CGSize) -> Void)? = nil) async throws -> PlateFrameResult {
         let width = CVPixelBufferGetWidth(pixelBuffer), height = CVPixelBufferGetHeight(pixelBuffer)
         let format = CVPixelBufferGetPixelFormatType(pixelBuffer)
-        guard width > 0, height > 0, max(width, height) <= 3840, min(width, height) <= 2160,
+        guard width > 0, height > 0,
               [kCVPixelFormatType_32BGRA, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
                kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange].contains(format) else {
-            throw LicensePlateError.invalidInput("Expected BGRA or NV12, up to 3840 x 2160 (or portrait equivalent).")
+            throw LicensePlateError.invalidInput("Expected BGRA or NV12, and a non-empty frame.")
         }
         try Task.checkCancellation()
-        let ci = CIImage(cvPixelBuffer: pixelBuffer).oriented(orientation)
+        var ci = CIImage(cvPixelBuffer: pixelBuffer).oriented(orientation)
+        // Same working-size cap as the CGImage core (3840 x 2160): an oversized frame is
+        // scaled down instead of rejected, so both entry points behave identically.
+        let w = ci.extent.width, h = ci.extent.height
+        if max(w, h) > 3840 || min(w, h) > 2160 {
+            let scale = min(CGFloat(3840) / max(w, h), CGFloat(2160) / min(w, h))
+            ci = ci.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        }
         guard let image = context.createCGImage(ci, from: ci.extent) else {
             throw LicensePlateError.invalidInput("Could not render the input frame.")
         }

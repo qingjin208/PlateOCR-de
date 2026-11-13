@@ -261,8 +261,12 @@ public struct PlateVoteAggregator: Sendable {
             entries[index].boundTrack = nil
         }
         // A plate that only showed up in one analysis cycle: list it when that single
-        // reading was confident, so fast-moving cars are not silently dropped.
+        // reading was confident, so fast-moving cars are not silently dropped. The
+        // `totalVotes == 1` guard matters: with `top.votes == 1` alone, a track seen twice
+        // but read differently each time (1 vs 1 split) would also sneak through this
+        // escape hatch on retirement — exactly the disagreement `evaluate` refused to list.
         if track.entryID == nil,
+           track.totalVotes == 1,
            let top = Self.strongest(track),
            top.votes == 1,
            let best = track.best[top.text],

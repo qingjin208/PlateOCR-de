@@ -221,6 +221,13 @@ struct PixelBuffer {
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
               let base = ctx.data else { return nil }
         ctx.interpolationQuality = .medium
+        // A CGContext's origin is bottom-left: a plain `draw` stores the image bottom-row
+        // first in the buffer. This buffer is read top-down (y = 0 is the image top) by
+        // every detector below, and its thresholds were calibrated in Python/OpenCV
+        // (top-down numpy arrays) — so flip while drawing to make row 0 the image TOP and
+        // mirror the calibration semantics exactly. `makeImage()` flips back on the way out.
+        ctx.translateBy(x: 0, y: CGFloat(h))
+        ctx.scaleBy(x: 1, y: -1)
         ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
         self.width = w
         self.height = h
@@ -228,14 +235,26 @@ struct PixelBuffer {
     }
 
     func makeImage() -> CGImage? {
-        data.withUnsafeBufferPointer { ptr in
-            guard let base = ptr.baseAddress else { return nil }
-            let ctx = CGContext(data: UnsafeMutableRawPointer(mutating: base),
-                                width: width, height: height, bitsPerComponent: 8,
-                                bytesPerRow: width * 4,
-                                space: CGColorSpaceCreateDeviceRGB(),
-                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-            return ctx?.makeImage()
+        // The buffer is top-row-first (see init); a CGImage's bitmap convention is
+        // bottom-row-first, so render the buffer through a flipped context to get an
+        // upright image — the inverse of the flip applied in init.
+        data.withUnsafeBufferPointer { ptr -> CGImage? in
+            guard let base = ptr.baseAddress,
+                  let src = CGContext(data: UnsafeMutableRawPointer(mutating: base),
+                                      width: width, height: height, bitsPerComponent: 8,
+                                      bytesPerRow: width * 4,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+                  let raw = src.makeImage(),
+                  let dst = CGContext(data: nil, width: width, height: height,
+                                      bitsPerComponent: 8, bytesPerRow: width * 4,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { return nil }
+            dst.translateBy(x: 0, y: CGFloat(height))
+            dst.scaleBy(x: 1, y: -1)
+            dst.draw(raw, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return dst.makeImage()
         }
     }
 

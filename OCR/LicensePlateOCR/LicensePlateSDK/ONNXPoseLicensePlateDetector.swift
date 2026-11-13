@@ -55,8 +55,12 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
     /// is the #1 cause of "great on PC, poor on device", so the default follows the
     /// reference rather than guesswork. Still runtime-settable via
     /// `LicensePlateRecognizer.useRGB` so a differently trained export can be handled
-    /// without recompiling.
-    var useRGB: Bool
+    /// without recompiling. Lock-guarded in `Tunables` (the UI may
+    /// flip it while an inference pass is reading it).
+    var useRGB: Bool {
+        get { tunables.useRGB }
+        set { tunables.useRGB = newValue }
+    }
     /// Whether the letterbox buffer is written top-row-first (`true`), like every
     /// Ultralytics / OpenCV / PIL pipeline — including the PC reference
     /// (`canvas[pad_y:pad_y+nh] = resized`, row 0 = visual top).
@@ -69,22 +73,69 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
     /// The flip is kept runtime-settable so the two behaviours can be A/B-tested on device
     /// without rebuilding. With the vImage letterbox this is implemented by reversing the
     /// scaled rows after the resample (see `CGImage.letterboxedUpright`); the legacy
-    /// CGContext fallback honours it as the original drawing transform.
-    var flipY: Bool
+    /// CGContext fallback honours it as the original drawing transform. Lock-guarded in
+    /// `Tunables` for the same reason as `useRGB`.
+    var flipY: Bool {
+        get { tunables.flipY }
+        set { tunables.flipY = newValue }
+    }
 
-    /// Mutable thresholds in a box: a `Sendable` class may not have mutable stored
-    /// properties, and `@unchecked` on the box keeps that warning off the detector.
+    /// Mutable runtime state in a lock-guarded box: a `Sendable` class may not have
+    /// mutable stored properties, and every access must be synchronized because the UI
+    /// thread may flip a switch while an inference task is mid-`detect` — the letterbox
+    /// geometry (`flipY`) and channel order (`useRGB`) must not change between the two
+    /// reads of one pass, and `topScore` is written by the inference task and read by the UI.
     private final class Tunables: @unchecked Sendable {
-        var confidence: Float
-        var iou: Float
-        var captureSnapshot = false
+        private let lock = NSLock()
+        private var _confidence: Float
+        private var _iou: Float
+        private var _captureSnapshot = false
         /// Highest raw anchor score of the most recent pass, BEFORE the confidence
         /// threshold. The one number that splits "the model saw nothing like a plate in
         /// this input" (≈0.01-0.1) from "the model sees the plate but decode/validation
         /// drops it" (≥0.25) on a device where the PC pipeline works — no snapshot
         /// comparison needed.
-        var topScore: Float?
-        init(confidence: Float, iou: Float) { self.confidence = confidence; self.iou = iou }
+        private var _topScore: Float?
+        private var _useRGB: Bool
+        private var _flipY: Bool
+
+        init(confidence: Float, iou: Float, useRGB: Bool, flipY: Bool) {
+            _confidence = confidence
+            _iou = iou
+            _useRGB = useRGB
+            _flipY = flipY
+        }
+
+        private func withLock<T>(_ body: () -> T) -> T {
+            lock.lock()
+            defer { lock.unlock() }
+            return body()
+        }
+
+        var confidence: Float {
+            get { withLock { _confidence } }
+            set { withLock { _confidence = newValue } }
+        }
+        var iou: Float {
+            get { withLock { _iou } }
+            set { withLock { _iou = newValue } }
+        }
+        var captureSnapshot: Bool {
+            get { withLock { _captureSnapshot } }
+            set { withLock { _captureSnapshot = newValue } }
+        }
+        var topScore: Float? {
+            get { withLock { _topScore } }
+            set { withLock { _topScore = newValue } }
+        }
+        var useRGB: Bool {
+            get { withLock { _useRGB } }
+            set { withLock { _useRGB = newValue } }
+        }
+        var flipY: Bool {
+            get { withLock { _flipY } }
+            set { withLock { _flipY = newValue } }
+        }
     }
     private let tunables: Tunables
     /// `CGImage` is not `Sendable`, so the snapshot lives in its own box too.
@@ -129,9 +180,8 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
                 intraOpThreads: Int32 = 2) throws {
         self.config = config
         self.inputSize = config.inputSize
-        self.useRGB = useRGB
-        self.flipY = flipY
-        self.tunables = Tunables(confidence: config.confidenceThreshold, iou: config.iouThreshold)
+        self.tunables = Tunables(confidence: config.confidenceThreshold, iou: config.iouThreshold,
+                                 useRGB: useRGB, flipY: flipY)
 
         #if SWIFT_PACKAGE
         let bundle = Bundle.module
@@ -201,12 +251,17 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
         try Task.checkCancellation()
 
         let cfg = currentConfig()
+        // One consistent snapshot of the runtime toggles for the whole pass: reading them
+        // separately for the letterbox and the tensor could otherwise straddle a UI flip.
+        let flipY = self.flipY
+        let feedsRGB = self.feedsRGB
+        let captureSnapshot = tunables.captureSnapshot
         // Letterbox geometry follows the export family: Ultralytics centers the resized
         // image on a 114-gray canvas; LibreYOLO YOLO-NAS-pose anchors it top-left
         // ("bottom-right" padding) on a 127-gray canvas. `padX/padY` are returned in
         // both cases so `YOLOOutputDecoder.remap` needs no per-family special case.
         let prepared = try image.letterboxedUpright(size: inputSize, flipY: flipY,
-                                                    snapshot: tunables.captureSnapshot,
+                                                    snapshot: captureSnapshot,
                                                     bottomRightPad: libreLayout,
                                                     padValue: libreLayout ? 127 : 114)
         if let snapshot = prepared.image { snapshotBox.image = snapshot }
