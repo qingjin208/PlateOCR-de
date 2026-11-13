@@ -106,6 +106,12 @@ final class CameraController: NSObject {
     /// never saw a plate-like input (preprocessing/orientation), not a threshold problem.
     var detectorName: String = ""
     var lastTopScore: Float?
+    /// Analysis cycles started since the app launched. Diagnostic only: together with the
+    /// latency pill it separates the two ways the feed can look "dead" — a counter that
+    /// stays at 0 means the capture pipeline never delivered a frame the gate accepted
+    /// (session/permission/source problem), while a rising counter with 0 ms latency means
+    /// every analysis threw before finishing (detector init/run failure).
+    var frameCount = 0
     var mode: RecognitionMode = .fast
     var liveEnabled = true {
         didSet {
@@ -553,6 +559,7 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
         Task { @MainActor in
             guard self.active, self.liveEnabled, !self.paused else { self.frameGate.finish(); return }
             self.analysisIdentifier += 1
+            self.frameCount += 1
             let token = self.generation
             let frameIdentifier = self.analysisIdentifier
             self.isAnalyzing = true

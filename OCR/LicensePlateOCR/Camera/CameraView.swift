@@ -68,6 +68,11 @@ struct CameraView: View {
                      }
                      ?? "框 \(controller.liveDetections.count) · 牌 \(controller.liveResults.count)")
                     .foregroundStyle(.white.opacity(0.72))
+                // Frames the gate accepted. 0 after tapping 开始 = the capture pipeline is
+                // not feeding frames; rising while latency stays 0 ms = every analysis
+                // throws before finishing (see `frameCount`).
+                Text("帧 \(controller.frameCount)")
+                    .foregroundStyle(.white.opacity(0.55))
             }
             .font(.system(size: 11, design: .monospaced))
             .foregroundStyle(.white)
