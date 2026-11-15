@@ -98,24 +98,21 @@ final class PreviewView: UIView {
     /// `CIImage.oriented(.right)`). The preview layer, however, shows the *native landscape*
     /// frame and rotates it 90° CW through `videoRotationAngle`; the overlay is a plain
     /// sublayer of that layer, so it sits in the layer's UNROTATED local space while the
-    /// video content is rotated within it. Mapping portrait→portrait with a naive
-    /// aspect-fill therefore puts the boxes in the wrong place (the real plate's box can
-    /// even fall off-screen) — the exact "定位错误 / 检测不到" symptom. The correct path is:
+    /// video content is rotated within it. The correct path is:
     ///   1. undo the 90° CW rotation to return to native-landscape normalized coords, then
     ///   2. let `layerPointConverted` apply the preview's own `videoGravity` +
     ///      `videoRotationAngle` to reach the on-screen point.
-    /// This removes the entire class of rotate/mirror/aspect-fill drift the manual math
-    /// was prone to, and it is the Apple-recommended way to draw detections on a preview.
+    ///
+    /// Undoing the 90° CW rotation (portrait = buffer rotated 90° CW): a portrait point
+    /// (px, py) came from buffer coords x = py, y = 1 - px, so the native point is
+    /// **(py, 1 - px)**. The previous formula (1 - py, px) undid a 90° CCW rotation
+    /// instead — the composite of the two opposing rotations placed every box 180°-rotated
+    /// around the frame centre (exact "尺寸对、位置偏" symptom: a plate below centre-right
+    /// drew its box above centre-left). Verified on device: with the correct formula the
+    /// round trip portrait (px, py) → native (py, 1 - px) → on-screen (px, py) is the
+    /// identity, so the box lands exactly on the plate.
     private func toLayer(_ point: CGPoint) -> CGPoint {
-        // The SDK turns the landscape sensor frame into the upright portrait frame the
-        // detector analyzes via a 90° CW rotation (`orientation: .right`). To draw a
-        // portrait-space point on the preview we must undo that rotation: the
-        // inverse of a 90° CW turn is a 90° CCW turn, which maps a portrait point (px, py)
-        // back to native-landscape normalized coords as (1 - py, px). `layerPointConverted`
-        // then re-applies the preview's own `videoGravity` + 90° CW `videoRotationAngle`,
-        // closing the loop so the box lands exactly on the plate. (Verified by a round-trip:
-        // portrait (0.5, 0.4) → native (0.6, 0.5) → on-screen (0.5, 0.4).)
-        let native = CGPoint(x: 1 - point.y, y: point.x)
+        let native = CGPoint(x: point.y, y: 1 - point.x)
         return videoPreviewLayer.layerPointConverted(fromCaptureDevicePoint: native)
     }
 

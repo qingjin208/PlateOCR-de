@@ -303,7 +303,7 @@
         "key": "#%lld",
         "location": {
           "startingColumn": 26,
-          "startingLine": 1116
+          "startingLine": 1122
         }
       },
       {
@@ -311,7 +311,7 @@
         "key": "%lld 帧",
         "location": {
           "startingColumn": 30,
-          "startingLine": 1119
+          "startingLine": 1125
         }
       },
       {
@@ -319,7 +319,7 @@
         "key": "%lld%%",
         "location": {
           "startingColumn": 26,
-          "startingLine": 1121
+          "startingLine": 1127
         }
       },
       {
@@ -327,7 +327,7 @@
         "key": "识别历史（%lld）",
         "location": {
           "startingColumn": 26,
-          "startingLine": 1163
+          "startingLine": 1169
         }
       },
       {
@@ -335,7 +335,7 @@
         "key": "仅显示最新 %lld 条",
         "location": {
           "startingColumn": 28,
-          "startingLine": 1169
+          "startingLine": 1175
         }
       },
       {
@@ -343,7 +343,7 @@
         "key": "最新在上",
         "location": {
           "startingColumn": 28,
-          "startingLine": 1170
+          "startingLine": 1176
         }
       },
       {
@@ -351,7 +351,7 @@
         "key": "%lld%%",
         "location": {
           "startingColumn": 26,
-          "startingLine": 1217
+          "startingLine": 1229
         }
       },
       {
@@ -359,7 +359,7 @@
         "key": "%lld/%lld 帧",
         "location": {
           "startingColumn": 30,
-          "startingLine": 1214
+          "startingLine": 1226
         }
       },
       {
@@ -367,7 +367,7 @@
         "key": "#%lld %@",
         "location": {
           "startingColumn": 22,
-          "startingLine": 1267
+          "startingLine": 1279
         }
       }
     ]

@@ -1113,6 +1113,12 @@ private struct PlateCardView: View {
                 HStack(spacing: 10) {
                     CorrectedPlateView(cgImage: result.correctedPlateImage, text: result.text)
                     Spacer(minLength: 0)
+                    // The recognized reading itself, prominent: the corrected image alone
+                    // does not communicate what OCR actually decided.
+                    Text(result.text)
+                        .font(.system(size: 15, weight: .semibold, design: .monospaced))
+                        .minimumScaleFactor(0.6)
+                        .lineLimit(1)
                     Text("#\(index)").font(.caption).foregroundStyle(.secondary)
                     if result.votes > 1 {
                         // Sampled video frames that agreed on this reading.
@@ -1207,6 +1213,12 @@ private struct HistoryCardView: View {
                     CorrectedPlateView(cgImage: entry.result.correctedPlateImage, text: entry.result.text)
                     Spacer(minLength: 0)
                     VStack(alignment: .trailing, spacing: 2) {
+                        // The recognized reading itself, prominent: the corrected image alone
+                        // does not communicate what OCR actually decided.
+                        Text(entry.result.text)
+                            .font(.system(size: 15, weight: .semibold, design: .monospaced))
+                            .minimumScaleFactor(0.6)
+                            .lineLimit(1)
                         Text(CameraResultsView.timeFormatter.string(from: entry.date))
                             .font(.caption).foregroundStyle(.secondary)
                         // Agreeing frames / all frames that saw this plate: the reading is

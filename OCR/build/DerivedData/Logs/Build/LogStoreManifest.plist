@@ -6,7 +6,7 @@
 	<integer>11</integer>
 	<key>logs</key>
 	<dict>
-		<key>E8F7B12D-D398-48A0-98CF-68F93B9C80FC</key>
+		<key>642F5D97-A633-4DD2-82C7-29BB57D97348</key>
 		<dict>
 			<key>className</key>
 			<string>IDECommandLineBuildLog</string>
@@ -15,17 +15,17 @@
 			<key>domainType</key>
 			<string>Xcode.IDEActivityLogDomainType.BuildLog</string>
 			<key>fileName</key>
-			<string>E8F7B12D-D398-48A0-98CF-68F93B9C80FC.xcactivitylog</string>
+			<string>642F5D97-A633-4DD2-82C7-29BB57D97348.xcactivitylog</string>
 			<key>hasPrimaryLog</key>
 			<true/>
 			<key>primaryObservable</key>
 			<dict>
 				<key>highLevelStatus</key>
-				<string>E</string>
+				<string>S</string>
 				<key>totalNumberOfAnalyzerIssues</key>
 				<integer>0</integer>
 				<key>totalNumberOfErrors</key>
-				<integer>117</integer>
+				<integer>0</integer>
 				<key>totalNumberOfTestFailures</key>
 				<integer>0</integer>
 				<key>totalNumberOfWarnings</key>
@@ -40,13 +40,13 @@
 			<key>signature</key>
 			<string>Building workspace LicensePlateOCR with scheme LicensePlateOCR and configuration Debug</string>
 			<key>timeStartedRecording</key>
-			<real>816437250.17532301</real>
+			<real>816438630.53801203</real>
 			<key>timeStoppedRecording</key>
-			<real>816437257.04782796</real>
+			<real>816438639.68129897</real>
 			<key>title</key>
 			<string>Building workspace LicensePlateOCR with scheme LicensePlateOCR and configuration Debug</string>
 			<key>uniqueIdentifier</key>
-			<string>E8F7B12D-D398-48A0-98CF-68F93B9C80FC</string>
+			<string>642F5D97-A633-4DD2-82C7-29BB57D97348</string>
 		</dict>
 		<key>FF69B2A9-A5C7-405A-8534-34F7CA7AAF62</key>
 		<dict>
