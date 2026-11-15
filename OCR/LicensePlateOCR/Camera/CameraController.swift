@@ -365,6 +365,11 @@ final class CameraController: NSObject {
     init(recognizer: LicensePlateRecognizing, mode: RecognitionMode = .fast) {
         self.recognizer = recognizer
         self.mode = mode
+        // Triage: record which detector is actually in the pipeline from the start. The
+        // old code only learned the name after a *successful* pass (see `performAnalysis`),
+        // so until then `detectorName` stayed "" and the "检测器未走 ONNX" badge fired with
+        // an empty reason text — a false alarm while the ONNX detector was still fine.
+        self.detectorName = (recognizer as? LicensePlateRecognizer)?.detectorInfo ?? ""
         super.init()
     }
 
@@ -536,6 +541,13 @@ final class CameraController: NSObject {
             await MainActor.run { [weak self] in
                 guard let self, self.active, self.generation == token else { return }
                 self.isAnalyzing = false
+                // Refresh the detector triage even on a failed pass: with the
+                // unavailable-stub every pass throws before finishing, so the
+                // success-only refresh left `detectorName` empty forever and the
+                // "检测器未走 ONNX" badge could never show *why* it fired.
+                if let plateRecognizer = recognizer as? LicensePlateRecognizer {
+                    self.detectorName = plateRecognizer.detectorInfo
+                }
                 self.errorMessage = error.localizedDescription
                 self.liveResults = []
                 self.liveDetections = []
