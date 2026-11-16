@@ -28,16 +28,19 @@
    three separate passes scanned all 18,385 classes and copied a ~2.9 MB tensor.
    `decode` now scans the full matrix ONCE and keeps only 42 columns per step.
 
- RecognitionMode mapping (PaddleOCR has no `.fast/.accurate` switch):
-   .fast     — one inference, beam width 8
-   .accurate — three crops (full / border-trimmed / 0.92x horizontally squeezed),
-               beam width 16, plus a two-line plate pass when a horizontal ink
-               band is detected. Measured ~4.7x the cost of `.fast`; keep it off
-               the live-camera path.
+RecognitionMode mapping (PaddleOCR has no `.fast/.accurate` switch):
+  .fast     — one inference, beam width 8
+  .accurate — three crops (full / border-trimmed / 0.92x horizontally squeezed),
+              beam width 16. Measured ~4.7x the cost of `.fast`; keep it off
+              the live-camera path.
+  Both modes add a two-row plate pass (region code + identification row) when
+  the horizontal ink-band gate proves the layout — CTC single-line decoding
+  interleaves the rows and returns confident garbage there.
  */
 
 import Foundation
 import CoreGraphics
+import ImageIO
 import os
 #if canImport(onnxruntime)
 import onnxruntime
@@ -232,30 +235,54 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
             bestGreedyConfidence = max(bestGreedyConfidence, output.greedyConfidence)
         }
 
-        // Two-line German plates (zweizeilige Kennzeichen): only in accurate mode and
-        // only when an actual low-ink horizontal band proves the plate is two-row.
-        if mode == .accurate, let split = Self.horizontalInkSplit(of: image),
+        // Two-row plates (zweizeilige Kennzeichen / stacked canton codes): CTC read
+        // on the WHOLE crop interleaves both text rows and returns a plausible but
+        // wrong string (e.g. "R-B 2H" for "KR" + "RY75H") that is often CONFIDENT,
+        // because every glyph is locally crisp. The horizontal ink-band gate proves
+        // the layout, so this runs in BOTH modes — a single-line plate exits the
+        // gate immediately (EU aspect ≈ 4.5 fails the < 2.6 ratio check), making the
+        // cost zero there. The joined row-by-row reading competes on the BOTTOM
+        // row's CTC evidence (the identification row carries the discriminating
+        // content; the region row reads noisier), and every whole-crop candidate is
+        // demoted: single-line decoding of a two-row plate is structurally wrong,
+        // not just unlucky.
+        let fullCropKeys = Set(ranked.keys)
+        var twoRowJoined: (text: String, confidence: Float)?
+        if let split = Self.horizontalInkSplit(of: image),
            let top = image.cropping(to: CGRect(x: 0, y: 0,
                                                width: CGFloat(image.width), height: CGFloat(split))),
            let bottom = image.cropping(to: CGRect(x: 0, y: CGFloat(split),
                                                   width: CGFloat(image.width),
                                                   height: CGFloat(image.height - split))) {
             var pieces: [String] = []
+            var pieceScores: [Double] = []
+            var pieceConfidences: [Float] = []
             for piece in [top, bottom] {
                 try Task.checkCancellation()
                 let prepared = try Self.prepare(piece)
                 let output = try await Self.decode(prepared, engine: engine)
-                if !output.greedyText.isEmpty { pieces.append(output.greedyText) }
+                let beams = Self.beamDecode(compact: output.compact, time: output.time,
+                                            engine: engine, width: beamWidth, limit: candidateLimit)
+                let text = beams.first?.text ?? String(output.greedyText.filter {
+                    PlateOCRAlphabet.allowedSet.contains(String($0))
+                })
+                if !text.isEmpty { pieces.append(text) }
+                pieceScores.append(beams.first?.logScore ?? -60)
+                pieceConfidences.append(output.greedyConfidence)
                 greedyReadings.append(output.greedyText)
                 bestGreedyConfidence = max(bestGreedyConfidence, output.greedyConfidence)
             }
-            if pieces.count == 2 {
-                // Keep this speculative reading behind every regular CTC path: a
-                // false positive from the ink-band gate must never outrank a valid
-                // one-line plate. It still reaches `GermanPlateValidator`.
-                let floor = ranked.values.min() ?? -6
-                record(pieces.joined(separator: " "), score: floor - 1)
+            // Promotion gate: both rows must produce text with usable confidence,
+            // so a false-positive split on a washed-out single-line plate can never
+            // outrank the (demoted but still present) whole-crop reading.
+            if pieces.count == 2, min(pieceConfidences[0], pieceConfidences[1]) >= 0.3 {
+                let joined = pieces.joined(separator: " ")
+                record(joined, score: pieceScores[1] - 0.5)
+                twoRowJoined = (joined, (pieceConfidences[0] + pieceConfidences[1]) / 2)
             }
+        }
+        if twoRowJoined != nil {
+            for key in fullCropKeys { ranked[key]? -= 1.5 }
         }
 
         PaddleOCRDiagnostics.record(greedyReadings: greedyReadings)
@@ -273,10 +300,15 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         let ordered = ranked.sorted { $0.value > $1.value }
         guard let primary = ordered.first else { return [] }
         let topScore = primary.value
-        // Absolute confidence anchor: the model's own greedy confidence. The vote
-        // aggregator applies an absolute `provisionalConfidence` threshold, so a
-        // relative-only score would make every reading look maximally confident.
-        let primaryConfidence = min(1, max(0.01, bestGreedyConfidence))
+        // Absolute confidence anchor. A joined two-row reading carries its own
+        // honest per-row confidence; everything else anchors on the model's
+        // greedy confidence as before.
+        let primaryConfidence: Float
+        if primary.key == twoRowJoined?.text, let joined = twoRowJoined {
+            primaryConfidence = min(1, max(0.01, joined.confidence))
+        } else {
+            primaryConfidence = min(1, max(0.01, bestGreedyConfidence))
+        }
         // Every alternative is now graded by its OWN CTC path score relative to the
         // winner, not by the source crop's greedy average (all previous candidates
         // shared that value). Scale back onto the primary's absolute confidence.
@@ -296,6 +328,74 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
 
     // MARK: - Inference
 
+    /// Diagnostics logging (visible via Console.app / `log collect --device`).
+    enum PaddleOCRLog {
+        static let tensor = Logger(subsystem: "de.plateocr", category: "paddleocr")
+    }
+
+    /// stderr diagnostic stream — captured by `devicectl device process launch
+    /// --console`, which works without the root privileges `log collect --device`
+    /// needs. Kept alongside the os.Logger entries so both channels stay in sync.
+    private static func diag(_ line: String) {
+        FileHandle.standardError.write(Data((line + "\n").utf8))
+    }
+
+    private static let dumpLock = NSLock()
+    private static var dumpCount = 0
+    /// Cap per launch: an album recognition emits ~6 prepared inputs, live video
+    /// emits them continuously — enough samples without filling the container.
+    private static let dumpLimit = 60
+
+    /// Writes prepared model inputs (and their source crops) to the app's
+    /// Documents folder. Pull with `devicectl device copy from --domain-type
+    /// appDataContainer` and replay through the PC reference script to compare
+    /// device pixels against the byte-exact reference pipeline.
+    private static func dumpPreparedIfNeeded(pixels: [UInt8], width: Int, height: Int,
+                                             source: CGImage) {
+        dumpLock.lock()
+        let index = dumpCount
+        if dumpCount < dumpLimit { dumpCount += 1 }
+        dumpLock.unlock()
+        guard index < dumpLimit else { return }
+
+        func writePNG(_ image: CGImage, _ name: String) {
+            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            guard let dir = docs else { return }
+            let url = dir.appendingPathComponent(name)
+            guard let dest = CGImageDestinationCreateWithURL(url as CFURL,
+                                                             "public.png" as CFString, 1, nil)
+            else { return }
+            CGImageDestinationAddImage(dest, image, nil)
+            CGImageDestinationFinalize(dest)
+        }
+
+        var buffer = pixels
+        let bytesPerRow = width * 4
+        if let context = CGContext(data: &buffer, width: width, height: height,
+                                   bitsPerComponent: 8, bytesPerRow: bytesPerRow,
+                                   space: SDKGraphics.sRGB,
+                                   bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                       | CGBitmapInfo.byteOrder32Little.rawValue),
+           let prepared = context.makeImage() {
+            let tag = String(format: "%02d", index)
+            writePNG(prepared, "ocr_dump_\(tag)_prepared_\(width)x\(height).png")
+            writePNG(source, "ocr_dump_\(tag)_src_\(source.width)x\(source.height).png")
+            diag("dump ocr_dump_\(tag) prepared=\(width)x\(height) src=\(source.width)x\(source.height)")
+        }
+    }
+
+    /// Mean / std of the prepared tensor, for device-side sanity checks.
+    private static func stat(floats: [Float]) -> (mean: Double, std: Double)? {
+        guard !floats.isEmpty else { return nil }
+        var sum = 0.0
+        for f in floats { sum += Double(f) }
+        let mean = sum / Double(floats.count)
+        var acc = 0.0
+        for f in floats { let d = Double(f) - mean; acc += d * d }
+        let std = (acc / Double(floats.count)).squareRoot()
+        return (mean, std)
+    }
+
     /// Pure value type so it can cross the serial-queue boundary without an
     /// `ORTValue` / `NSMutableData` (both ObjC, neither `Sendable`).
     private struct PreparedInput: Sendable {
@@ -310,6 +410,7 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         let time: Int
         let greedyText: String
         let greedyConfidence: Float
+        let log: DecodeLog?
     }
 
     /// Renders the rectified plate into PP-OCRv5's `[1,3,48,W]` float32 NCHW tensor.
@@ -352,8 +453,13 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
                       space: SDKGraphics.sRGB,
                       bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
                           | CGBitmapInfo.byteOrder32Little.rawValue) else { return false }
-            context.translateBy(x: 0, y: CGFloat(imgH))
-            context.scaleBy(x: 1, y: -1)
+            // NO flip idiom here. For a `CGContext(data:)` bitmap the buffer's row 0
+            // is the visual TOP row after a plain `draw` — verified on Mac by
+            // pixel-diffing against cv2.resize of the same crop (plain draw matched
+            // within interpolation tolerance; the translateBy/scaleBy(-1) idiom
+            // produced an upside-down buffer, diff 79 vs 37). The idiom was the root
+            // cause of every device-side recognition failure: the model was reading
+            // vertically mirrored plates (N→И, T→⊥, 255→522).
             context.draw(image, in: CGRect(x: 0, y: 0,
                                            width: CGFloat(resizedW), height: CGFloat(imgH)))
             return true
@@ -376,6 +482,14 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
             }
             // x >= resizedW deliberately stays 0.
         }
+        // Device-side diagnostic: input tensor statistics. A wrong channel order /
+        // orientation / masking failure shows up here as an out-of-band mean or a
+        // degraded std compared with the PC reference (~0.02 mean, ~0.75 std).
+        if let stats = Self.stat(floats: floats) {
+            PaddleOCRLog.tensor.info("prepare W=\(imgW) resizedW=\(resizedW) mean=\(stats.mean, format: .fixed(precision: 3)) std=\(stats.std, format: .fixed(precision: 3))")
+            diag("prepare src=\(image.width)x\(image.height) W=\(imgW) resizedW=\(resizedW) mean=\(String(format: "%.3f", stats.mean)) std=\(String(format: "%.3f", stats.std))")
+        }
+        dumpPreparedIfNeeded(pixels: pixels, width: imgW, height: imgH, source: image)
         return PreparedInput(floats: floats, width: imgW)
     }
 
@@ -404,7 +518,12 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
                         throw LicensePlateError.invalidModelOutput(
                             "PaddleOCR 未返回输出 \(engine.outputName)。")
                     }
-                    continuation.resume(returning: try Self.decodeTensor(value, engine: engine))
+                    let output = try Self.decodeTensor(value, engine: engine)
+                    if let log = output.log {
+                        PaddleOCRLog.tensor.info("decode T=\(log.time) C=\(log.classes) softmax=\(log.softmaxApplied) greedy=\"\(log.greedyText)\" conf=\(log.confidence, format: .fixed(precision: 3))")
+                        diag("decode T=\(log.time) softmax=\(log.softmaxApplied) greedy=\"\(log.greedyText)\" conf=\(String(format: "%.3f", log.confidence))")
+                    }
+                    continuation.resume(returning: output)
                 } catch {
                     continuation.resume(throwing: error)
                 }
@@ -468,7 +587,8 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         // PP-OCRv5 exports emit softmax. Use the PC reference's row-MEAN test
         // (Scripts/paddleocr_rec_reference.py), not the old per-row test. Only a
         // non-softmax export pays for the second pass.
-        if hasNegative || abs(rowSumTotal / Double(time) - 1.0) > 0.05 {
+        let applySoftmax = hasNegative || abs(rowSumTotal / Double(time) - 1.0) > 0.05
+        if applySoftmax {
             for t in 0..<time {
                 let base = t * classes
                 var maximum: Float = -.infinity
@@ -499,7 +619,20 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         }
 
         return DecoderOutput(compact: compact, time: time, greedyText: greedyText,
-                             greedyConfidence: emitted > 0 ? confidenceSum / Float(emitted) : 0)
+                             greedyConfidence: emitted > 0 ? confidenceSum / Float(emitted) : 0,
+                             log: .init(time: time, classes: classes,
+                                        greedyText: greedyText,
+                                        confidence: emitted > 0 ? confidenceSum / Float(emitted) : 0,
+                                        softmaxApplied: hasNegative || abs(rowSumTotal / Double(time) - 1.0) > 0.05))
+    }
+
+    /// One-line diagnostic payload logged on the ortQueue after every inference.
+    struct DecodeLog: Sendable {
+        let time: Int
+        let classes: Int
+        let greedyText: String
+        let confidence: Float
+        let softmaxApplied: Bool
     }
 
     // MARK: - CTC decoding
@@ -650,8 +783,6 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
                       space: SDKGraphics.sRGB,
                       bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
                           | CGBitmapInfo.byteOrder32Little.rawValue) else { return false }
-            context.translateBy(x: 0, y: CGFloat(h))
-            context.scaleBy(x: 1, y: -1)
             context.draw(image, in: CGRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h)))
             return true
         }
@@ -667,6 +798,11 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
             }
             ink[y] = Double(dark) / Double(w)
         }
+        // NOTE: no flip idiom during the draw above — same rule as `prepare`:
+        // a plain `draw` leaves buffer row 0 as the visual top, so `ink[y]` indexes
+        // rows top-down and the returned split row is directly usable for
+        // `image.cropping`. The old flip made the profile bottom-up and mirrored
+        // the split row vertically (two-row plates came out halves-swapped).
         let low = Int(Double(h) * 0.30)
         let high = Int(Double(h) * 0.70)
         let upperInk = (0..<low).map { ink[$0] }.max() ?? 0

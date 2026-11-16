@@ -31,7 +31,7 @@ import CoreImage
 /// recommends replacing with a named space when color preservation matters. For
 /// OCR, "preservation" means byte-level agreement with the PC reference's sRGB
 /// input, so every bitmap in the pipeline must use this same named space.
-enum SDKGraphics {
+public enum SDKGraphics {
     /// `@unchecked Sendable` box: neither `CGColorSpace` nor `CIContext` carries a
     /// Swift concurrency annotation, so a bare `static let` would fail Swift 6's
     /// global-state check. Both are immutable and (per Apple) thread-safe.
@@ -46,8 +46,8 @@ enum SDKGraphics {
 
     private static let shared = Shared()
 
-    static var sRGB: CGColorSpace { shared.colorSpace }
-    static var ciContext: CIContext { shared.ciContext }
+    public static var sRGB: CGColorSpace { shared.colorSpace }
+    public static var ciContext: CIContext { shared.ciContext }
 }
 
 public struct PerspectivePlateCorrector: Sendable {

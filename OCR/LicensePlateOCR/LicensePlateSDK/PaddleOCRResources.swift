@@ -16,7 +16,8 @@
  Why the lookup is defensive
  ---------------------------
  The Xcode target uses `fileSystemSynchronizedGroups` and `PBXResourcesBuildPhase.files`
- is empty, so the relative path Xcode preserves for `LicensePlateSDK/Resources/*` is
+ is empty, so the relative path Xcode preserves for the `LicensePlateSDK/Resources`
+folder is
  not guaranteed. A flat `url(forResource:)` returning nil used to make
  `OCREngine.defaultEngine` silently fall back to Apple Vision — the App then claimed
  nothing was wrong while the entire PaddleOCR branch was dead. We now probe several
@@ -33,7 +34,7 @@ public enum PaddleOCRResources {
     public static let characterDictName = "ppocrv5_dict"
 
     /// Bundle holding the SDK resources. Xcode 16 synchronized folders copy
-    /// `LicensePlateSDK/Resources/*` into `Bundle.main`; the SwiftPM target uses
+    /// folder contents into `Bundle.main`; the SwiftPM target uses
     /// `Bundle.module` (`resources: [.process("Resources")]` in `Package.swift`).
     public static var resourceBundle: Bundle {
         #if SWIFT_PACKAGE

@@ -4,3 +4,6 @@
 # Python bytecode from the PC verification scripts
 __pycache__/
 *.pyc
+
+# Xcode build outputs
+OCR/build/

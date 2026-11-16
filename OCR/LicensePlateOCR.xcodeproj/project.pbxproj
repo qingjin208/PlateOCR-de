@@ -11,12 +11,12 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
-		37E9C4D3308F9FA000953685 /* PBXContainerItemProxy */ = {
+		371F303730AB386700FC948E /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = A1B2C3D4E5F607182930A5B6 /* Pods.xcodeproj */;
 			proxyType = 2;
-			remoteGlobalIDString = EFCD5A1058E9109AAD4F0B9F6ABE47E9;
-			remoteInfo = "onnxruntime-mobile-objc";
+			remoteGlobalIDString = AF44BE896BEBBE099592D03904279C1C;
+			remoteInfo = "onnxruntime-objc";
 		};
 		37E9C4D5308F9FA000953685 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -64,7 +64,7 @@
 		37E9C4CE308F9FA000953685 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				37E9C4D4308F9FA000953685 /* libonnxruntime-mobile-objc.a */,
+				371F303830AB386700FC948E /* libonnxruntime-objc.a */,
 				37E9C4D6308F9FA000953685 /* libPods-LicensePlateOCR.a */,
 			);
 			name = Products;
@@ -192,11 +192,11 @@
 /* End PBXProject section */
 
 /* Begin PBXReferenceProxy section */
-		37E9C4D4308F9FA000953685 /* libonnxruntime-mobile-objc.a */ = {
+		371F303830AB386700FC948E /* libonnxruntime-objc.a */ = {
 			isa = PBXReferenceProxy;
 			fileType = archive.ar;
-			path = "libonnxruntime-mobile-objc.a";
-			remoteRef = 37E9C4D3308F9FA000953685 /* PBXContainerItemProxy */;
+			path = "libonnxruntime-objc.a";
+			remoteRef = 371F303730AB386700FC948E /* PBXContainerItemProxy */;
 			sourceTree = BUILT_PRODUCTS_DIR;
 		};
 		37E9C4D6308F9FA000953685 /* libPods-LicensePlateOCR.a */ = {
@@ -390,6 +390,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = LicensePlateOCR/PreviewContent;
@@ -410,6 +411,7 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.LicensePlateOCR;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
@@ -427,6 +429,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = LicensePlateOCR/PreviewContent;
@@ -447,6 +450,7 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.LicensePlateOCR;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
