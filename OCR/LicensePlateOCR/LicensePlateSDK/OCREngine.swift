@@ -39,10 +39,16 @@ public enum OCREngine: String, CaseIterable, Sendable {
 
     /// Builds the recognizer backing this engine.
     ///
-    /// `.paddleOCR` returns a real ONNX Runtime recognizer when ORT is linked and
-    /// both resources are bundled. Otherwise it returns Apple Vision — but
-    /// `isAvailable` is `false` in that case, so the App hides the option and never
-    /// claims PaddleOCR is running when it is not.
+    /// - Note: `languages` is an Apple Vision option only. PaddleOCR's PP-OCRv5 rec
+    ///   head has no runtime language switch — its character set is fixed by the ONNX
+    ///   graph and dictionary. The German constraint is applied by the CTC decoder
+    ///   and `GermanPlateValidator`, not by a locale.
+    ///
+    /// When `.paddleOCR` is requested but its resources are missing, this returns a
+    /// stub that throws `paddleOCRUnavailable` on the first frame. It deliberately
+    /// does NOT fall back to Vision: a silent downgrade made the whole branch look
+    /// healthy while Apple Vision was doing the reading. `defaultEngine` still starts
+    /// on Vision when resources are absent, and the diagnostics row explains why.
     public func makeRecognizer(languages: [Locale.Language] = [Locale.Language(identifier: "de-DE")]) -> PlateTextRecognizing {
         switch self {
         case .appleVision:
@@ -51,7 +57,7 @@ public enum OCREngine: String, CaseIterable, Sendable {
             #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc) || canImport(onnxruntime_objc)
             if PaddleOCRResources.areBundled { return PaddleOCRTextRecognizer() }
             #endif
-            return PlateTextRecognizer(languages: languages)
+            return PaddleOCRUnavailableRecognizer(reason: PaddleOCRResources.statusDescription)
         }
     }
 
@@ -68,4 +74,72 @@ public enum OCREngine: String, CaseIterable, Sendable {
             #endif
         }
     }
+}
+
+/// Returned when `.paddleOCR` is selected in a build without its model/dictionary.
+/// Fails loudly instead of silently running Apple Vision under the PaddleOCR label.
+private struct PaddleOCRUnavailableRecognizer: PlateTextRecognizing {
+    let reason: String
+
+    func recognize(in image: CGImage, mode: RecognitionMode) async throws -> [PlateObservation] {
+        throw LicensePlateError.paddleOCRUnavailable(reason)
+    }
+}
+
+/// The German plate character set used to constrain CTC decoding.
+///
+/// This is a DECODER CONSTRAINT, not a dictionary. `ppocrv5_dict.txt` is an
+/// index→character lookup table bound to the model's fixed 18,385-class output
+/// head and must never be truncated to these 41 characters — that shifts every
+/// class index (`B` is class 16180) and breaks decoding outright. Physically
+/// trimming the ONNX output head is a separate, model-editing operation.
+public enum PlateOCRAlphabet {
+    /// A-Z, 0-9, the three umlauts that occur in city codes, the canonical
+    /// separator and the space the model may emit. `ß` is excluded (FZV writes it
+    /// as SS); the `E`/`H` suffixes need no extra entry because their position is
+    /// validated by `GermanPlateValidator`.
+    public static let characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-ÄÖÜ "
+
+    public static let allowedSet: Set<String> = Set(characters.map { String($0) })
+}
+
+/// Thread-safe, last-frame diagnostics for the on-device debug panel.
+///
+/// The full 18,385-class greedy reading is deliberately NOT a recognition
+/// candidate: when it contains characters outside `PlateOCRAlphabet`, that is
+/// evidence the cleaned plate crop still carries interference (EU strip, seal,
+/// border). The constrained beam would silently swallow those characters and
+/// return a confident but wrong string, so we keep this signal separately.
+public enum PaddleOCRDiagnostics {
+    private final class Box: @unchecked Sendable {
+        private let lock = NSLock()
+        private var readings: [String] = []
+        private var strayCharacters: String?
+
+        func record(_ newReadings: [String]) {
+            lock.lock()
+            defer { lock.unlock() }
+            readings = newReadings
+            let stray = Set(newReadings.joined().map { String($0) })
+                .subtracting(PlateOCRAlphabet.allowedSet)
+            strayCharacters = stray.isEmpty ? nil : stray.sorted().joined()
+        }
+
+        func summary() -> String? {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let reading = readings.first, !reading.isEmpty else { return nil }
+            if let stray = strayCharacters {
+                return "OCR 原始读数 \(reading) · 异常字符 \(stray)（清洁未彻底？）"
+            }
+            return "OCR 原始读数 \(reading)"
+        }
+    }
+
+    private static let box = Box()
+
+    public static func record(greedyReadings: [String]) { box.record(greedyReadings) }
+
+    /// `nil` before the first PaddleOCR frame. The caller decides whether to show it.
+    public static var summary: String? { box.summary() }
 }

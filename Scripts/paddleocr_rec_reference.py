@@ -6,14 +6,25 @@ It mirrors `LicensePlateSDK/PaddleOCRTextRecognizer.swift` step for step:
 
   CGImage / image file → (resizedW, 48) BGR → (x/255 - 0.5)/0.5
   → right-pad to W with zeros → ORT [1,3,48,W] → [1,T,18385] CTC probs
-  → greedy decode + German-plate-constrained CTC prefix beam search
+  → German-plate-constrained CTC prefix beam search + full-dictionary greedy
+    reading (a cleaning-quality DIAGNOSTIC, never a recognition candidate)
+
+The 41 plate characters are a DECODER CONSTRAINT, not a dictionary. The bundled
+`ppocrv5_dict.txt` is an index→character map bound to the model's fixed 18,385
+output classes (`B` is class 16180) and must never be truncated.
 
 Use it to confirm that a rectified plate crop is read correctly on the PC before
-blaming the Swift implementation, and to re-fetch the ONNX model + dictionary:
+blaming the Swift implementation, to batch-score a real sample set, and to
+re-fetch the ONNX model + dictionary:
 
     python Scripts/paddleocr_rec_reference.py --self-test
     python Scripts/paddleocr_rec_reference.py rectified_plate.png --mode accurate
+    python Scripts/paddleocr_rec_reference.py --eval samples/ --labels samples/labels.tsv
     python Scripts/paddleocr_rec_reference.py --fetch-models
+
+`--eval` reports accuracy and character error rate. Truth comes from the TSV
+(filename<TAB>expected) or, when omitted, from each image's filename stem. Run
+the same crops through Apple Vision on device to quantify the engine swap.
 
 Model provenance: `imgocr` 0.2.4 (Apache-2.0) ships Paddle2ONNX conversions of
 PaddleOCR's PP-OCRv5 mobile models. PaddleOCR itself is Apache-2.0. The wheel is
@@ -151,6 +162,38 @@ def greedy_decode(probs, alphabet: list[str]) -> tuple[str, float]:
     return text, (total / count if count else 0.0)
 
 
+def is_plausible_prefix(text: str) -> bool:
+    """Conservative FZV-shaped gate, mirroring Swift `isPlausiblePrefix`.
+
+    Rejects only transitions that can never appear on a German plate, so a real
+    reading must never be pruned. Umlauts are legal in the 1-3 letter city code
+    but never in the identification number; after the digit block only a terminal
+    E/H suffix may appear.
+    """
+    core = text.replace("-", "").replace(" ", "")
+    if not core:
+        return True
+    if len(core) > 10:
+        return False
+    saw_digit = False
+    letter_run = 0
+    for offset, character in enumerate(core):
+        if character.isdigit():
+            saw_digit = True
+            letter_run = 0
+        elif character in "ÄÖÜ":
+            if saw_digit:
+                return False
+            letter_run += 1
+        else:
+            letter_run += 1
+            if saw_digit and (character not in "EH" or offset != len(core) - 1):
+                return False
+        if letter_run > 6:
+            return False
+    return True
+
+
 def beam_decode(probs, alphabet: list[str], allowed: list[int],
                 beam_width: int = 8, limit: int = 6) -> list[tuple[str, float]]:
     # (p_blank, p_nonblank), both in log space
@@ -176,9 +219,13 @@ def beam_decode(probs, alphabet: list[str], allowed: list[int],
                 if character == last:
                     # repeated character needs an intervening blank
                     merge(nxt, prefix, NEG_INF, p_non_blank + probability)
-                    merge(nxt, prefix + character, NEG_INF, p_blank + probability)
+                    candidate = prefix + character
+                    if is_plausible_prefix(candidate):
+                        merge(nxt, candidate, NEG_INF, p_blank + probability)
                 else:
-                    merge(nxt, prefix + character, NEG_INF, total + probability)
+                    candidate = prefix + character
+                    if is_plausible_prefix(candidate):
+                        merge(nxt, candidate, NEG_INF, total + probability)
         beams = dict(sorted(nxt.items(),
                             key=lambda item: log_add(*item[1]),
                             reverse=True)[:beam_width])
@@ -203,14 +250,19 @@ def normalize_probabilities(probs):
 
 def recognize(image_bgr, session, input_name: str, output_name: str,
               alphabet: list[str], allowed: list[int], mode: str = "fast"):
-    ranked: dict[str, tuple[float, float]] = {}
+    """Returns (primary, confidence, alternatives, diagnostics).
 
-    def record(text: str, score: float, confidence: float) -> None:
-        if not text:
-            return
-        old = ranked.get(text)
-        ranked[text] = (max(score, old[0]) if old else score,
-                        max(confidence, old[1]) if old else confidence)
+    Mirrors the Swift recognizer: the full-dictionary greedy reading is a
+    CLEANING-QUALITY DIAGNOSTIC, not a recognition candidate, and every
+    alternative is graded by its own CTC path score relative to the winner.
+    """
+    ranked: dict[str, float] = {}
+    greedy_readings: list[str] = []
+    best_greedy_confidence = 0.0
+
+    def record(text: str, score: float) -> None:
+        if text:
+            ranked[text] = max(score, ranked.get(text, NEG_INF))
 
     variants = [image_bgr]
     if mode == "accurate":
@@ -228,20 +280,32 @@ def recognize(image_bgr, session, input_name: str, output_name: str,
         probs = normalize_probabilities(raw)
         greedy_text, confidence = greedy_decode(probs, alphabet)
         beams = beam_decode(probs, alphabet, allowed, beam_width, limit)
-        top_score = beams[0][1] if beams else -60.0
         for text, score in beams:
-            record(text, score, confidence)
-        record(greedy_text, top_score - 2, confidence)
+            record(text, score)
+        if greedy_text:
+            greedy_readings.append(greedy_text)
+        best_greedy_confidence = max(best_greedy_confidence, confidence)
 
-    ordered = sorted(ranked.items(), key=lambda item: -item[1][0])
+    if not ranked:
+        # No legal CTC path survived; emit a character-filtered greedy reading.
+        fallback = canonical(greedy_readings[0] if greedy_readings else "")
+        record(fallback, -60.0)
+
+    stray = set("".join(greedy_readings)) - PLATE_CHARS
+    diagnostics = {"greedy": greedy_readings[0] if greedy_readings else "",
+                   "stray": "".join(sorted(stray))}
+
+    ordered = sorted(ranked.items(), key=lambda item: -item[1])
     if not ordered:
-        return "", 0.0, []
-    primary, (top_score, primary_confidence) = ordered[0]
-    alternatives = []
-    for text, (score, confidence) in ordered[1:10]:
-        relative = math.exp(min(0, score - top_score))
-        alternatives.append((text, max(0.01, min(1, confidence) * relative * 0.98)))
-    return primary, min(1, max(0, primary_confidence)), alternatives
+        return "", 0.0, [], diagnostics
+    primary, top_score = ordered[0]
+    # Absolute anchor for the vote aggregator's provisionalConfidence threshold.
+    primary_confidence = min(1.0, max(0.01, best_greedy_confidence))
+    alternatives = [
+        (text, max(0.01, primary_confidence * math.exp(min(0, score - top_score)) * 0.98))
+        for text, score in ordered[1:10]
+    ]
+    return primary, primary_confidence, alternatives, diagnostics
 
 
 def load_session():
@@ -282,7 +346,7 @@ def self_test() -> None:
                    (100 - (box[3] - box[1])) / 2 - box[1]),
                   text, font=font, fill="black")
         bgr = read_bgr_from_pil(image)
-        primary, confidence, alternatives = recognize(
+        primary, confidence, alternatives, _ = recognize(
             bgr, session, input_name, output_name, alphabet, allowed, mode="fast")
         ok = primary.replace(" ", "").replace("-", "").upper() == text.replace(" ", "").replace("-", "").upper()
         print(f"  {'OK ' if ok else 'DIFF'} {text!r:14} → {primary!r:16} conf={confidence:.3f}")
@@ -292,6 +356,70 @@ def self_test() -> None:
 def read_bgr_from_pil(image):
     import numpy as np
     return np.array(image.convert("RGB"))[:, :, ::-1].copy()
+
+
+def canonical(text: str) -> str:
+    """Uppercase plate text with separators removed, used only for scoring."""
+    return "".join(c for c in text.upper() if c in PLATE_CHARS and c not in "- ")
+
+
+def levenshtein(a: str, b: str) -> int:
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    previous = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        current = [i]
+        for j, cb in enumerate(b, 1):
+            current.append(min(previous[j] + 1, current[j - 1] + 1,
+                               previous[j - 1] + (ca != cb)))
+        previous = current
+    return previous[-1]
+
+
+def evaluate(directory: Path, labels: Path | None, mode: str) -> None:
+    """Batch harness: score a folder of rectified plate crops.
+
+    Ground truth comes from `--labels` (TSV: filename<TAB>expected) when given,
+    otherwise from each filename stem. Run this on the SAME crops the on-device
+    A/B test uses, then compare accuracy / CER against Apple Vision.
+    """
+    session, input_name, output_name, alphabet, allowed = load_session()
+    expected_map: dict[str, str] = {}
+    if labels and labels.exists():
+        for line in labels.read_text(encoding="utf-8").splitlines():
+            if not line.strip() or line.startswith("#"):
+                continue
+            parts = line.split("\t", 1) if "\t" in line else line.split(",", 1)
+            if len(parts) == 2:
+                expected_map[parts[0].strip()] = parts[1].strip()
+    images = sorted(p for p in directory.iterdir()
+                    if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp", ".webp"})
+    if not images:
+        raise SystemExit(f"目录中没有图片：{directory}")
+
+    hits = 0
+    edits = 0
+    chars = 0
+    print(f"mode={mode}  images={len(images)}  labels={labels or '(filename stem)'}")
+    print(f"{'file':<34}{'expected':<16}{'primary':<16}{'ok':<6}conf")
+    for path in images:
+        truth = canonical(expected_map.get(path.name, path.stem))
+        primary, confidence, _, diagnostics = recognize(
+            read_bgr(path), session, input_name, output_name,
+            alphabet, allowed, mode=mode)
+        prediction = canonical(primary)
+        ok = prediction == truth
+        hits += int(ok)
+        edits += levenshtein(prediction, truth)
+        chars += len(truth)
+        note = f"  异常字符 {diagnostics['stray']}" if diagnostics["stray"] else ""
+        print(f"{path.name[:33]:<34}{truth[:15]:<16}{prediction[:15]:<16}"
+              f"{'OK' if ok else 'ERR':<6}{confidence:.3f}{note}")
+    print(f"\naccuracy = {hits}/{len(images)} = {hits / len(images):.1%}")
+    print(f"CER      = {edits}/{chars} = {edits / max(1, chars):.1%}")
+    print("提示：用同一批矫正图在真机切换 Apple Vision 跑一次，即可量化替换收益。")
 
 
 def main() -> None:
@@ -304,6 +432,10 @@ def main() -> None:
                         help="download imgocr 0.2.4 and extract model + dictionary")
     parser.add_argument("--self-test", action="store_true",
                         help="recognize four synthetic German plates")
+    parser.add_argument("--eval", type=Path, metavar="DIR",
+                        help="batch-evaluate a folder of rectified plate crops")
+    parser.add_argument("--labels", type=Path, metavar="TSV",
+                        help="for --eval: filename<TAB>expected_plate, one per line")
     args = parser.parse_args()
 
     if args.fetch_models:
@@ -312,6 +444,11 @@ def main() -> None:
     if args.self_test:
         self_test()
         return
+    if args.eval:
+        if not args.eval.is_dir():
+            raise SystemExit(f"不是目录：{args.eval}")
+        evaluate(args.eval, args.labels, args.mode)
+        return
     if args.image is None:
         parser.print_help()
         return
@@ -319,10 +456,13 @@ def main() -> None:
         raise SystemExit(f"找不到图片：{args.image}")
 
     session, input_name, output_name, alphabet, allowed = load_session()
-    primary, confidence, alternatives = recognize(
+    primary, confidence, alternatives, diagnostics = recognize(
         read_bgr(args.image), session, input_name, output_name,
         alphabet, allowed, mode=args.mode)
     print(f"primary    : {primary!r}  confidence={confidence:.3f}  mode={args.mode}")
+    if diagnostics["greedy"]:
+        print(f"greedy(诊断): {diagnostics['greedy']!r}"
+              + (f"  异常字符 {diagnostics['stray']}" if diagnostics["stray"] else ""))
     for text, score in alternatives:
         print(f"candidate  : {text!r}  confidence={score:.3f}")
 

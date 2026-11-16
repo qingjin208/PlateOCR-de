@@ -139,6 +139,10 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     /// The UI-driven mutable state, guarded by `runtimeState`.
     private struct RuntimeState: Sendable {
         var recognizer: PlateTextRecognizing
+        /// One recognizer per engine. Building `PaddleOCRTextRecognizer` loads a
+        /// 16.5 MB graph, parses 18,383 dictionary lines and creates an ORT session;
+        /// rebuilding it on every engine switch stalled the UI on the main thread.
+        var recognizerCache: [OCREngine: PlateTextRecognizing]
         var engine: OCREngine
         var useRGB: Bool
         /// See `ONNXPoseLicensePlateDetector.flipY`: top-row-first letterbox buffer
@@ -155,15 +159,21 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     private let context = CIContext(options: [.cacheIntermediates: false])
     private let runtimeState: OSAllocatedUnfairLock<RuntimeState>
 
-    /// The OCR engine currently in use. Setting it rebuilds the underlying recognizer,
-    /// so the App can let the user switch between Apple Vision and PaddleOCR at runtime.
+    /// The OCR engine currently in use. Switching reuses a cached recognizer when
+    /// that engine has already been built, so A/B toggling does not reload the model.
     public var ocrEngine: OCREngine {
         get { runtimeState.withLock { $0.engine } }
         set {
             runtimeState.withLock { state in
                 guard state.engine != newValue else { return }
                 state.engine = newValue
-                state.recognizer = newValue.makeRecognizer(languages: recognitionLanguages)
+                if let cached = state.recognizerCache[newValue] {
+                    state.recognizer = cached
+                } else {
+                    let created = newValue.makeRecognizer(languages: recognitionLanguages)
+                    state.recognizerCache[newValue] = created
+                    state.recognizer = created
+                }
             }
         }
     }
@@ -270,7 +280,9 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         self.postProcessor = postProcessor
         self.corrector = PerspectivePlateCorrector()
         self.runtimeState = OSAllocatedUnfairLock(initialState: RuntimeState(
-            recognizer: recognizer, engine: ocrEngine, useRGB: true, flipY: true,
+            recognizer: recognizer,
+            recognizerCache: [ocrEngine: recognizer],
+            engine: ocrEngine, useRGB: true, flipY: true,
             enhancements: enhancements))
     }
 

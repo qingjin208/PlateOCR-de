@@ -592,6 +592,13 @@ struct ContentView: View {
         if !OCREngine.paddleOCR.isAvailable {
             text += " · \(PaddleOCRResources.statusDescription)"
         }
+        // Full-dictionary greedy reading is a cleaning-quality signal, not a
+        // candidate. Surface it only in the diagnostics panel and only when the
+        // PaddleOCR engine actually produced it.
+        if showDiagnostics, ocrEngine == .paddleOCR,
+           let note = PaddleOCRDiagnostics.summary {
+            text += " · \(note)"
+        }
         return text
     }
 

@@ -13,7 +13,7 @@ public enum LicensePlateError: LocalizedError {
     /// Keep `De-plate-pose.onnx` in `LicensePlateOCR/LicensePlateSDK/Resources/`
     /// and rebuild (Xcode 16's synchronized folders copy it automatically).
     case modelNotFound(String)
-    /// The model's output could not be interpreted as a YOLO tensor.
+    /// A model output tensor (pose detector or PaddleOCR rec) could not be parsed.
     case invalidModelOutput(String)
     /// Text recognition (Vision) failed.
     case recognitionFailed(String)
@@ -28,7 +28,7 @@ public enum LicensePlateError: LocalizedError {
         case .modelNotFound(let name):
             return "找不到车牌检测模型「\(name)」。请确认 LicensePlateOCR/LicensePlateSDK/Resources/ 下的 ONNX 模型已随 App 打包（Xcode 16 同步文件夹会自动拷贝）。"
         case .invalidModelOutput(let detail):
-            return "YOLO 模型输出格式无法解析：\(detail)"
+            return "模型输出格式无法解析：\(detail)"
         case .recognitionFailed(let detail):
             return "文本识别失败：\(detail)"
         case .paddleOCRUnavailable(let detail):

@@ -35,6 +35,25 @@ for plate in frame.plates {
 
 完整接口约定、接入示例、模型来源和验证步骤见 [EXTERNAL_FRAMES.md](EXTERNAL_FRAMES.md)。
 
+## PaddleOCR 精度评测与诊断
+
+`Scripts/paddleocr_rec_reference.py` 与 SDK 的预处理 / CTC 解码同构，可在 PC 上复核矫正图并批量打分：
+
+```bash
+python Scripts/paddleocr_rec_reference.py --self-test
+python Scripts/paddleocr_rec_reference.py rectified.png --mode fast
+python Scripts/paddleocr_rec_reference.py --eval samples/ --labels samples/labels.tsv
+```
+
+真值来自 TSV（`文件名<TAB>期望车牌`）或图片文件名，输出准确率与字符错误率（CER）。**真机 A/B**：用同一批矫正图在设置页分别切换 PaddleOCR / Apple Vision 各记录一次读数，即可量化替换收益。目前仓库只有 4 张 Arial 合成样本的自检结果，尚无真实 FE-Schrift 车牌的精度证据。
+
+两点容易混淆：
+
+- `ppocrv5_dict.txt`（18,383 行）是模型 18,385 维输出头的 **index → 字符映射表**，不是候选清单，禁止裁剪成德国车牌字符集（`B` 在字典中是 class 16180，裁完会索引越界）。Swift 侧 `PlateOCRAlphabet` 只是 **CTC 解码约束**（41 字符 + blank）；物理裁剪输出头需改 ONNX 权重，且实测只提速、不提升判别精度。
+- 打开设置页「诊断」后，检测信息行会额外显示**全字典 greedy 原始读数**及异常字符。该读数故意不进入候选池：当它含 `@`、汉字等非车牌字符时，说明 EU 蓝条 / 年检章 / 边框没遮干净；受限束搜索会吞掉这些字符并给出一个看似合法却错误的读数，所以这个信号必须单独保留。
+
+`accurate` 在 PC 实测约为 `fast` 的 4.7 倍耗时（最多 5 次推理），实时相机建议固定使用 `fast`。
+
 ## 项目文件
 
 - `LicensePlateOCR/LicensePlateSDK/Resources/De-plate-pose.onnx`：LibreYOLO YOLO-NAS-pose 车牌 4 角点关键点模型（SDK 唯一检测器）。

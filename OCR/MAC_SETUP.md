@@ -47,6 +47,13 @@ bash setup_mac.sh
 - 只跑 **rec**（不做 DB 文本检测）：关键点矫正图本身就是一条规整文本行，跑 det 反而会把 EU 蓝条和年检章切成伪文本框。
 - 模型/字典来自 Apache-2.0 的 `imgocr` 0.2.4（Paddle2ONNX 转换）。缺失时可在 PC 上执行
   `python Scripts/paddleocr_rec_reference.py --fetch-models` 重新拉取；`--self-test` 用合成车牌验证预处理与 CTC 解码。
+- **真机第一步**：在 Xcode 的 Build Phases → Copy Bundle Resources 里确认
+  `PP-OCRv5_rec_mobile_infer.onnx` 与 `ppocrv5_dict.txt` 确实进了包。工程用
+  `fileSystemSynchronizedGroups`（`files` 为空），`PaddleOCRResources` 会做多路径探测 + 递归查找；
+  两个资源仍找不到时设置页会显示原因，选择 PaddleOCR 会**显式报错**而非静默跑 Vision。
+- 精度对照：`python Scripts/paddleocr_rec_reference.py --eval samples/ --labels samples/labels.tsv`
+  输出准确率与 CER；用同一批矫正图在真机切换两个引擎各跑一次即可量化收益。设置页打开「诊断」
+  后，检测信息行会显示全字典 greedy 原始读数与异常字符（清洁是否彻底的信号）。
 - 若真机上 PaddleOCR 结果异常，先用该脚本对同一张矫正图跑一遍，区分「张量/解码问题」与「图片质量问题」。
 
 ---
@@ -57,4 +64,6 @@ bash setup_mac.sh
 ## 本次新增 / 改动文件
 - 新增：`setup_mac.sh`（CocoaPods 一键接入）、`POSE_INTEGRATION.md`
 - 改动：`LicensePlateRecognizer.swift`、`YOLOOutputDecoder.swift`、`LicensePlateDetector.swift`、`ContentView.swift`、新增 `ONNXPoseLicensePlateDetector.swift` / `PerspectivePlateCorrector.swift` / `OCREngine.swift` / `PaddleOCRTextRecognizer.swift`
-- 资源：`Resources/De-plate-pose.onnx`
+- 资源：`Resources/De-plate-pose.onnx`、`Resources/PP-OCRv5_rec_mobile_infer.onnx`、
+  `Resources/ppocrv5_dict.txt`
+- PC 校验脚本：`Scripts/paddleocr_rec_reference.py`（`--self-test` / `--eval` / `--fetch-models`）

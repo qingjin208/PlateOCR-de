@@ -1,2 +1,6 @@
 # WorkBuddy agent project data (local only)
 .workbuddy/
+
+# Python bytecode from the PC verification scripts
+__pycache__/
+*.pyc
