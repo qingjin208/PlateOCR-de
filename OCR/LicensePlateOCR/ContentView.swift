@@ -54,18 +54,20 @@ struct ContentView: View {
         #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc) || canImport(onnxruntime_objc)
         // ONNX Runtime linked: use the trained German-plate YOLOv8-pose model directly.
         rec = LicensePlateRecognizer(poseModelName: "De-plate-pose",
-                                     engine: .appleVision,
+                                     engine: OCREngine.defaultEngine,
                                      enhancements: enhancements)
         #else
         // No ONNX runtime linked: the SDK has exactly one detector (the LibreYOLO ONNX
         // pose model), so without the pod there is NO detector at all. Build around the
         // unavailable-stub so the app still runs and the triage line explains why
-        // nothing can be detected instead of crashing.
+        // nothing can be detected instead of crashing. PaddleOCR needs the same ORT
+        // runtime, so this build explicitly uses Apple Vision.
         rec = LicensePlateRecognizer(detector: LicensePlateDetectorUnavailable(error:
                 LicensePlateError.invalidInput(
                     "未链接 onnxruntime：请先运行 pod install，然后用 LicensePlateOCR.xcworkspace 编译。")),
                                      recognizer: OCREngine.appleVision.makeRecognizer(
-                                        languages: [Locale.Language(identifier: "de-DE")]))
+                                        languages: [Locale.Language(identifier: "de-DE")]),
+                                     ocrEngine: .appleVision)
         rec.enhancements = enhancements
         #endif
         _recognizer = State(initialValue: rec)
@@ -83,7 +85,9 @@ struct ContentView: View {
     @State private var videoURL: URL?
 
     @State private var mode: RecognitionMode = .fast   // default = fast
-    @State private var ocrEngine: OCREngine = .appleVision   // user-selected OCR engine
+    /// Starts on PaddleOCR when its model + dictionary are bundled, otherwise on
+    /// Apple Vision (see `OCREngine.defaultEngine`).
+    @State private var ocrEngine: OCREngine = OCREngine.defaultEngine
     /// Input channel order for the ONNX detector. RGB matches Ultralytics training and the
     /// PC reference pipeline; switch to BGR only if an export needs it.
     @State private var useRGB: Bool = true
@@ -584,6 +588,10 @@ struct ContentView: View {
             text += String(format: " · 模型最高分 %.2f", score)
         }
         #endif
+        text += " · OCR \(ocrEngine.displayName)"
+        if !OCREngine.paddleOCR.isAvailable {
+            text += " · \(PaddleOCRResources.statusDescription)"
+        }
         return text
     }
 
@@ -815,15 +823,15 @@ private struct SettingsSheet: View {
     /// first screen stays focused on the controls a normal user needs.
     @State private var showDebug = false
 
-    /// Engines actually linked into this build. Offering an unlinked engine made the
-    /// picker lie: `.paddleOCR` falls back to Apple Vision, so the UI claimed PaddleOCR
+    /// Engines actually usable in this build. Offering an unavailable engine made the
+    /// picker lie: `.paddleOCR` fell back to Apple Vision, so the UI claimed PaddleOCR
     /// was running while Vision did the reading.
     private var availableEngines: [OCREngine] { OCREngine.allCases.filter(\.isAvailable) }
 
     private var ocrSubtitle: String {
         OCREngine.paddleOCR.isAvailable
-            ? "Apple Vision 系统级、零依赖；PaddleOCR 精度更高"
-            : "当前构建只链接了 Apple Vision（PaddleOCR 未集成）"
+            ? "PaddleOCR PP-OCRv5 为默认；Apple Vision 仅用于 A/B 对照"
+            : PaddleOCRResources.statusDescription
     }
 
     var body: some View {
@@ -843,7 +851,7 @@ private struct SettingsSheet: View {
             // absorbs the overflow and keeps the button pinned at the bottom.
             ScrollView {
                 VStack(spacing: 12) {
-                    settingRow(title: "识别模式", subtitle: "极速响应更快；精准更稳（默认极速）") {
+                    settingRow(title: "识别模式", subtitle: "极速：单次推理；精准：多裁剪 + 更宽 CTC 候选搜索（默认极速）") {
                         Picker("识别模式", selection: $mode) {
                             Text("极速").tag(RecognitionMode.fast)
                             Text("精准").tag(RecognitionMode.accurate)
@@ -854,9 +862,9 @@ private struct SettingsSheet: View {
                     }
 
                     settingRow(title: "OCR 引擎", subtitle: ocrSubtitle) {
-                        // A single linked engine leaves nothing to choose, and a one-segment
+                        // A single available engine leaves nothing to choose, and a one-segment
                         // segmented control reads as broken — show the engine as text. The
-                        // picker comes back by itself once PaddleOCR is linked.
+                        // picker comes back by itself once the PaddleOCR resources are bundled.
                         if availableEngines.count > 1 {
                             Picker("OCR 引擎", selection: $ocrEngine) {
                                 ForEach(availableEngines, id: \.self) { Text($0.displayName) }

@@ -40,10 +40,14 @@ bash setup_mac.sh
 
 ---
 
-## PaddleOCR（当前为回退桩，暂不能真用）
-- App 内「Apple Vision / PaddleOCR」**选择器已存在**，用户能选。
-- 但真实 PaddleOCR 引擎目前是回退桩：未链 `PaddleOCR-iOS` 框架时自动退回 Apple Vision；`PaddleOCRTextRecognizer.swift` 的 `runPaddleOCR(on:)` 还没写真实调用。
-- 让 PaddleOCR 真正可用需要：接入 `PaddleOCR-iOS`（含 det/rec/cls 模型）+ 按真实 API 补全 `runPaddleOCR`。这部分需 Mac 上有框架后按真实接口补，UI 切换逻辑无需再改。
+## PaddleOCR（已实现，复用 ONNX Runtime）
+- App 内「Apple Vision / PaddleOCR」选择器可用，**默认 PaddleOCR**；Apple Vision 仅供 A/B 对照。
+- 不再需要 `PaddleOCR-iOS` / Paddle Lite：识别直接复用 `pod 'onnxruntime-objc'` 加载
+  `Resources/PP-OCRv5_rec_mobile_infer.onnx`（16.5 MB）与 `Resources/ppocrv5_dict.txt`。
+- 只跑 **rec**（不做 DB 文本检测）：关键点矫正图本身就是一条规整文本行，跑 det 反而会把 EU 蓝条和年检章切成伪文本框。
+- 模型/字典来自 Apache-2.0 的 `imgocr` 0.2.4（Paddle2ONNX 转换）。缺失时可在 PC 上执行
+  `python Scripts/paddleocr_rec_reference.py --fetch-models` 重新拉取；`--self-test` 用合成车牌验证预处理与 CTC 解码。
+- 若真机上 PaddleOCR 结果异常，先用该脚本对同一张矫正图跑一遍，区分「张量/解码问题」与「图片质量问题」。
 
 ---
 

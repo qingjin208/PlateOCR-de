@@ -30,9 +30,9 @@
    │     → 这就是喂给 OCR 的「矫正后图片」
    │     角点不可靠（缺失 / 可见性<1.5）时回退到检测框裁剪
    │
-   ├─ OCR（用户选定的引擎）：
-   │     .appleVision  → PlateTextRecognizer (Apple Vision RecognizeTextRequest)
-   │     .paddleOCR    → PaddleOCRTextRecognizer（集成缝，需链接 PaddleOCR-iOS）
+   ├─ OCR（用户选定的引擎，默认 PaddleOCR）：
+   │     .appleVision  → PlateTextRecognizer (Apple Vision RecognizeTextRequest，A/B 对照)
+   │     .paddleOCR    → PaddleOCRTextRecognizer（PP-OCRv5 rec ONNX，经同一 ORT 会话族推理）
    │
    ├─ 后处理 + 德国车牌校验（沿用 PlatePostProcessor / GermanPlateValidator）
    │
@@ -66,15 +66,31 @@
 > `run(withInputs:outputNames:runOptions:)`、`tensorData()`）。若编译报错，请按你使用的
 > ORT 版本调整 `ONNXPoseLicensePlateDetector.swift` 中的调用；文档与示例已尽量对齐 1.17+/1.18+。
 
-### 2.2 PaddleOCR-iOS（可选 OCR 引擎）
+### 2.2 PaddleOCR（本分支的默认 OCR 引擎）
 
-`PaddleOCRTextRecognizer.swift` 已遵循 `PlateTextRecognizing`，但其中的
-`runPaddleOCR(on:)` 是**集成缝**：在链接 PaddleOCR-iOS 后，把里面的示例替换为你的
-PaddleOCR-iOS 实际调用（det + rec + cls 模型，通常从 App bundle 读取）。
+无需 `PaddleOCR-iOS` / Paddle Lite。`PaddleOCRTextRecognizer.swift` 复用同一套
+ONNX Runtime ObjC API，直接加载仓库内的两个资源：
 
-链接 PaddleOCR-iOS 后，`OCREngine.paddleOCR.makeRecognizer()` 会返回它；未链接时
-`.paddleOCR` 自动回退为 Apple Vision（保证管线可运行）。建议：未接入前在 App UI 中
-禁用 / 提示 PaddleOCR 选项。
+| 文件 | 说明 |
+| --- | --- |
+| `Resources/PP-OCRv5_rec_mobile_infer.onnx` | 16.5 MB，输入 `[N,3,48,W]`（BGR、动态宽），输出 `[N,T,18385]` CTC 概率 |
+| `Resources/ppocrv5_dict.txt` | 18,383 字符；CTC 类 0 = blank，1…18383 = 字典，18384 = 空格 |
+
+**只跑 rec，不跑 det/cls**：关键点矫正图已经是一条规整文本行，DB 检测会把 EU 蓝条、
+年检章与字符行切成多个框，反而降低准确率。
+
+预处理（与 `Scripts/paddleocr_rec_reference.py` 逐项对齐）：
+
+1. 矫正图按 `ratio = w/h` 缩放到 `(ceil(48*ratio), 48)`；
+2. `W = int(48 * max(320/48, ratio))`，右侧用 **归一化 0** 补齐（PaddleOCR 的
+   `np.zeros` 对应 127.5 灰，不是黑色 -1）；
+3. BGR 通道、`(x/255 - 0.5)/0.5`、NCHW float32；
+4. `CGContext(data:)` 必须翻转 `translateBy(0,48) + scaleBy(1,-1)`，否则模型看到的是上下镜像；
+5. greedy 解码 + **受德国车牌字符集约束的 CTC 前缀束搜索**（A–Z、0–9、ÄÖÜ、`-`、空格、blank），
+   既替代 Vision 的 `topCandidates(10)`，也抑制中文字典里的汉字误读。
+
+`OCREngine.defaultEngine` 在模型与字典已打包时返回 `.paddleOCR`；否则返回 `.appleVision`，
+设置页通过 `isAvailable` 隐藏不可用的引擎，不会「显示 PaddleOCR、实际跑 Vision」。
 
 ## 3. 预处理注意事项（真机首次验证必读）
 
@@ -134,7 +150,9 @@ Demo App 在控制面板提供「强化识别（SDK Enhanced Mode）」总开关
 - [ ] 在 iPhone（iOS 18+）上用 Xcode 编译，确认 `De-plate-pose.onnx` 已打包。
 - [ ] 图片 / 视频 / 相机三种来源都能返回检测框与车牌文本。
 - [ ] 结果卡片显示「矫正图」（透视矫正后的车牌）；角点不可靠时应回退为裁剪图（无矫正图）。
-- [ ] 切换 OCR 引擎 Picker（Apple Vision / PaddleOCR），确认 PaddleOCR 在未接入时回退、接入后生效。
+- [ ] 确认设置页默认显示 PaddleOCR；切换 OCR 引擎 Picker（Apple Vision / PaddleOCR）后读数与置信度确实变化。
+- [ ] 对同一张矫正图，PC 端 `python Scripts/paddleocr_rec_reference.py <crop.png> --mode fast` 与真机读数一致。
+- [ ] `fast` / `accurate` 两档在 PaddleOCR 下分别对应 1 次 / 3 次（含两行牌时最多 5 次）识别推理，确认实时相机帧率可接受。
 - [ ] 一帧多车牌、倾斜 / 远处小牌、部分遮挡场景下的框与文本质量。
 - [ ] 打开 / 关闭「强化识别」，确认 `B AB 123E` 类读数与图片上的四边形叠层随之变化。
 - [ ] 若检测异常，先看 UI 上的「检测器」诊断行确认真的走到了 ONNX pose（而非 Core ML 回退）；
@@ -144,8 +162,10 @@ Demo App 在控制面板提供「强化识别（SDK Enhanced Mode）」总开关
 
 - `LicensePlateSDK/ONNXPoseLicensePlateDetector.swift` — ONNX Runtime pose 检测器
 - `LicensePlateSDK/PerspectivePlateCorrector.swift` — 4 角点透视矫正
-- `LicensePlateSDK/OCREngine.swift` — OCR 引擎枚举与工厂
-- `LicensePlateSDK/PaddleOCRTextRecognizer.swift` — PaddleOCR 集成缝
+- `LicensePlateSDK/OCREngine.swift` — OCR 引擎枚举、默认引擎与工厂
+- `LicensePlateSDK/PaddleOCRTextRecognizer.swift` — PP-OCRv5 rec ONNX 推理 + CTC 束搜索
+- `LicensePlateSDK/PaddleOCRResources.swift` — 识别模型 / 字典定位与可用性
+- `Scripts/paddleocr_rec_reference.py` — PC 端同构参考实现、自检与模型获取
 - `LicensePlateSDK/LicensePlateRecognizer.swift` — 管线编排 + `correctedPlateImage` 返回
 - `LicensePlateSDK/RecognitionEnhancements.swift` — 强化模式开关（总开关 + 3 个子开关）
 - `LicensePlateSDK/GermanPlateValidator.swift` — 德国车牌校验 + 折叠感知排序

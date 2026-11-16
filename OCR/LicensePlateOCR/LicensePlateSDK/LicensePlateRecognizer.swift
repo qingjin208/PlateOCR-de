@@ -262,7 +262,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     public init(detector: LicensePlateDetecting,
                 recognizer: PlateTextRecognizing,
                 recognitionLanguages: [Locale.Language] = [Locale.Language(identifier: "de-DE")],
-                ocrEngine: OCREngine = .appleVision,
+                ocrEngine: OCREngine = OCREngine.defaultEngine,
                 postProcessor: PlatePostProcessor = PlatePostProcessor(),
                 enhancements: RecognitionEnhancements = .off) {
         self.detector = detector
@@ -296,7 +296,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc) || canImport(onnxruntime_objc)
     public convenience init(poseModelName: String = "De-plate-pose",
                             config: YOLOConfig = .germanPlatePoseLibre,
-                            engine: OCREngine = .appleVision,
+                            engine: OCREngine = OCREngine.defaultEngine,
                             recognitionLanguages: [Locale.Language] = [Locale.Language(identifier: "de-DE")],
                             enhancements: RecognitionEnhancements = .off,
                             poseThreads: Int32 = 2) {

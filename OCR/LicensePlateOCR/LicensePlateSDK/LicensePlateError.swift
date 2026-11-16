@@ -17,6 +17,9 @@ public enum LicensePlateError: LocalizedError {
     case invalidModelOutput(String)
     /// Text recognition (Vision) failed.
     case recognitionFailed(String)
+    /// PaddleOCR could not be initialized (missing ONNX model/dictionary, or ORT
+    /// session creation failed). Never silently downgrade to Vision when this fires.
+    case paddleOCRUnavailable(String)
     /// The provided media could not be read.
     case invalidInput(String)
 
@@ -28,6 +31,8 @@ public enum LicensePlateError: LocalizedError {
             return "YOLO 模型输出格式无法解析：\(detail)"
         case .recognitionFailed(let detail):
             return "文本识别失败：\(detail)"
+        case .paddleOCRUnavailable(let detail):
+            return "PaddleOCR 引擎不可用：\(detail)。请确认 PP-OCRv5_rec_mobile_infer.onnx 与 ppocrv5_dict.txt 已随 App 打包。"
         case .invalidInput(let detail):
             return "无效的输入媒体：\(detail)"
         }
