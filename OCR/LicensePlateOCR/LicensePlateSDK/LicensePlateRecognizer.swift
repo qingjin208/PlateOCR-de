@@ -139,9 +139,9 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     /// The UI-driven mutable state, guarded by `runtimeState`.
     private struct RuntimeState: Sendable {
         var recognizer: PlateTextRecognizing
-        /// One recognizer per engine. Building `PaddleOCRTextRecognizer` loads a
-        /// 16.5 MB graph, parses 18,383 dictionary lines and creates an ORT session;
-        /// rebuilding it on every engine switch stalled the UI on the main thread.
+        /// One recognizer per engine. The PaddleOCR graph itself is loaded lazily
+        /// off the main thread (see `PaddleOCRTextRecognizer.EngineStore`); caching
+        /// the wrapper still avoids duplicate resource lookups on A/B toggling.
         var recognizerCache: [OCREngine: PlateTextRecognizing]
         var engine: OCREngine
         var useRGB: Bool
@@ -156,7 +156,8 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     private let corrector: PerspectivePlateCorrector
     private let plateImageCleaner = PlateImageCleaner()
     private let recognitionLanguages: [Locale.Language]
-    private let context = CIContext(options: [.cacheIntermediates: false])
+    /// Shared process-wide context (Apple: do not create many CIContext instances).
+    private let context = SDKGraphics.ciContext
     private let runtimeState: OSAllocatedUnfairLock<RuntimeState>
 
     /// The OCR engine currently in use. Switching reuses a cached recognizer when
@@ -164,16 +165,19 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     public var ocrEngine: OCREngine {
         get { runtimeState.withLock { $0.engine } }
         set {
+            // Apple's OSAllocatedUnfairLock docs: it is a NON-RECURSIVE lock and the
+            // critical section must stay tight. `makeRecognizer` used to run inside
+            // it — any resource lookup / ORT work there would block every reader and
+            // a same-thread re-entrant call would trap. Build OUTSIDE, then only
+            // assign (as one atomic pair, so concurrent switches stay consistent).
+            let alreadyActive = runtimeState.withLock { $0.engine == newValue }
+            guard !alreadyActive else { return }
+            let cached = runtimeState.withLock { $0.recognizerCache[newValue] }
+            let created = cached ?? newValue.makeRecognizer(languages: recognitionLanguages)
             runtimeState.withLock { state in
-                guard state.engine != newValue else { return }
                 state.engine = newValue
-                if let cached = state.recognizerCache[newValue] {
-                    state.recognizer = cached
-                } else {
-                    let created = newValue.makeRecognizer(languages: recognitionLanguages)
-                    state.recognizerCache[newValue] = created
-                    state.recognizer = created
-                }
+                state.recognizer = created
+                state.recognizerCache[newValue] = created
             }
         }
     }

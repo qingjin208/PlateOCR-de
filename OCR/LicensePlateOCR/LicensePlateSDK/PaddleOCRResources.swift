@@ -63,15 +63,31 @@ public enum PaddleOCRResources {
         }
 
         // Last resort: Xcode may keep an arbitrary relative path inside a
-        // synchronized group. Scan the bundle once, by filename. The result is
-        // cached below so the UI's repeated `isAvailable` checks stay cheap.
+        // synchronized group. Apple documents `subdirectory` as a TOP-LEVEL bundle
+        // directory, so `url(forResource:)` cannot find a resource nested several
+        // levels deep. Scan only the resource directory (not the whole bundle),
+        // skip code / framework / localization containers, and BOUND the work.
+        // This is the exceptional path — normal builds hit a candidate above — and
+        // an unbounded enumeration on the launch path would violate Apple's
+        // launch-time guidance. The resolved URL is cached below.
         let filename = "\(name).\(ext)"
+        let root = bundle.resourceURL ?? bundle.bundleURL
         guard let enumerator = FileManager.default.enumerator(
-                at: bundle.bundleURL,
+                at: root,
                 includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles]) else { return nil }
-        for case let candidate as URL in enumerator where candidate.lastPathComponent == filename {
-            return candidate
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return nil }
+        let skipped: Set<String> = ["Frameworks", "PlugIns", "Watch",
+                                    "_CodeSignature", "SC_Info"]
+        let rootDepth = root.pathComponents.count
+        var inspected = 0
+        for case let candidate as URL in enumerator {
+            let relative = candidate.pathComponents.dropFirst(rootDepth)
+            if relative.contains(where: { skipped.contains($0) || $0.hasSuffix(".lproj") }) {
+                continue
+            }
+            if candidate.lastPathComponent == filename { return candidate }
+            inspected += 1
+            if inspected >= 2_000 { break }
         }
         return nil
     }

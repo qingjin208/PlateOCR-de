@@ -305,8 +305,9 @@ final class CameraController: NSObject {
         previewView?.draw(detections: stabilized, results: results)
     }
 
-    /// Shared context for the debug echo (thread-safe; created once).
-    private nonisolated static let debugImageContext = CIContext()
+    /// Shared process-wide context for the debug echo (Apple: reuse CIContext).
+    /// A computed property also avoids a non-Sendable global `static let`.
+    private nonisolated static var debugImageContext: CIContext { SDKGraphics.ciContext }
 
     /// Downscaled CGImage of the analysed buffer, in the same upright orientation the
     /// detector saw it (so the echo can be compared against the live preview directly).

@@ -26,6 +26,7 @@ import CoreGraphics
 import CoreImage
 import CoreML
 import Accelerate
+import os
 #if canImport(onnxruntime)
 import onnxruntime
 #elseif canImport(onnxruntime_mobile_objc)
@@ -86,7 +87,9 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
     /// geometry (`flipY`) and channel order (`useRGB`) must not change between the two
     /// reads of one pass, and `topScore` is written by the inference task and read by the UI.
     private final class Tunables: @unchecked Sendable {
-        private let lock = NSLock()
+        /// Apple's supported Swift wrapper for `os_unfair_lock` (see
+        /// `CameraController.FrameGate`): Sendable and no manual unlock path.
+        private let lock = OSAllocatedUnfairLock(initialState: false)
         private var _confidence: Float
         private var _iou: Float
         private var _captureSnapshot = false
@@ -107,9 +110,7 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
         }
 
         private func withLock<T>(_ body: () -> T) -> T {
-            lock.lock()
-            defer { lock.unlock() }
-            return body()
+            lock.withLock { _ in body() }
         }
 
         var confidence: Float {
@@ -495,7 +496,7 @@ extension CGImage {
         // against it — use the overlay initializer.
         guard var format = vImage_CGImageFormat(
                   bitsPerComponent: 8, bitsPerPixel: 32,
-                  colorSpace: CGColorSpaceCreateDeviceRGB(),
+                  colorSpace: SDKGraphics.sRGB,
                   bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue
                                             | CGBitmapInfo.byteOrder32Little.rawValue),
                   renderingIntent: .defaultIntent) else {
@@ -565,7 +566,7 @@ extension CGImage {
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
         guard let base = CVPixelBufferGetBaseAddress(buffer),
               let context = CGContext(data: base, width: size, height: size, bitsPerComponent: 8,
-                  bytesPerRow: CVPixelBufferGetBytesPerRow(buffer), space: CGColorSpaceCreateDeviceRGB(),
+                  bytesPerRow: CVPixelBufferGetBytesPerRow(buffer), space: SDKGraphics.sRGB,
                   bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
             throw LicensePlateError.invalidInput("无法渲染 letterbox 图像。")
         }
@@ -591,7 +592,7 @@ extension CGImage {
     /// image is the raw memory, i.e. exactly what the model sees.
     private static func uprightSnapshot(base: UnsafeMutableRawPointer, side: Int, bytesPerRow: Int) -> CGImage? {
         guard let ctx = CGContext(data: base, width: side, height: side, bitsPerComponent: 8,
-                                  bytesPerRow: bytesPerRow, space: CGColorSpaceCreateDeviceRGB(),
+                                  bytesPerRow: bytesPerRow, space: SDKGraphics.sRGB,
                                   bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
                                             | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
         return ctx.makeImage()

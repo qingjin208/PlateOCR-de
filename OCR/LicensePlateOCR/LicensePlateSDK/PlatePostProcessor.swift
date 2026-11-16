@@ -12,7 +12,9 @@ import Foundation
 import CoreGraphics
 import CoreImage
 
-private let plateOCRContext = CIContext(options: [.cacheIntermediates: false])
+/// Shared process-wide context (Apple: CIContext is immutable, thread-safe and
+/// expensive to create — reuse one instead of allocating one per call site).
+private var plateOCRContext: CIContext { SDKGraphics.ciContext }
 
 public struct PlatePostProcessor: Sendable {
     public init() {}

@@ -38,6 +38,7 @@
 
 import Foundation
 import CoreGraphics
+import os
 #if canImport(onnxruntime)
 import onnxruntime
 #elseif canImport(onnxruntime_mobile_objc)
@@ -50,7 +51,9 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
 
     // MARK: - Model / dictionary
 
-    private struct Engine {
+    /// Immutable graph + dictionary. Every `session.run` goes through `ortQueue`,
+    /// so the ObjC `ORTSession`'s missing concurrency annotation is harmless.
+    private struct Engine: @unchecked Sendable {
         let session: ORTSession
         let inputName: String
         let outputName: String
@@ -59,10 +62,6 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         let alphabet: [String]
         /// Class indices the beam may emit: blank + German plate characters.
         let allowed: [Int]
-        /// ORT's C++ `Session::Run` is thread-safe, but the ObjC wrapper makes no
-        /// Sendable guarantee and `recognizeImage` calls this concurrently for
-        /// every detection in a multi-plate frame. Serialize the run itself.
-        let lock: NSLock
 
         static let imageHeight = 48
         static let baseWidth = 320
@@ -95,7 +94,6 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
                 allowed.append(index)
             }
             self.allowed = allowed
-            self.lock = NSLock()
 
             // Prewarm with the canonical [1,3,48,320] shape: ORT's graph
             // optimization and arena allocation happen on the first run.
@@ -126,56 +124,84 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         }
     }
 
-    /// Loaded once per process, lazily and thread-safely. Switching OCR engines in
-    /// the App used to rebuild this graph (16.5 MB + 18,383 dictionary lines + a
-    /// new ORT session + warmup) on the main thread every time.
-    ///
-    /// `@unchecked Sendable` is required because `ORTSession` (ObjC) and the
-    /// existential `Error` are not Sendable; both fields are immutable after init,
-    /// and all mutable runtime state lives behind `Engine.lock` / the SDK's own
-    /// `OSAllocatedUnfairLock`. A plain `Result<Engine, Error>` static let would
-    /// fail Swift 6's concurrency-safety check.
-    private final class SharedEngine: @unchecked Sendable {
-        let engine: Engine?
-        let failure: Error?
+    /// Dedicated serial queue for everything that blocks: graph construction and
+    /// `ORTSession.run`. WWDC21 "Swift concurrency: Behind the scenes" is explicit
+    /// that the cooperative pool only has `coreCount` threads, so blocking one of
+    /// them (an `NSLock` around a 9.4 ms CPU inference, N times per multi-plate
+    /// frame) stalls unrelated tasks. A private serial queue keeps the blocking
+    /// work off the pool; `Engine` is only ever touched there.
+    private static let ortQueue = DispatchQueue(
+        label: "de.plateocr.paddleocr.ort", qos: .userInitiated)
 
-        init() {
-            do {
-                engine = try Engine()
-                failure = nil
-            } catch let error {
-                engine = nil
-                failure = error
+    private enum LoadState {
+        case idle
+        case loaded(Engine)
+        case failed(LicensePlateError)
+    }
+
+    /// Loads the graph ONCE, lazily, on `ortQueue`.
+    ///
+    /// Apple's "Reducing your app's launch time": UIKit draws the first frame on
+    /// the main thread, so that thread must stay available, and expensive
+    /// initialization belongs on first use. `ContentView.init` used to synchronously
+    /// load 16.5 MB + 18,383 dictionary lines + a warmup inference before the first
+    /// frame; the previous static `let` fixed only REPEATED loads, not the first one.
+    private final class EngineStore: @unchecked Sendable {
+        private let state = OSAllocatedUnfairLock(initialState: LoadState.idle)
+
+        func get() async throws -> Engine {
+            try await withCheckedThrowingContinuation { continuation in
+                PaddleOCRTextRecognizer.ortQueue.async {
+                    let result: Result<Engine, LicensePlateError> = self.state.withLock { current in
+                        switch current {
+                        case .loaded(let engine):
+                            return .success(engine)
+                        case .failed(let error):
+                            return .failure(error)
+                        case .idle:
+                            do {
+                                let engine = try Engine()
+                                current = .loaded(engine)
+                                return .success(engine)
+                            } catch {
+                                let wrapped = LicensePlateError.paddleOCRUnavailable(
+                                    (error as? LocalizedError)?.errorDescription
+                                        ?? String(describing: error))
+                                current = .failed(wrapped)
+                                return .failure(wrapped)
+                            }
+                        }
+                    }
+                    // Resume explicitly: `CheckedContinuation` is parameterized on
+                    // `any Error`, so a `Result<Engine, LicensePlateError>` cannot be
+                    // passed to `resume(with:)` without an existential conversion.
+                    switch result {
+                    case .success(let engine): continuation.resume(returning: engine)
+                    case .failure(let error): continuation.resume(throwing: error)
+                    }
+                }
             }
         }
     }
 
-    private static let shared = SharedEngine()
+    private static let store = EngineStore()
 
-    private let engine: Engine?
-    private let loadError: Error?
-
-    /// Non-throwing so `OCREngine.makeRecognizer` keeps its signature. A failed
-    /// load (missing model/dictionary, unsupported ORT build) is surfaced as a
-    /// thrown error on the first recognition instead of a silent Vision fallback.
-    public init() {
-        self.engine = Self.shared.engine
-        self.loadError = Self.shared.failure
+    /// Fire-and-forget warmup for the App to call AFTER the first frame is on screen.
+    /// Swift static `let` is lazy, so simply constructing this class no longer loads
+    /// anything. A failed load is cached and rethrown on the first recognition
+    /// instead of silently downgrading to Apple Vision.
+    public static func prewarm() async {
+        _ = try? await store.get()
     }
+
+    /// Allocation-only: `OCREngine.makeRecognizer` keeps its non-throwing signature
+    /// and the App's `init` stays cheap.
+    public init() {}
 
     // MARK: - PlateTextRecognizing
 
     public func recognize(in image: CGImage, mode: RecognitionMode) async throws -> [PlateObservation] {
-        guard let engine else {
-            let detail: String
-            if let loadError = loadError {
-                detail = (loadError as? LocalizedError)?.errorDescription
-                    ?? String(describing: loadError)
-            } else {
-                detail = "未知初始化错误"
-            }
-            throw LicensePlateError.paddleOCRUnavailable(detail)
-        }
+        let engine = try await Self.store.get()
         try Task.checkCancellation()
 
         let beamWidth = mode == .accurate ? 16 : 8
@@ -194,7 +220,7 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         for variant in Self.variants(for: image, mode: mode) {
             try Task.checkCancellation()
             let prepared = try Self.prepare(variant)
-            let output = try decode(prepared, engine: engine)
+            let output = try await Self.decode(prepared, engine: engine)
             let beams = Self.beamDecode(compact: output.compact, time: output.time,
                                         engine: engine, width: beamWidth, limit: candidateLimit)
             for beam in beams { record(beam.text, score: beam.logScore) }
@@ -218,7 +244,7 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
             for piece in [top, bottom] {
                 try Task.checkCancellation()
                 let prepared = try Self.prepare(piece)
-                let output = try decode(prepared, engine: engine)
+                let output = try await Self.decode(prepared, engine: engine)
                 if !output.greedyText.isEmpty { pieces.append(output.greedyText) }
                 greedyReadings.append(output.greedyText)
                 bestGreedyConfidence = max(bestGreedyConfidence, output.greedyConfidence)
@@ -270,14 +296,16 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
 
     // MARK: - Inference
 
-    private struct PreparedInput {
-        let tensor: NSMutableData
+    /// Pure value type so it can cross the serial-queue boundary without an
+    /// `ORTValue` / `NSMutableData` (both ObjC, neither `Sendable`).
+    private struct PreparedInput: Sendable {
+        let floats: [Float]
         let width: Int
     }
 
     /// Only the columns the beam can emit, plus the full-dictionary greedy reading.
     /// Avoids materializing the `[T, 18385]` float array (~2.9 MB per inference).
-    private struct DecoderOutput {
+    private struct DecoderOutput: Sendable {
         let compact: [Float]
         let time: Int
         let greedyText: String
@@ -321,7 +349,7 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
                   let context = CGContext(
                       data: base, width: imgW, height: imgH,
                       bitsPerComponent: 8, bytesPerRow: bytesPerRow,
-                      space: CGColorSpaceCreateDeviceRGB(),
+                      space: SDKGraphics.sRGB,
                       bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
                           | CGBitmapInfo.byteOrder32Little.rawValue) else { return false }
             context.translateBy(x: 0, y: CGFloat(imgH))
@@ -348,34 +376,44 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
             }
             // x >= resizedW deliberately stays 0.
         }
-        return PreparedInput(tensor: NSMutableData(bytes: &floats,
-                                                    length: floats.count * MemoryLayout<Float>.size),
-                             width: imgW)
-    }
-
-    /// Serializes just the ORT call; decoding happens outside the lock so unrelated
-    /// detections do not contend for it.
-    private func runSession(_ engine: Engine, _ input: ORTValue) throws -> ORTValue {
-        engine.lock.lock()
-        defer { engine.lock.unlock() }
-        let outputs = try engine.session.run(withInputs: [engine.inputName: input],
-                                             outputNames: Set([engine.outputName]),
-                                             runOptions: nil)
-        guard let value = outputs[engine.outputName] else {
-            throw LicensePlateError.invalidModelOutput("PaddleOCR 未返回输出 \(engine.outputName)。")
-        }
-        return value
+        return PreparedInput(floats: floats, width: imgW)
     }
 
     /// Runs the graph and reduces `[1,T,18385]` to `[T,42]` in a SINGLE full-matrix
     /// pass, while also building the full-dictionary greedy path. The old pipeline
     /// copied the whole tensor and then scanned it three times (normalize, greedy,
     /// beam); on PC that decoding cost ~10.2 ms, as much as the inference itself.
-    private func decode(_ prepared: PreparedInput, engine: Engine) throws -> DecoderOutput {
-        let shape = [1, 3, Engine.imageHeight, prepared.width].map { NSNumber(value: $0) }
-        let input = try ORTValue(tensorData: prepared.tensor, elementType: .float, shape: shape)
-        let value = try runSession(engine, input)
+    ///
+    /// Both the blocking `Session::Run` and the ObjC tensor read happen on
+    /// `ortQueue`. Only the pure-Swift `DecoderOutput` crosses back, so the CTC
+    /// beam search still runs concurrently for each plate in a multi-plate frame.
+    private static func decode(_ prepared: PreparedInput, engine: Engine) async throws -> DecoderOutput {
+        try await withCheckedThrowingContinuation { continuation in
+            Self.ortQueue.async {
+                do {
+                    let shape = [1, 3, Engine.imageHeight, prepared.width]
+                        .map { NSNumber(value: $0) }
+                    var floats = prepared.floats
+                    let data = NSMutableData(bytes: &floats,
+                                             length: floats.count * MemoryLayout<Float>.size)
+                    let input = try ORTValue(tensorData: data, elementType: .float, shape: shape)
+                    let outputs = try engine.session.run(
+                        withInputs: [engine.inputName: input],
+                        outputNames: Set([engine.outputName]), runOptions: nil)
+                    guard let value = outputs[engine.outputName] else {
+                        throw LicensePlateError.invalidModelOutput(
+                            "PaddleOCR 未返回输出 \(engine.outputName)。")
+                    }
+                    continuation.resume(returning: try Self.decodeTensor(value, engine: engine))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
 
+    /// Pure-CPU reduction of the ORT output; called only on `ortQueue`.
+    private static func decodeTensor(_ value: ORTValue, engine: Engine) throws -> DecoderOutput {
         let dims = try value.tensorTypeAndShapeInfo().shape.map { $0.intValue }
         guard dims.count >= 2 else {
             throw LicensePlateError.invalidModelOutput("PaddleOCR 输出形状异常：\(dims)")
@@ -609,7 +647,7 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
                   let context = CGContext(
                       data: base, width: w, height: h,
                       bitsPerComponent: 8, bytesPerRow: bytesPerRow,
-                      space: CGColorSpaceCreateDeviceRGB(),
+                      space: SDKGraphics.sRGB,
                       bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
                           | CGBitmapInfo.byteOrder32Little.rawValue) else { return false }
             context.translateBy(x: 0, y: CGFloat(h))
@@ -664,7 +702,7 @@ private extension CGImage {
         guard width > 0,
               let context = CGContext(data: nil, width: width, height: height,
                                       bitsPerComponent: 8, bytesPerRow: 0,
-                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      space: SDKGraphics.sRGB,
                                       bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
                                           | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
         context.draw(self, in: CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)))

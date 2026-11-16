@@ -49,12 +49,39 @@ bash setup_mac.sh
   `python Scripts/paddleocr_rec_reference.py --fetch-models` 重新拉取；`--self-test` 用合成车牌验证预处理与 CTC 解码。
 - **真机第一步**：在 Xcode 的 Build Phases → Copy Bundle Resources 里确认
   `PP-OCRv5_rec_mobile_infer.onnx` 与 `ppocrv5_dict.txt` 确实进了包。工程用
-  `fileSystemSynchronizedGroups`（`files` 为空），`PaddleOCRResources` 会做多路径探测 + 递归查找；
-  两个资源仍找不到时设置页会显示原因，选择 PaddleOCR 会**显式报错**而非静默跑 Vision。
+  `fileSystemSynchronizedGroups`（`files` 为空），`PaddleOCRResources` 会先按 Apple 文档把
+  `subdirectory` 当作顶层 bundle 目录做多候选探测，仅在全部落空时才**限定在 `resourceURL` 内、
+  跳过 Frameworks/PlugIns/*.lproj、最多 2000 项**地按文件名查找；两个资源仍找不到时设置页会显示原因，
+  选择 PaddleOCR 会**显式报错**而非静默跑 Vision。
 - 精度对照：`python Scripts/paddleocr_rec_reference.py --eval samples/ --labels samples/labels.tsv`
   输出准确率与 CER；用同一批矫正图在真机切换两个引擎各跑一次即可量化收益。设置页打开「诊断」
   后，检测信息行会显示全字典 greedy 原始读数与异常字符（清洁是否彻底的信号）。
 - 若真机上 PaddleOCR 结果异常，先用该脚本对同一张矫正图跑一遍，区分「张量/解码问题」与「图片质量问题」。
+
+---
+
+## Apple 平台规范对齐（2026-11-16，按官方文档核查）
+- **启动时间**（《Reducing your app's launch time》）：首帧前不得在主线程做重初始化。
+  PaddleOCR 的 16.5 MB 图 / 字典 / ORT session / warmup 已从 `ContentView.init` 移出，
+  改为首帧后 `.task` 后台预热 + 首次识别按需 `await` 同一份一次性加载。
+  ⚠️ **遗留项**：检测器 `De-plate-pose.onnx` 仍在 `LicensePlateRecognizer` 的
+  convenience init 里同步加载，冷启动耗时需在真机用 Instruments / XCTest 量测后再决定是否同样延迟化。
+- **Swift 并发**（WWDC21《Swift concurrency: Behind the scenes》）：协作线程池只有 CPU 核数个线程，
+  不能在其中阻塞。`ORTSession.run` 已搬到专用串行队列，只有纯 Swift `DecoderOutput` 跨回调用方；
+  三处 `NSLock` 全部换成 Apple 推荐的 `OSAllocatedUnfairLock`，且 recognizer 构建移出临界区。
+- **渲染**（`CIContext` / `CGColorSpace` 文档）：`CIContext` 改为 SDK 级共享单例（原本每个调用点各建一个）；
+  9 处 `CGColorSpaceCreateDeviceRGB()`（device-dependent）统一为命名 sRGB，保证与 PC 参考的字节级一致。
+- **后台执行**（《Extending your app's background execution time》）：图片 / 视频识别 pass 现在成对申请
+  `beginBackgroundTask(withName:expirationHandler:)` / `endBackgroundTask`，用户锁屏时不会在 5 秒后被挂起中断。
+- **Vision A/B 分支**：`usesLanguageCorrection = false` 时 Apple 明确 `customWords` 会被忽略，
+  所以 727 条城市码只交给 `GermanPlateValidator`；`minimumTextHeightFraction = 0.1` 用于滤徽章小字，
+  **滤不掉 EU 蓝条的 D**（与主字符等高），蓝条仍靠 `PlateImageCleaner` 遮白。
+- **隐私 / 上架**：`PhotosPicker` 进程外取图，**不需要** `NSPhotoLibraryUsageDescription`；
+  相机描述 `NSCameraUsageDescription` 已声明。App 自身未使用 `UserDefaults`、文件时间戳等
+  required reason API，**目前不需要** `PrivacyInfo.xcprivacy`；上架前请检查
+  `onnxruntime-objc` / `onnxruntime-mobile-objc` pod 是否自带已签名的隐私清单与签名。
+- **iPad（既有配置，非本分支改动）**：`UIRequiresFullScreen = YES` + `TARGETED_DEVICE_FAMILY = 1,2`
+  会禁用 Split View / Slide Over；若要多任务需在 Target 设置里调整。
 
 ---
 

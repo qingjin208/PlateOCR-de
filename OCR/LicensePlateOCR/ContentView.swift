@@ -288,6 +288,9 @@ struct ContentView: View {
 
     private func handleOCREngineChange(_ newEngine: OCREngine) {
         recognizer.ocrEngine = newEngine
+        // Switching engines is now a cheap wrapper swap; start the deferred graph
+        // load in the background so the first frame after the switch does not wait.
+        Task.detached(priority: .utility) { await OCREngine.prewarm(newEngine) }
     }
 
     private func handleUseRGBChange(_ newValue: Bool) {
@@ -345,8 +348,35 @@ struct ContentView: View {
     }
 
     private func initialSetup() async {
+        // `.task` runs AFTER the first frame is drawn — Apple's recommended place
+        // for expensive initialization ("Reducing your app's launch time"). The
+        // PaddleOCR graph loads on its private serial queue; the first recognition
+        // awaits that same one-time load if the user starts before it finishes.
+        let engine = ocrEngine
+        Task.detached(priority: .utility) { await OCREngine.prewarm(engine) }
         // Kick the camera session once at launch when we open on the camera tab.
         if source == .camera { await cameraController.setup() }
+    }
+
+    /// Apple's "Extending your app's background execution time": the system suspends
+    /// an app ~5 s after it enters the background, so a finite-length task that must
+    /// finish needs `beginBackgroundTask`, requested BEFORE entering the background
+    /// and always paired with `endBackgroundTask` (otherwise the watchdog kills the
+    /// app). A video pass samples `videoSampleLimit` frames and easily exceeds that
+    /// window if the user locks the screen mid-recognition.
+    @MainActor
+    private func beginBackgroundExecution(_ name: String) -> UIBackgroundTaskIdentifier {
+        UIApplication.shared.beginBackgroundTask(withName: name) {
+            // Expiry is handled by the pass itself: `Task.checkCancellation` and
+            // the scenePhase / tab-switch observers cancel it. The matching
+            // `endBackgroundTask` runs from the caller's `defer` in all cases.
+        }
+    }
+
+    @MainActor
+    private func endBackgroundExecution(_ identifier: UIBackgroundTaskIdentifier) {
+        guard identifier != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(identifier)
     }
 
     // MARK: - Header
@@ -640,7 +670,12 @@ struct ContentView: View {
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
+    @MainActor
     private func runImage(_ item: PhotosPickerItem) async {
+        // Keep a finite-length background assertion for the whole pass (see
+        // `beginBackgroundExecution`); `defer` also covers every early return.
+        let backgroundTask = beginBackgroundExecution("plateOCR.image")
+        defer { endBackgroundExecution(backgroundTask) }
         // Clear the selection once we've consumed it, so re-selecting the same asset
         // (a common re-test) produces a fresh change and re-triggers recognition.
         defer { if imageItem == item { imageItem = nil } }
@@ -704,7 +739,12 @@ struct ContentView: View {
         }
     }
 
+    @MainActor
     private func runVideo(_ item: PhotosPickerItem) async {
+        // Video is the long-running case: without this assertion the OS suspends
+        // the app when the screen locks and the frame pass dies mid-stream.
+        let backgroundTask = beginBackgroundExecution("plateOCR.video")
+        defer { endBackgroundExecution(backgroundTask) }
         defer { if videoItem == item { videoItem = nil } }
         // Same contract as `runImage`: claim busy up front, clear it on every non-cancelled
         // early exit so a failing pass can never strand 识别中… on screen.

@@ -76,6 +76,19 @@ public final class PlateTextRecognizer: PlateTextRecognizing {
         // Plates are not natural language — disable correction so it never rewrites glyphs.
         request.usesLanguageCorrection = false
 
+        // Apple's `minimumTextHeightFraction` (default 1/32 ≈ 0.031) drops text
+        // shorter than that fraction of the image height and reduces memory use.
+        // Rectified plate glyphs occupy ~40-70% of the crop, so 0.1 removes the
+        // seal's micro-print, screw heads and border artifacts while keeping the
+        // number. It does NOT remove the EU strip's "D" (same glyph height) — that
+        // is what `PlateImageCleaner` masks before OCR.
+        request.minimumTextHeightFraction = 0.1
+
+        // Deliberately NO `customWords`: Apple documents that customWords is ignored
+        // when `usesLanguageCorrection == false`, which is the setting above. The
+        // 727 city codes are applied by `GermanPlateValidator` as a rescoring hint,
+        // where they cannot silently rewrite glyph shapes. Enabling correction just
+        // to make customWords work would harm FE-Schrift digit/letter confusion.
         let observations: [RecognizedTextObservation]
         do {
             observations = try await request.perform(on: image)

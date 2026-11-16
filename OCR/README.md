@@ -69,8 +69,17 @@ python Scripts/paddleocr_rec_reference.py --eval samples/ --labels samples/label
 
 ## 平台与验证限制
 
-模型加载配置为 `MLComputeUnits.all`，允许 Core ML 选择符合条件的 CPU、GPU 和 Apple Neural Engine。是否实际使用 Neural Engine，以及速度和功耗是否改善，需要在目标 iPhone 上测量；不能仅凭模型格式作保证。Swift Package 已移除真机专用 Paddle 二进制限制，实际平台编译仍需 Apple 工具链验证。
+本分支的检测器与 PaddleOCR 识别器都跑在 **ONNX Runtime（CPU）** 上，不使用 Core ML，
+因此也用不上 Apple Neural Engine 的自动调度（`MLComputeUnits.all` 是已退役 Core ML 检测器的旧配置，
+上面的旧描述已清理）。ORT 用 `setIntraOpNumThreads(2)` 限制线程数；Apple 文档说明 Core ML 会自动在
+CPU / GPU / ANE 间择优，所以长时间相机推理的功耗与发热需在真机上与 Core ML 方案对比 —— 这是当前架构的权衡。
 
-已验证全部 129 个原始参数张量逐字节一致，且原 NB 计算图与序列化 Core ML 图在黑图、114 灰图和固定随机图上的独立 CPU 执行结果通过误差检查。这里的验证不使用实际 Paddle Lite 或 Apple Core ML 运行时，不能代替真机识别与性能测试。
+工程最低部署目标 iOS 18.0、`SWIFT_VERSION = 5.0`，用到的 `OSAllocatedUnfairLock`(16+)、
+`Locale.Language`(16+)、`@Observable`(17+)、`RecognizeTextRequest`(18+) 均在覆盖范围内。
+Apple 平台规范对齐情况（启动时间、协作线程池、后台执行、隐私清单、命名 sRGB / 共享 CIContext）
+见 [MAC_SETUP.md](MAC_SETUP.md) 的「Apple 平台规范对齐」一节。
 
-当前环境为 Windows，尚未执行 Xcode 编译和 Swift 测试，也尚未验证 Core ML 真机推理。已加入实际模型加载测试及原图输出对照数据。转换方法、数值验证边界和真机对比步骤见 [Models/README.md](Models/README.md)。
+当前环境为 Windows，**Swift 从未经过 Xcode 编译**，也没有真机精度 / 帧率数据。
+已完成的验证只有：PC 参考脚本 `--self-test` / `--eval`、Swift 静态结构检查、模型与字典规格核对。
+`Models/` 下的 NB→Core ML 转换与逐字节一致性记录属于旧检测器，仅保留作离线溯源，不参与本分支运行时；
+详见 [Models/README.md](Models/README.md)。

@@ -21,6 +21,35 @@ import Foundation
 import CoreGraphics
 import CoreImage
 
+/// Process-wide CoreGraphics / CoreImage render state.
+///
+/// Apple's `CIContext` documentation: contexts are immutable and thread-safe, so
+/// they should be shared ("not recommended to create many CIContext instances");
+/// the corrector's default parameter used to allocate a new one on EVERY call.
+///
+/// `CGColorSpaceCreateDeviceRGB()` creates a device-DEPENDENT space, which Apple
+/// recommends replacing with a named space when color preservation matters. For
+/// OCR, "preservation" means byte-level agreement with the PC reference's sRGB
+/// input, so every bitmap in the pipeline must use this same named space.
+enum SDKGraphics {
+    /// `@unchecked Sendable` box: neither `CGColorSpace` nor `CIContext` carries a
+    /// Swift concurrency annotation, so a bare `static let` would fail Swift 6's
+    /// global-state check. Both are immutable and (per Apple) thread-safe.
+    private final class Shared: @unchecked Sendable {
+        /// `CGColorSpace(name:)` is the Swift overlay initializer — the C
+        /// `vImage_CGImageFormat` memberwise initializer declares `colorSpace` as
+        /// `Unmanaged<CGColorSpace>!` and would not accept a bare `CGColorSpace`.
+        let colorSpace: CGColorSpace =
+            CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        let ciContext = CIContext(options: [.cacheIntermediates: false])
+    }
+
+    private static let shared = Shared()
+
+    static var sRGB: CGColorSpace { shared.colorSpace }
+    static var ciContext: CIContext { shared.ciContext }
+}
+
 public struct PerspectivePlateCorrector: Sendable {
     private let context: CIContext
 
@@ -44,7 +73,7 @@ public struct PerspectivePlateCorrector: Sendable {
     /// before, silently handing 121×34 crops to OCR).
     private let targetOutputHeight: CGFloat
 
-    public init(context: CIContext = CIContext(options: [.cacheIntermediates: false]),
+    public init(context: CIContext = SDKGraphics.ciContext,
                 minAverageVisibility: Float = 0.3,
                 hardMinVisibility: Float = 0.1,
                 maxOutputEdge: CGFloat = 960,

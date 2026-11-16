@@ -217,7 +217,7 @@ struct PixelBuffer {
     private init?(image: CGImage, width w: Int, height h: Int) {
         guard let ctx = CGContext(data: nil, width: w, height: h,
                                   bitsPerComponent: 8, bytesPerRow: w * 4,
-                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  space: SDKGraphics.sRGB,
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
               let base = ctx.data else { return nil }
         ctx.interpolationQuality = .medium
@@ -243,12 +243,12 @@ struct PixelBuffer {
                   let src = CGContext(data: UnsafeMutableRawPointer(mutating: base),
                                       width: width, height: height, bitsPerComponent: 8,
                                       bytesPerRow: width * 4,
-                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      space: SDKGraphics.sRGB,
                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
                   let raw = src.makeImage(),
                   let dst = CGContext(data: nil, width: width, height: height,
                                       bitsPerComponent: 8, bytesPerRow: width * 4,
-                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      space: SDKGraphics.sRGB,
                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
             else { return nil }
             dst.translateBy(x: 0, y: CGFloat(height))

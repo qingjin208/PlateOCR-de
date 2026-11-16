@@ -15,6 +15,7 @@
 
 import Foundation
 import CoreGraphics
+import os
 
 /// OCR engine used to read the plate characters.
 public enum OCREngine: String, CaseIterable, Sendable {
@@ -74,6 +75,19 @@ public enum OCREngine: String, CaseIterable, Sendable {
             #endif
         }
     }
+
+    /// Warms the selected engine's model AFTER the first frame is on screen.
+    ///
+    /// Apple's "Reducing your app's launch time" requires the main thread to stay
+    /// available for UIKit's first frame and recommends deferring expensive
+    /// initialization to first use. Call this from the view's `.task`, not `init`.
+    public static func prewarm(_ engine: OCREngine) async {
+        #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc) || canImport(onnxruntime_objc)
+        if engine == .paddleOCR { await PaddleOCRTextRecognizer.prewarm() }
+        #else
+        _ = engine
+        #endif
+    }
 }
 
 /// Returned when `.paddleOCR` is selected in a build without its model/dictionary.
@@ -111,28 +125,34 @@ public enum PlateOCRAlphabet {
 /// border). The constrained beam would silently swallow those characters and
 /// return a confident but wrong string, so we keep this signal separately.
 public enum PaddleOCRDiagnostics {
+    private struct State {
+        var readings: [String] = []
+        var strayCharacters: String?
+    }
+
+    /// `OSAllocatedUnfairLock` is Apple's supported Swift wrapper for
+    /// `os_unfair_lock`; unlike a manual `NSLock.lock()/unlock()` pair it cannot
+    /// accidentally be held across an `await`.
     private final class Box: @unchecked Sendable {
-        private let lock = NSLock()
-        private var readings: [String] = []
-        private var strayCharacters: String?
+        private let state = OSAllocatedUnfairLock(initialState: State())
 
         func record(_ newReadings: [String]) {
-            lock.lock()
-            defer { lock.unlock() }
-            readings = newReadings
-            let stray = Set(newReadings.joined().map { String($0) })
-                .subtracting(PlateOCRAlphabet.allowedSet)
-            strayCharacters = stray.isEmpty ? nil : stray.sorted().joined()
+            state.withLock { current in
+                current.readings = newReadings
+                let stray = Set(newReadings.joined().map { String($0) })
+                    .subtracting(PlateOCRAlphabet.allowedSet)
+                current.strayCharacters = stray.isEmpty ? nil : stray.sorted().joined()
+            }
         }
 
         func summary() -> String? {
-            lock.lock()
-            defer { lock.unlock() }
-            guard let reading = readings.first, !reading.isEmpty else { return nil }
-            if let stray = strayCharacters {
-                return "OCR 原始读数 \(reading) · 异常字符 \(stray)（清洁未彻底？）"
+            state.withLock { current -> String? in
+                guard let reading = current.readings.first, !reading.isEmpty else { return nil }
+                if let stray = current.strayCharacters {
+                    return "OCR 原始读数 \(reading) · 异常字符 \(stray)（清洁未彻底？）"
+                }
+                return "OCR 原始读数 \(reading)"
             }
-            return "OCR 原始读数 \(reading)"
         }
     }
 
