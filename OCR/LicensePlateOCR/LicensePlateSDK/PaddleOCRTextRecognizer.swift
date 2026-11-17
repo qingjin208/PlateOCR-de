@@ -285,8 +285,15 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
                 let rowConfidence = min(rows[0].confidence, rows[1].confidence)
                 let topText = rows[0].beams.first?.text ?? rows[0].greedy
                 let bottomText = rows[1].beams.first?.text ?? rows[1].greedy
-                guard rowConfidence >= 0.3 else {
-                    twoRowNote = "split\(split) 行置信度\(String(format: "%.2f", Double(rowConfidence)))<0.30 top=\(topText) bottom=\(bottomText)"
+                // A confirmed two-row layout (the ink projection found two peaks and a
+                // waist) is stronger evidence than a single row's CTC confidence. On
+                // small/live camera crops one row often dips to 0.2–0.3 because the
+                // glyphs are thin; gating at 0.3 discarded the whole two-row pass and
+                // left only the interleaved whole-crop reading (e.g. "DLR81" for
+                // TR/DL 81). 0.20 keeps genuinely unreadable rows out without throwing
+                // away a correct pair. assembleTwoRows still validates the whole plate.
+                guard rowConfidence >= 0.2 else {
+                    twoRowNote = "split\(split) 行置信度\(String(format: "%.2f", Double(rowConfidence)))<0.20 top=\(topText) bottom=\(bottomText)"
                     continue
                 }
                 guard let reading = Self.assembleTwoRows(region: rows[0], identification: rows[1]) else {
@@ -301,7 +308,13 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
             if !attempted { twoRowNote = "split\(primarySplit) 无法裁剪" }
         }
         if twoRowJoined != nil {
-            for key in fullCropKeys { ranked[key]? -= 1.5 }
+            // A confirmed whole-plate assembly outranks any whole-crop reading: on a
+            // two-row plate the latter is ALWAYS an interleaved mix of the two rows
+            // that can coincidentally look like a legal plate ("DLR81" for TR/DL81).
+            // -1.5 left room for such a cross-row string to win when it scored high;
+            // -4 gives the two-row result a decisive but bounded edge (a false split
+            // is still recoverable via the two-row candidates kept below).
+            for key in fullCropKeys { ranked[key]? -= 4 }
         }
 
         PaddleOCRDiagnostics.record(greedyReadings: greedyReadings, twoRow: twoRowNote)
@@ -1021,10 +1034,13 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         let valley = (run.start + run.end) / 2
         // A real inter-row gap sits at the plate's waist. A single-row plate can show
         // a deep gap between two characters, but it is not tied to mid-height (the EU
-        // strip masks are also off-centre). Requiring 40–60% rejects those false gaps
-        // without rejecting genuine two-row gaps, which FZV layouts put near the middle
-        // even when the two rows carry different amounts of text.
-        guard valley >= Int(Double(h) * 0.40), valley <= Int(Double(h) * 0.60) else { return nil }
+        // strip masks are also off-centre). The waist window was 40–60%, but a live
+        // camera crop of TR/DL 81 put the valley at 57% — one frame's perspective or a
+        // city seal in the gap can push it past 60%, which silently killed the whole
+        // two-row pass and left the interleaved whole-crop reading. Widen to 36–64%:
+        // still far from the outer text bands (10–42% / 58–90%), so a single-row
+        // inter-character gap near an edge is rejected, while a genuine waist is kept.
+        guard valley >= Int(Double(h) * 0.36), valley <= Int(Double(h) * 0.64) else { return nil }
 
         // No horizontal-span guard here. A city seal on the top row (DA / H 220H)
         // makes both halves span almost the entire plate width, so the old ≥0.12
