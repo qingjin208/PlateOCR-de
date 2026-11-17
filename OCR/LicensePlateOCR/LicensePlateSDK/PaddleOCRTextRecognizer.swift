@@ -235,50 +235,49 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
             bestGreedyConfidence = max(bestGreedyConfidence, output.greedyConfidence)
         }
 
-        // Two-row plates (zweizeilige Kennzeichen / stacked canton codes): CTC read
-        // on the WHOLE crop interleaves both text rows and returns a plausible but
-        // wrong string (e.g. "R-B 2H" for "KR" + "RY75H") that is often CONFIDENT,
-        // because every glyph is locally crisp. The horizontal ink-band gate proves
-        // the layout, so this runs in BOTH modes — a single-line plate exits the
-        // gate immediately (EU aspect ≈ 4.5 fails the < 2.6 ratio check), making the
-        // cost zero there. The joined row-by-row reading competes on the BOTTOM
-        // row's CTC evidence (the identification row carries the discriminating
-        // content; the region row reads noisier), and every whole-crop candidate is
-        // demoted: single-line decoding of a two-row plate is structurally wrong,
-        // not just unlucky.
+        // Two-row plates (zweizeilige Kennzeichen): CTC on the WHOLE crop interleaves
+        // both rows and returns a plausible but wrong string (e.g. "R-B 2H" for "KR"
+        // + "RY75H") that is often CONFIDENT, because every glyph is locally crisp.
+        // The horizontal ink projection proves the layout, then each row is read on
+        // its own. Unlike the old top-1-only code, the TOP K beams of both rows are
+        // combined into candidate pairs and each pair is validated as a WHOLE plate —
+        // a non-code misread in one row's top beam can no longer void the reading.
+        // The winner is assembled straight into canonical `CITY-ID` form so
+        // `GermanPlateValidator` never has to re-guess the city/series boundary.
+        // Runs in BOTH modes: a single-line plate fails the ink gate immediately
+        // (EU aspect ≈ 4.5 fails the < 2.6 ratio check; tighter single rows fail the
+        // two-peak / mid-waist valley checks).
         let fullCropKeys = Set(ranked.keys)
         var twoRowJoined: (text: String, confidence: Float)?
         if let split = Self.horizontalInkSplit(of: image),
-           let top = image.cropping(to: CGRect(x: 0, y: 0,
-                                               width: CGFloat(image.width), height: CGFloat(split))),
-           let bottom = image.cropping(to: CGRect(x: 0, y: CGFloat(split),
-                                                  width: CGFloat(image.width),
-                                                  height: CGFloat(image.height - split))) {
-            var pieces: [String] = []
-            var pieceScores: [Double] = []
-            var pieceConfidences: [Float] = []
+           let rawTop = image.cropping(to: CGRect(x: 0, y: 0,
+                                                  width: CGFloat(image.width), height: CGFloat(split))),
+           let rawBottom = image.cropping(to: CGRect(x: 0, y: CGFloat(split),
+                                                     width: CGFloat(image.width),
+                                                     height: CGFloat(image.height - split))),
+           let top = Self.paddedRow(rawTop),
+           let bottom = Self.paddedRow(rawBottom) {
+            var rows: [RowReading] = []
             for piece in [top, bottom] {
                 try Task.checkCancellation()
                 let prepared = try Self.prepare(piece)
                 let output = try await Self.decode(prepared, engine: engine)
                 let beams = Self.beamDecode(compact: output.compact, time: output.time,
                                             engine: engine, width: beamWidth, limit: candidateLimit)
-                let text = beams.first?.text ?? String(output.greedyText.filter {
-                    PlateOCRAlphabet.allowedSet.contains(String($0))
-                })
-                if !text.isEmpty { pieces.append(text) }
-                pieceScores.append(beams.first?.logScore ?? -60)
-                pieceConfidences.append(output.greedyConfidence)
-                greedyReadings.append(output.greedyText)
+                rows.append(RowReading(beams: beams, greedy: output.greedyText,
+                                       confidence: output.greedyConfidence))
+                if !output.greedyText.isEmpty { greedyReadings.append(output.greedyText) }
                 bestGreedyConfidence = max(bestGreedyConfidence, output.greedyConfidence)
             }
-            // Promotion gate: both rows must produce text with usable confidence,
-            // so a false-positive split on a washed-out single-line plate can never
-            // outrank the (demoted but still present) whole-crop reading.
-            if pieces.count == 2, min(pieceConfidences[0], pieceConfidences[1]) >= 0.3 {
-                let joined = pieces.joined(separator: " ")
-                record(joined, score: pieceScores[1] - 0.5)
-                twoRowJoined = (joined, (pieceConfidences[0] + pieceConfidences[1]) / 2)
+            // Promotion gate: both rows must read with usable confidence, and the
+            // lexicon/structure picker must produce a format-valid canonical string.
+            // A false-positive split on a washed-out single-line plate can therefore
+            // never outrank the (demoted but still present) whole-crop reading.
+            if rows.count == 2,
+               min(rows[0].confidence, rows[1].confidence) >= 0.3,
+               let reading = Self.assembleTwoRows(region: rows[0], identification: rows[1]) {
+                record(reading.text, score: reading.score)
+                twoRowJoined = (reading.text, reading.confidence)
             }
         }
         if twoRowJoined != nil {
@@ -415,10 +414,17 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
 
     /// Renders the rectified plate into PP-OCRv5's `[1,3,48,W]` float32 NCHW tensor.
     ///
-    /// Two details are load-bearing (both verified against the PC reference):
-    /// 1. `CGContext(data:)` is bottom-left origin, so the drawing must be flipped
-    ///    or the model sees a vertically mirrored plate (the exact bug already
-    ///    documented for the pose detector's letterbox).
+    /// Two details are load-bearing:
+    /// 1. Do NOT add a `translateBy`/`scaleBy(-1)` flip here. Commit 5994e1d removed it
+    ///    after a Mac pixel-diff reported a plain `draw` closer to cv2.resize than the
+    ///    flipped variant (37 vs 79), fixing mirrored readings (N→И, T→⊥, 255→522).
+    ///    Caveat: Apple's docs fix the coordinate system of `CGContext(data:)` (Quartz
+    ///    default, bottom-left) and the top-row-first storage of CGImage data
+    ///    (`cropping(to:)`) — but neither, by itself, decides the row order of the
+    ///    bitmap AFTER `draw`; the classic Quartz pitfall is the opposite convention.
+    ///    Other SDK paths (`ONNXPose.legacyLetterbox`, `PlateImageCleaner`) do flip, so
+    ///    this is an empirical convention, not a documented certainty. Re-verify on a
+    ///    device with the `ocr_dump_*` prepared/source PNG pair before changing it.
     /// 2. Right padding is **0 in normalized space**, not black (-1). PaddleOCR's
     ///    `np.zeros` corresponds to a 127.5 gray pixel after inverting the
     ///    `(x/255 - 0.5)/0.5` transform.
@@ -746,6 +752,134 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
             .map { (text: $0.key, logScore: $0.value.score) }
     }
 
+    // MARK: - Two-row assembly (方案 B)
+
+    /// One independently decoded row of a two-row plate.
+    private struct RowReading {
+        let beams: [(text: String, logScore: Double)]
+        let greedy: String
+        let confidence: Float
+    }
+
+    /// Adds symmetric white margins to a split row before it enters `prepare`.
+    /// A region-code row with only 1–3 letters is a narrow strip; `prepare` maps its
+    /// full width onto the 48 px-high tensor, so without padding its few glyphs are
+    /// magnified and the CTC head loses the leading/trailing blank frames. Padding
+    /// to roughly the aspect of a full identification row (~4:1) keeps glyph scale
+    /// consistent with the model's training distribution. Rows already wide enough
+    /// are returned untouched.
+    private static func paddedRow(_ image: CGImage) -> CGImage? {
+        let targetWidth = image.height * 4
+        guard image.width < targetWidth else { return image }
+        let pad = (targetWidth - image.width) / 2
+        let width = image.width + 2 * pad
+        guard let context = CGContext(data: nil, width: width, height: image.height,
+                                      bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: SDKGraphics.sRGB,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                          | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
+        // White canvas: PaddleOCR normalizes white to +1, which is its blank/space
+        // territory and never decodes as a plate glyph.
+        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: image.height))
+        context.draw(image, in: CGRect(x: pad, y: 0,
+                                       width: image.width, height: image.height))
+        return context.makeImage()
+    }
+
+    /// Letter-only region-code candidates from the top row's beam, deduplicated and
+    /// kept in CTC order. Each entry is (code, logScore). The greedy reading is added
+    /// as a last-resort candidate when no beam produced a letter-only code.
+    private static func regionCandidates(_ row: RowReading) -> [(text: String, score: Double)] {
+        var out: [(text: String, score: Double)] = []
+        var seen = Set<String>()
+        for beam in row.beams.prefix(8) {
+            let clean = beam.text.filter { $0.isLetter }
+            guard (1...3).contains(clean.count), seen.insert(clean).inserted else { continue }
+            out.append((clean, beam.logScore))
+        }
+        if out.isEmpty {
+            let clean = row.greedy.filter { $0.isLetter }
+            if (1...3).contains(clean.count) { out.append((clean, -60)) }
+        }
+        return out
+    }
+
+    /// Structurally legal identification candidates from the bottom row's beam, in
+    /// CTC order, each normalized to canonical `SERIES DIGITS[SUFFIX]` form.
+    private static func identificationCandidates(_ row: RowReading) -> [(text: String, score: Double)] {
+        var out: [(text: String, score: Double)] = []
+        var seen = Set<String>()
+        for beam in row.beams.prefix(8) {
+            let clean = beam.text.filter { PlateOCRAlphabet.allowedSet.contains(String($0)) }
+            guard let body = canonicalBody(clean), seen.insert(body).inserted else { continue }
+            out.append((body, beam.logScore))
+        }
+        return out
+    }
+
+    /// Validates an identification-row reading on its own and normalizes its shape.
+    private static func canonicalBody(_ raw: String) -> String? {
+        let clean = raw.uppercased().filter { $0 != " " && $0 != "-" }
+        let pattern = "^[A-Z]{1,2}[0-9]{1,4}[EH]?$"
+        guard clean.range(of: pattern, options: .regularExpression) != nil else { return nil }
+        // Split at the first digit so the validator receives the canonical spacing,
+        // e.g. `RY75H` → `RY 75H`. `isValid` also enforces the 8-char FZV limit.
+        let cut = clean.firstIndex(where: { $0.isNumber })!
+        let body = "\(clean[..<cut]) \(clean[cut...])"
+        guard GermanPlateValidator.isValid("X-\(body)") else { return nil }
+        return body
+    }
+
+    /// Picks the best full-plate reading from the two rows' candidate lists.
+    ///
+    /// The old code took each row's top-1 independently: when the city row's top beam
+    /// was a non-code misread (`K8` for `KR`) or the bottom row's top beam was not a
+    /// legal identification, the joined string failed validation and the entire
+    /// two-row reading was discarded — falling back to the interleaved whole-crop
+    /// garbage. Keeping the top-k of BOTH rows and validating each candidate pair as
+    /// a WHOLE plate lets a lower-ranked but legal beam win, which is the common
+    /// recoverable case.
+    ///
+    ///   score = mean(CTC top, CTC bottom) + lexicon bonus(city) − drift penalty
+    /// Exact codes earn +4, edit-distance-1 codes +1.5, unknown codes 0 (the validator
+    /// still accepts them — hint, never a hard filter). `canonicalize` returning the
+    /// same text means the structure agrees, no penalty; a different text is penalized.
+    ///
+    /// Limit by design: if two candidates are BOTH real codes (`KK` vs `KR`) and the
+    /// CTC misread ranks the wrong one higher, the bottom row carries no evidence to
+    /// overturn it. Fixing that class requires the recognition model or real samples;
+    /// this stage deliberately does not guess against the model's confidence.
+    private static func assembleTwoRows(region: RowReading,
+                                        identification: RowReading)
+        -> (text: String, score: Double, confidence: Float)? {
+        let cities = regionCandidates(region)
+        let bodies = identificationCandidates(identification)
+        guard !cities.isEmpty, !bodies.isEmpty else { return nil }
+
+        var best: (text: String, score: Double)?
+        for city in cities.prefix(6) {
+            let bonus: Double = GermanPlateLexicon.contains(city.text) ? 4
+                : (GermanPlateLexicon.fuzzyMatches(for: city.text).isEmpty ? 0 : 1.5)
+            for body in bodies.prefix(6) {
+                let joined = "\(city.text)-\(body.text)"
+                guard let canonical = GermanPlateValidator.canonicalize(joined),
+                      GermanPlateValidator.isValid(canonical) else { continue }
+                let drift = canonical == joined ? 0.0 : -1.5
+                // Mean of the two rows (not the sum) so the two-row reading stays on
+                // the same CTC scale as a whole-crop candidate — otherwise adding two
+                // log-probabilities would always lose to a single row's score.
+                let score = (city.score + body.score) / 2 + bonus + drift
+                if best == nil || score > best!.score {
+                    best = (canonical, score)
+                }
+            }
+        }
+        guard let best else { return nil }
+        return (best.text, best.score,
+                (region.confidence + identification.confidence) / 2)
+    }
+
     // MARK: - Recognition variants
 
     private static func variants(for image: CGImage, mode: RecognitionMode) -> [CGImage] {
@@ -767,11 +901,26 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         return result
     }
 
-    /// Detects a genuine two-row plate from its horizontal ink projection. Returns
-    /// the row at which to split, or `nil` for the overwhelmingly common one-row
-    /// plate. Gate: both halves must contain ink and the central band must be empty.
+    /// Detects a genuine two-row plate from its horizontal ink profile and returns
+    /// the row to split at, or `nil` for the overwhelmingly common one-row plate.
+    ///
+    /// Method: find a text-carrying peak in each half of the plate, then take the
+    /// minimum-ink row *between* the two peaks as the split. This replaces the old
+    /// "≥3 continuous blank rows in the middle" gate, which failed on two-row plates
+    /// that carry a printed divider line or a registration seal in the gap (the ink
+    /// there is nonzero, so no blank band was ever found and the whole two-row pass
+    /// was skipped). A valley relative to two proven peaks is robust to that ink:
+    /// the divider is a thin spike whose neighbouring rows are still the minima.
+    ///
+    /// Two independent guards keep a one-row plate out: the aspect gate (single-row
+    /// EU plates are ≈4.7:1, two-row FZV sizes 0.9–2.0:1) and a required contrast
+    /// between each peak and the valley. A washed-out single row has one broad band,
+    /// not two separated peaks, so no deep valley exists between two strong peaks.
     private static func horizontalInkSplit(of image: CGImage) -> Int? {
         let w = image.width, h = image.height
+        // Keep the original 2.6 aspect gate: a compact single-row plate (FZV
+        // 255×130 mm ≈ 1.96) is already below 3.0, so widening the gate would only
+        // send more single-row plates into the split detector.
         guard w > 16, h > 40, Double(w) / Double(h) < 2.6 else { return nil }
         let bytesPerRow = w * 4
         var pixels = [UInt8](repeating: 255, count: h * bytesPerRow)
@@ -803,30 +952,77 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         // rows top-down and the returned split row is directly usable for
         // `image.cropping`. The old flip made the profile bottom-up and mirrored
         // the split row vertically (two-row plates came out halves-swapped).
-        let low = Int(Double(h) * 0.30)
-        let high = Int(Double(h) * 0.70)
-        let upperInk = (0..<low).map { ink[$0] }.max() ?? 0
-        let lowerInk = (high..<h).map { ink[$0] }.max() ?? 0
-        guard upperInk > 0.06, lowerInk > 0.06 else { return nil }
+        // Peaks are searched in the outer bands (10–42% / 58–90%), the valley only
+        // between them: this keeps a character's own strokes from being mistaken
+        // for the inter-row gap and leaves room for a divider around mid-height.
+        let upperLo = max(1, Int(Double(h) * 0.10))
+        let upperHi = min(h, max(upperLo + 1, Int(Double(h) * 0.42)))
+        let lowerLo = min(h - 1, max(upperHi, Int(Double(h) * 0.58)))
+        let lowerHi = min(h, max(lowerLo + 1, Int(Double(h) * 0.90)))
+        guard upperLo < upperHi, lowerLo < lowerHi else { return nil }
+        let upperPeak = (upperLo..<upperHi).max { ink[$0] < ink[$1] } ?? upperLo
+        let lowerPeak = (lowerLo..<lowerHi).max { ink[$0] < ink[$1] } ?? lowerLo
+        guard ink[upperPeak] > 0.05, ink[lowerPeak] > 0.05 else { return nil }
 
-        var bestBand: (start: Int, end: Int)?
+        // Find the LOWEST-INK run between the two peaks and split at its centre.
+        // Taking a single darkest row is wrong: a broad inter-row gap has many equally
+        // dark rows and `min` picks whichever comes first (the gap's edge), leaving
+        // the split hugging one row. The longest sub-threshold run centres it instead.
+        // A thin printed divider (1–2 px) interrupts a run but leaves the wider runs
+        // on either side intact, so the longest one still lands in the real gap.
+        let peakFloor = min(ink[upperPeak], ink[lowerPeak])
+        let threshold = min(peakFloor * 0.5, 0.045)
+        var bestRun: (start: Int, end: Int)?
         var runStart: Int?
-        for y in low...high {
-            if ink[y] < 0.03 {
+        for y in (upperPeak + 1)..<lowerPeak {
+            if ink[y] < threshold {
                 if runStart == nil { runStart = y }
             } else if let start = runStart {
-                if y - start >= 3,
-                   bestBand == nil || (y - start) > (bestBand!.end - bestBand!.start) {
-                    bestBand = (start: start, end: y)
+                if bestRun == nil || (y - start) > (bestRun!.end - bestRun!.start) {
+                    bestRun = (start: start, end: y)
                 }
                 runStart = nil
             }
         }
-        // Deliberately NO tail fallback: an unclosed low-ink run from some row all
-        // the way to `high` is a washed-out single-line plate, not evidence of two
-        // rows. The old fallback forced a split there and produced a bogus reading.
-        guard let band = bestBand else { return nil }
-        return (band.start + band.end) / 2
+        // Tail run (gap continues down to the lower peak's first dark row).
+        if let start = runStart, lowerPeak > start,
+           bestRun == nil || (lowerPeak - start) > (bestRun!.end - bestRun!.start) {
+            bestRun = (start: start, end: lowerPeak)
+        }
+        guard let run = bestRun else { return nil }
+        let valley = (run.start + run.end) / 2
+        // A real inter-row gap sits at the plate's waist. A single-row plate can show
+        // a deep gap between two characters, but it is not tied to mid-height (the EU
+        // strip masks are also off-centre). Requiring 40–60% rejects those false gaps
+        // without rejecting genuine two-row gaps, which FZV layouts put near the middle
+        // even when the two rows carry different amounts of text.
+        guard valley >= Int(Double(h) * 0.40), valley <= Int(Double(h) * 0.60) else { return nil }
+
+        // Final discriminator against a single text row whose inter-character gap
+        // happened to land at mid-height: on a genuine two-row plate the region row
+        // (1–3 letters) and identification row cover visibly different horizontal
+        // spans, while two halves of ONE row cover almost the same span. Requiring a
+        // noticeable coverage difference rejects the false split; the threshold is
+        // deliberately loose so a long city code with a short identification still
+        // passes. A plate whose two rows genuinely span the same width is rare and
+        // will fall back to whole-crop decoding (safe) rather than mislead the reader.
+        func inkSpan(_ from: Int, _ to: Int) -> Double {
+            var lo = w, hi = -1
+            for y in from..<to {
+                let row = y * bytesPerRow
+                for x in 0..<w {
+                    let o = row + x * 4
+                    if pixels[o] < 150, pixels[o + 1] < 150, pixels[o + 2] < 150 {
+                        lo = min(lo, x); hi = max(hi, x)
+                    }
+                }
+            }
+            return hi >= lo ? Double(hi - lo + 1) / Double(w) : 0
+        }
+        let topSpan = inkSpan(0, valley)
+        let bottomSpan = inkSpan(valley, h)
+        guard abs(topSpan - bottomSpan) >= 0.12 else { return nil }
+        return valley
     }
 }
 
