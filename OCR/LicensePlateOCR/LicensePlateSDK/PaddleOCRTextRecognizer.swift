@@ -277,7 +277,13 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
                                                                 width: CGFloat(image.width),
                                                                 height: CGFloat(image.height - split))),
                       let top = Self.paddedRow(rawTop),
-                      let bottom = Self.paddedRow(rawBottom) else { continue }
+                      // TEMP-EXPERIMENT [底部补白]: a short white strip below the bottom
+                      // row gives the glyph's lower strokes room at the tensor edge. Aim:
+                      // stop `DL 81`'s `L` being read as `1`. Set the flag to false (or
+                      // drop the arg) to revert to the previous behaviour.
+                      let bottom = Self.paddedRow(rawBottom,
+                                                 bottomPad: Self.bottomRowPadEnabled
+                                                     ? Self.bottomRowPadFraction : 0) else { continue }
                 attempted = true
                 try Task.checkCancellation()
                 var rows: [RowReading] = []
@@ -331,6 +337,11 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
                 twoRowNote = "split\(best.split) → \(best.text) s=\(String(format: "%.1f", best.score))"
             } else {
                 twoRowNote = attempted ? lastNote : "split\(primarySplit) 无法裁剪"
+            }
+            // TEMP-EXPERIMENT [底部补白]: surface the toggle in the debug note so a
+            // device run can confirm which variant produced the reading.
+            if Self.bottomRowPadEnabled {
+                twoRowNote += " [底补白+\(Int((Self.bottomRowPadFraction * 100).rounded()))%]"
             }
         }
         if twoRowJoined != nil {
@@ -820,19 +831,34 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         let confidence: Float
     }
 
+    // TEMP-EXPERIMENT [底部补白] — verify on device, then keep or revert.
+    // A clip-tight bottom row presses the glyph's lower strokes against the crop /
+    // tensor edge; after `prepare` rescales the row to the 48 px-high tensor the
+    // foot of `L` can look like the straight stem of `1`. A short white strip BELOW
+    // the row gives those lower strokes breathing room at the tensor edge.
+    // Revert = set `bottomRowPadEnabled = false` (and drop the `bottomPad` argument
+    // at the call site). Keep the fraction small: too much vertical whitespace
+    // shrinks the glyphs after `prepare` rescales the row to the 48 px tensor.
+    private static let bottomRowPadEnabled = true
+    private static let bottomRowPadFraction: CGFloat = 0.16
+
     /// Adds symmetric white margins to a split row before it enters `prepare`.
     /// A region-code row with only 1–3 letters is a narrow strip; `prepare` maps its
     /// full width onto the 48 px-high tensor, so without padding its few glyphs are
     /// magnified and the CTC head loses the leading/trailing blank frames. Padding
     /// to roughly the aspect of a full identification row (~4:1) keeps glyph scale
-    /// consistent with the model's training distribution. Rows already wide enough
-    /// are returned untouched.
-    private static func paddedRow(_ image: CGImage) -> CGImage? {
+    /// consistent with the model's training distribution.
+    /// `bottomPad`: fraction of row height appended as white BELOW the image (0 =
+    /// legacy behaviour). Rows that need neither horizontal nor bottom padding are
+    /// returned untouched.
+    private static func paddedRow(_ image: CGImage, bottomPad: CGFloat = 0) -> CGImage? {
         let targetWidth = image.height * 4
-        guard image.width < targetWidth else { return image }
-        let pad = (targetWidth - image.width) / 2
-        let width = image.width + 2 * pad
-        guard let context = CGContext(data: nil, width: width, height: image.height,
+        let sidePad = image.width < targetWidth ? (targetWidth - image.width) / 2 : 0
+        let extraHeight = Int((CGFloat(image.height) * bottomPad).rounded())
+        guard sidePad > 0 || extraHeight > 0 else { return image }
+        let width = image.width + 2 * sidePad
+        let height = image.height + extraHeight
+        guard let context = CGContext(data: nil, width: width, height: height,
                                       bitsPerComponent: 8, bytesPerRow: 0,
                                       space: SDKGraphics.sRGB,
                                       bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
@@ -840,8 +866,9 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         // White canvas: PaddleOCR normalizes white to +1, which is its blank/space
         // territory and never decodes as a plate glyph.
         context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
-        context.fill(CGRect(x: 0, y: 0, width: width, height: image.height))
-        context.draw(image, in: CGRect(x: pad, y: 0,
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        // Place the original row at the TOP so the appended white strip sits below it.
+        context.draw(image, in: CGRect(x: sidePad, y: CGFloat(extraHeight),
                                        width: image.width, height: image.height))
         return context.makeImage()
     }
