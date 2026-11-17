@@ -1138,6 +1138,33 @@ private struct CorrectedPlateView: View {
     }
 }
 
+/// TEMP-OCR-INPUT-DIAG — shows the rectified plate next to the exact image the OCR
+/// engine received (after cleaning + enhancement). Delete this whole struct with the
+/// diagnostic; nothing else depends on it.
+private struct OCRInputCompareView: View {
+    let corrected: CGImage?
+    let ocrInput: CGImage?
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            VStack(spacing: 2) {
+                CorrectedPlateView(cgImage: corrected, text: text)
+                    .frame(maxWidth: .infinity)
+                Text("矫正原图(肉眼)").font(.caption2).foregroundStyle(.secondary)
+            }
+            if ocrInput != nil {
+                VStack(spacing: 2) {
+                    CorrectedPlateView(cgImage: ocrInput, text: text)
+                        .frame(maxWidth: .infinity)
+                    Text("送入OCR的图").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .frame(maxWidth: 260)
+    }
+}
+
 private struct ConfidenceBar: View {
     let value: Float
 
@@ -1171,7 +1198,9 @@ private struct PlateCardView: View {
                 .frame(width: 8, height: 44)
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 10) {
-                    CorrectedPlateView(cgImage: result.correctedPlateImage, text: result.text)
+                    OCRInputCompareView(corrected: result.correctedPlateImage, // TEMP-OCR-INPUT-DIAG
+                                        ocrInput: result.ocrInputImage,
+                                        text: result.text)
                     Spacer(minLength: 0)
                     // The recognized reading itself, prominent: the corrected image alone
                     // does not communicate what OCR actually decided.
@@ -1270,7 +1299,9 @@ private struct HistoryCardView: View {
                     // The plate region the pose model's 4 corner keypoints cut out and
                     // perspective-corrected (falls back to the synthetic plate only when
                     // the detector produced no keypoint quad for this frame).
-                    CorrectedPlateView(cgImage: entry.result.correctedPlateImage, text: entry.result.text)
+                    OCRInputCompareView(corrected: entry.result.correctedPlateImage, // TEMP-OCR-INPUT-DIAG
+                                        ocrInput: entry.result.ocrInputImage,
+                                        text: entry.result.text)
                     Spacer(minLength: 0)
                     VStack(alignment: .trailing, spacing: 2) {
                         // The recognized reading itself, prominent: the corrected image alone
