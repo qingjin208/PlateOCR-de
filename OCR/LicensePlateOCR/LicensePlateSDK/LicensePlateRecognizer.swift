@@ -163,21 +163,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         /// OCR-level gate applied at the SDK exit. Detector confidence gates raw anchors;
         /// this one suppresses low-confidence alternative readings that would otherwise
         /// show up as separate plate rows in the UI.
-        ///
-        /// Kept at 0.20 deliberately. This value is the *mean softmax of the CTC greedy
-        /// path*, i.e. "how legible was the text" — NOT "is this a licence plate". A
-        /// clean printed shop sign is easier to read than a dim, dirty plate and can score
-        /// higher. Raising this gate to reject signage therefore throws away real plates
-        /// while still letting a sharp sign through; plate-vs-sign is decided by the
-        /// structural rule below, not by OCR confidence.
         var minimumResultConfidence: Float = 0.20
-        /// Minimum letters+digits a reading must carry to be returned as a plate.
-        /// The validator is allowed to invent a city/series boundary inside an
-        /// unseparated token, so a bare 4-character sign fragment such as `CU50` becomes
-        /// the format-valid `C-U 50`. Real German plates in circulation carry at least
-        /// five characters; short fragments are almost always wall lettering or signage.
-        /// Set to 0 to disable this rule.
-        var minimumPlateTextLength: Int = 5
     }
 
     private let detector: LicensePlateDetecting
@@ -282,20 +268,9 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     /// `confidenceThreshold` gates raw plate anchors; this gate removes the low-confidence
     /// tail that OCR emits as alternative readings (e.g. 10% / 4% / 1% rows for one plate).
     /// Default 0.20; set to 0 to keep every internally validated reading.
-    ///
-    /// - Important: this is a *legibility* filter, not a plate-likeness filter. Use
-    ///   `minimumPlateTextLength` (and the detector's own score / corner confidences) to
-    ///   reject non-plate regions.
     public var minimumResultConfidence: Float {
         get { runtimeState.withLock { $0.minimumResultConfidence } }
         set { runtimeState.withLock { $0.minimumResultConfidence = min(1, max(0, newValue)) } }
-    }
-
-    /// Minimum number of letters+digits in a canonical reading before it can cross the
-    /// SDK boundary. Default 5; set to 0 to turn the structural filter off.
-    public var minimumPlateTextLength: Int {
-        get { runtimeState.withLock { $0.minimumPlateTextLength } }
-        set { runtimeState.withLock { $0.minimumPlateTextLength = max(0, newValue) } }
     }
 
     /// NMS IoU (see `LicensePlateDetecting`). Default 0.7, matching the PC reference.
@@ -491,21 +466,12 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
             return buckets
         }
 
-        // Two independent gates at the SDK exit:
-        //  1. OCR confidence — drops the 1–10 % alternative-reading tail of one plate.
-        //  2. Reading length — rejects a *format-valid but structurally invented* plate.
-        //     `GermanPlateValidator` may split an unseparated token at any letter
-        //     boundary, so a 4-character sign fragment (`CU50`) becomes `C-U 50` and
-        //     passes both the regex and the city lexicon. No amount of OCR confidence can
-        //     separate that from a real plate; its length can. Keep it configurable so a
-        //     genuinely short historic plate can still be opted back in.
-        // Both run before geometry grouping, so a rejected fragment never wins a merge.
-        let (minimumConfidence, minimumLength) = runtimeState.withLock {
-            ($0.minimumResultConfidence, $0.minimumPlateTextLength)
-        }
-        let confident = perDetection.flatMap { $0 }.filter { result in
-            guard result.confidence.isFinite, result.confidence >= minimumConfidence else { return false }
-            return Self.coreCharacterCount(result.text) >= minimumLength
+        // Drop the low-confidence OCR tail before any geometry grouping: a 1–10% reading
+        // is an alternative hypothesis for the SAME physical plate, not a second plate.
+        // Keep it configurable so a difficult night scene can still opt back in.
+        let minimumConfidence = runtimeState.withLock { $0.minimumResultConfidence }
+        let confident = perDetection.flatMap { $0 }.filter {
+            $0.confidence.isFinite && $0.confidence >= minimumConfidence
         }
         // Overlapping detections (and OCR alternatives from a merged crop) can produce
         // several readings of one plate with different text. Collapse those to the best
@@ -518,12 +484,6 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         // map covers still images, camera frames and sampled video alike.
         let flat = results.map { Self.flattenForReturn($0) }
         return PlateFrameResult(detections: detections, plates: flat, imageSize: imageSize)
-    }
-
-    /// Letters and digits in a canonical `CITY-NUMBER` reading (`C-U 50` → 4).
-    /// Umlauts count as letters, so real city codes such as `TÜ` are not shortened.
-    private static func coreCharacterCount(_ canonical: String) -> Int {
-        canonical.filter { $0.isLetter || $0.isNumber }.count
     }
 
     /// Removes every non-alphanumeric character from a result at the SDK boundary.

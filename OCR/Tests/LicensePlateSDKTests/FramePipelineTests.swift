@@ -24,14 +24,6 @@ private struct LowConfidenceOCR: PlateTextRecognizing {
                           string: "HH-AB 1234", confidence: 0.10, candidates: [])]
     }
 }
-/// A short piece of shop signage: `canonicalize` freely invents the boundary
-/// `C-U 50`, which is format-valid and even names a real registration district.
-private struct ShortSignOCR: PlateTextRecognizing {
-    func recognize(in image: CGImage, mode: RecognitionMode) async throws -> [PlateObservation] {
-        [PlateObservation(boundingBox: CGRect(x: 0, y: 0, width: 1, height: 1),
-                          string: "CU50", confidence: 0.92, candidates: [])]
-    }
-}
 final class FramePipelineTests: XCTestCase {
     private func buffer(width: Int = 1000, height: Int = 600, format: OSType = kCVPixelFormatType_32BGRA) throws -> CVPixelBuffer {
         var result: CVPixelBuffer?
@@ -56,15 +48,6 @@ final class FramePipelineTests: XCTestCase {
         XCTAssertTrue(try await sdk.recognizeFrame(buffer()).plates.isEmpty)
         // Opting back in keeps every internally validated reading.
         sdk.minimumResultConfidence = 0
-        XCTAssertEqual(try await sdk.recognizeFrame(buffer()).plates.count, 2)
-    }
-
-    func testShortSignFragmentIsRejectedStructurally() async throws {
-        let sdk = LicensePlateRecognizer(detector: MockDetector(), recognizer: ShortSignOCR())
-        // High OCR confidence must NOT make a 4-character wall fragment a plate.
-        XCTAssertTrue(try await sdk.recognizeFrame(buffer()).plates.isEmpty)
-        // The rule is opt-out, so genuinely short historic plates remain reachable.
-        sdk.minimumPlateTextLength = 0
         XCTAssertEqual(try await sdk.recognizeFrame(buffer()).plates.count, 2)
     }
 

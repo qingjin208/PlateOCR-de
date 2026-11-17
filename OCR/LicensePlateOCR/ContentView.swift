@@ -194,7 +194,7 @@ struct ContentView: View {
         }
     }
 
-    /// Raw pipeline output: the exact 512x512 tensor handed to the pose model, plus every
+    /// Raw pipeline output: the exact 640x640 tensor handed to the model, plus every
     /// detection produced before OCR. Comparing these with the PC run isolates
     /// "wrong tensor" from "wrong decode" without recompiling.
     @ViewBuilder
@@ -221,7 +221,7 @@ struct ContentView: View {
                         .frame(height: 140)
                         .overlay(RoundedRectangle(cornerRadius: 6)
                             .stroke(Color.secondary, lineWidth: 0.5))
-                    Text("↑ 送入模型的 512 输入").font(.caption2).foregroundStyle(.tertiary)
+                    Text("↑ 送入模型的 640 输入").font(.caption2).foregroundStyle(.tertiary)
                 }
                 ForEach(Array(rawDetections.enumerated()), id: \.offset) { pair in
                     Text("#\(pair.offset + 1) conf \(String(format: "%.3f", pair.element.confidence))"
@@ -437,13 +437,8 @@ struct ContentView: View {
                 .scaledToFit()
                 .clipShape(RoundedRectangle(cornerRadius: 16))
                 // Overlay maps normalized boxes onto the scaled-to-fit image, so the
-                // tint tracks the plate exactly (no rotation/scale drift). When the
-                // diagnostics switch is on, the RAW detector boxes are drawn as dashed
-                // outlines too: a dashed box with no green result means "the model saw
-                // it, OCR/validation rejected it" — the single most useful distinction
-                // for a "no plate detected" report.
-                .overlay { PlateQuadOverlay(results: results, imageSize: uiImage.size,
-                                            rawDetections: showDiagnostics ? rawDetections : []) }
+                // tint tracks the plate exactly (no rotation/scale drift).
+                .overlay { PlateQuadOverlay(results: results, imageSize: uiImage.size) }
                 .padding(.horizontal)
         } else {
             PhotosPicker(selection: $imageItem, matching: .images) {
@@ -551,8 +546,7 @@ struct ContentView: View {
         } else if !results.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
-                    Text("共识别到 \(results.count) 块车牌 · 模型候选框 \(lastDetectionCount)")
-                        .font(.headline)
+                    Text("共识别到 \(results.count) 块车牌").font(.headline)
                     Spacer(minLength: 0)
                     // Padded + contentShape so the tap target is larger than the glyphs
                     // (plain text buttons are hard to hit; Apple recommends ≥44pt).
@@ -1356,19 +1350,10 @@ struct PlateQuadOverlay: View {
     /// the container stretches the quads whenever the two aspect ratios differ, which
     /// reads as "the box does not line up with the plate".
     let imageSize: CGSize
-    /// Raw detector boxes (before OCR/validation), drawn as dashed outlines when the
-    /// diagnostics switch is on. Empty by default so all existing call sites are unchanged.
-    var rawDetections: [PlateDetection] = []
 
     var body: some View {
         GeometryReader { geometry in
             let target = Self.fittedRect(imageSize: imageSize, in: geometry.size)
-            // Model output first, underneath the recognized plates.
-            ForEach(Array(rawDetections.enumerated()), id: \.offset) { pair in
-                PlateQuadShape(quad: pair.element.plateQuad, rect: target)
-                    .stroke(Color.orange, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
-                    .allowsHitTesting(false)
-            }
             ForEach(Array(results.enumerated()), id: \.element.id) { pair in
                 let index = pair.offset
                 let result = pair.element

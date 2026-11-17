@@ -63,14 +63,10 @@ struct CameraView: View {
                 // threshold. When 框 stays 0 it answers "why" at a glance: score ≈ 0.0-0.1
                 // → the model never saw a plate-like input; ≥0.25 → it does see the plate
                 // and the decode/validation side is dropping it.
-                // 原始 = raw detections of the last frame, 框 = tracks that survived the
-                // two-hit confirmation, 牌 = readings that passed OCR/validation. Together
-                // they pin down which stage swallowed a plate on a "nothing happens" report.
-                let summary = "原始 \(controller.rawDetectionCount) · 框 \(controller.liveDetections.count)"
-                    + " · 牌 \(controller.liveResults.count)"
                 Text(controller.lastTopScore.map {
-                        "\(summary) · 峰值 \(String(format: "%.2f", $0))"
-                     } ?? summary)
+                        "框 \(controller.liveDetections.count) · 牌 \(controller.liveResults.count) · 峰值 \(String(format: "%.2f", $0))"
+                     }
+                     ?? "框 \(controller.liveDetections.count) · 牌 \(controller.liveResults.count)")
                     .foregroundStyle(.white.opacity(0.72))
                 // Frames the gate accepted. 0 after tapping 开始 = the capture pipeline is
                 // not feeding frames; rising while latency stays 0 ms = every analysis

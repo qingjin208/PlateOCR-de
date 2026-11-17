@@ -95,15 +95,6 @@ final class CameraController: NSObject {
     var setupFailed = false
     var liveResults: [PlateResult] = []
     var liveDetections: [PlateDetection] = []
-    /// Raw detections from the most recent analysis cycle, BEFORE the two-hit
-    /// confirmation filter. These three numbers localise a "live view shows nothing"
-    /// report without a debugger:
-    ///   • 原始 0          → the detector saw no plate in that frame (model / framing);
-    ///   • 原始 N but 框 0 → the tracker or the OCR gate dropped every candidate;
-    ///   • 框 N but 牌 0   → detection worked, OCR / validation rejected the readings.
-    var rawDetectionCount = 0
-    /// Boxes actually drawn as confirmed plates after stabilisation.
-    var confirmedBoxCount = 0
     var recognitionHistory: [CameraRecognitionLogEntry] = []
     var isAnalyzing = false
     var elapsedMilliseconds = 0
@@ -132,8 +123,6 @@ final class CameraController: NSObject {
                 publishHistory(voteAggregator.finish())
                 liveResults = []
                 liveDetections = []
-                rawDetectionCount = 0
-                confirmedBoxCount = 0
                 isAnalyzing = false
                 trackedPlates.removeAll()
                 foldedFrameIdentifier = -1
@@ -188,12 +177,10 @@ final class CameraController: NSObject {
     // The pose model occasionally emits a one-frame phantom box (e.g. a quad regressed
     // onto the bumper *below* the real plate, or onto a plate-like reflection). Showing
     // every raw detection makes those phantoms flash on the live feed. Instead, boxes are
-    // tracked across analysis cycles: the FILLED plate outline appears once a box has been
-    // seen in `confirmationHits` consecutive cycles at the same place (IoU association),
-    // its geometry is exponentially smoothed, and a track survives `maxMissedCycles`
-    // unmatched cycles so stable boxes don't flicker. Every raw box is still drawn as a
-    // thin rectangle on the very first frame (see `publishLiveOverlay`), so a slow device
-    // never looks like a dead detector while it waits for confirmation.
+    // tracked across analysis cycles: a box is only drawn once it has been seen in
+    // `confirmationHits` consecutive cycles at the same place (IoU association), its
+    // geometry is exponentially smoothed, and a confirmed box survives a single missed
+    // cycle for `trackPersistence` seconds so stable boxes don't flicker.
 
     /// One plate box tracked across consecutive analysis cycles.
     private struct TrackedPlate {
@@ -201,18 +188,10 @@ final class CameraController: NSObject {
         var quad: [CGPoint]
         var confidence: Float
         var hits: Int
-        /// Index of the analysis cycle in which this track was last matched.
-        /// Deliberately NOT a wall-clock date: on device one ONNX + OCR pass can take
-        /// 0.5-1.0 s, so a time-based TTL shorter than the frame latency expires the
-        /// track before its second sighting and `hits` can never reach
-        /// `confirmationHits` — the feed then shows no boxes at all even though the
-        /// model is detecting plates every frame.
-        var lastSeenCycle: Int
+        var lastSeen: Date
     }
 
     @ObservationIgnored private var trackedPlates: [TrackedPlate] = []
-    /// Monotonic counter of analysis cycles that folded raw detections into the tracker.
-    @ObservationIgnored private var analysisCycle = 0
     /// Identifier of the analysis frame whose detections were already folded into the
     /// tracker by the intermediate detection callback (so the final publish of the same
     /// frame reuses the tracks instead of double-counting `hits`).
@@ -225,12 +204,10 @@ final class CameraController: NSObject {
     /// the whole view tree re-evaluate — `recognitionHistory` is the published output.
     @ObservationIgnored private var voteAggregator = PlateVoteAggregator()
 
-    /// Cycles a box must be seen consecutively before it is drawn as a filled plate.
+    /// Cycles a box must be seen consecutively before it is drawn.
     private static let confirmationHits = 2
-    /// A track is retired after this many analysis cycles without a matching detection.
-    /// Counting cycles (instead of seconds) makes confirmation independent of how slow
-    /// a device is: a 1.2 s/frame phone still confirms on its second frame.
-    private static let maxMissedCycles = 3
+    /// A confirmed track stays drawn (frozen) this long without a matching detection.
+    private static let trackPersistence: TimeInterval = 0.45
     /// Minimum IoU to associate an incoming detection with an existing track.
     private static let associationIoU: CGFloat = 0.3
     /// Weight of the *new* observation when smoothing track geometry (0...1).
@@ -259,9 +236,8 @@ final class CameraController: NSObject {
     /// stabilized set to draw: confirmed tracks (smoothed, `hits >= confirmationHits`),
     /// including confirmed tracks that missed this cycle but are still fresh.
     private func stabilizeDetections(_ incoming: [PlateDetection]) -> [PlateDetection] {
-        analysisCycle += 1
-        let cycle = analysisCycle
-        trackedPlates.removeAll { cycle - $0.lastSeenCycle > Self.maxMissedCycles }
+        let now = Date()
+        trackedPlates.removeAll { now.timeIntervalSince($0.lastSeen) > Self.trackPersistence }
 
         var matchedIndices = Set<Int>()
         var nextTracks: [TrackedPlate] = []
@@ -286,16 +262,15 @@ final class CameraController: NSObject {
                 }
                 track.confidence = max(track.confidence, detection.confidence)
                 track.hits += 1
-                track.lastSeenCycle = cycle
+                track.lastSeen = now
                 nextTracks.append(track)
             } else {
                 nextTracks.append(TrackedPlate(rect: detection.rect, quad: incomingQuad,
-                                               confidence: detection.confidence, hits: 1,
-                                               lastSeenCycle: cycle))
+                                               confidence: detection.confidence, hits: 1, lastSeen: now))
             }
         }
-        // Tracks that missed this cycle keep their last geometry (frozen) and age out
-        // after `maxMissedCycles` unmatched cycles — the anti-flicker persistence.
+        // Tracks that missed this cycle keep their last geometry (frozen) and simply age
+        // out via the `lastSeen` prune above — that's the anti-flicker persistence.
         for (index, track) in trackedPlates.enumerated() where !matchedIndices.contains(index) {
             nextTracks.append(track)
         }
@@ -321,19 +296,13 @@ final class CameraController: NSObject {
         let updateTracks = foldedFrameIdentifier != frameIdentifier
         let stabilized: [PlateDetection]
         if updateTracks {
-            rawDetectionCount = detections.count
             stabilized = stabilizeDetections(detections)
-            confirmedBoxCount = stabilized.count
             foldedFrameIdentifier = frameIdentifier
         } else {
             stabilized = confirmedTracks()
         }
         liveDetections = stabilized
-        // Thin rectangles are drawn for EVERY raw detection of the current frame, so a
-        // frame that the model did see is visible immediately — even before the filled
-        // plate outline has earned two consecutive hits. This is what separates
-        // "model saw nothing" from "tracker has not confirmed yet" on the device.
-        previewView?.draw(detections: stabilized, results: results, rawBoxes: detections)
+        previewView?.draw(detections: stabilized, results: results)
     }
 
     /// Shared process-wide context for the debug echo (Apple: reuse CIContext).
@@ -390,8 +359,6 @@ final class CameraController: NSObject {
         foldedFrameIdentifier = -1
         liveResults = []
         liveDetections = []
-        rawDetectionCount = 0
-        confirmedBoxCount = 0
         isAnalyzing = false
         previewView?.clearOverlay()
     }
@@ -490,8 +457,6 @@ final class CameraController: NSObject {
         publishHistory(voteAggregator.finish())
         trackedPlates.removeAll()
         foldedFrameIdentifier = -1
-        rawDetectionCount = 0
-        confirmedBoxCount = 0
         previewView?.clearOverlay()
         sessionQueue.async { if self.session.isRunning { self.session.stopRunning() } }
     }
@@ -587,8 +552,6 @@ final class CameraController: NSObject {
                 self.errorMessage = error.localizedDescription
                 self.liveResults = []
                 self.liveDetections = []
-                self.rawDetectionCount = 0
-                self.confirmedBoxCount = 0
                 self.trackedPlates.removeAll()
                 self.foldedFrameIdentifier = -1
                 self.previewView?.clearOverlay()
