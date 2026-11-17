@@ -866,14 +866,10 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         // White canvas: PaddleOCR normalizes white to +1, which is its blank/space
         // territory and never decodes as a plate glyph.
         context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
-        // Make every CGRect argument explicitly CGFloat: Swift has several CGRect
-        // overloads (Int/Double/CGFloat) and mixing an Int variable with a CGFloat
-        // one in the same call is ambiguous — Xcode reports it as a type-conversion
-        // error on the line. Casting all four keeps the CGFloat overload unambiguous.
-        context.fill(CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
         // Place the original row at the TOP so the appended white strip sits below it.
-        context.draw(image, in: CGRect(x: CGFloat(sidePad), y: CGFloat(extraHeight),
-                                       width: CGFloat(image.width), height: CGFloat(image.height)))
+        context.draw(image, in: CGRect(x: sidePad, y: CGFloat(extraHeight),
+                                       width: image.width, height: image.height))
         return context.makeImage()
     }
 
