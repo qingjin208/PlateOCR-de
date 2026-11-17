@@ -207,8 +207,17 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         let engine = try await Self.store.get()
         try Task.checkCancellation()
 
-        let beamWidth = mode == .accurate ? 16 : 8
-        let candidateLimit = mode == .accurate ? 12 : 6
+        // TEMP-EXPERIMENT [beam 宽度]: 8→32 / 16→64.
+        // Beam width is a SEARCH APPROXIMATION, not a score knob: a wider beam can
+        // only retain MORE hypotheses, so the true best CTC path is less likely to
+        // be pruned early. `DL 81` → `D181` is exactly the class a narrow beam
+        // loses: at the `L` time step the `DL…` and `D1…` hypotheses split, and with
+        // width 8 the `DL…` branch can be evicted before the digits arrive, after
+        // which no later evidence can bring it back. The row tensors are 48×W with
+        // 42 classes (~60k extra comparisons), negligible on device.
+        // Revert = restore 8 / 16.
+        let beamWidth = mode == .accurate ? 64 : 32
+        let candidateLimit = mode == .accurate ? 16 : 12
 
         // text → best CTC path log-probability across all crops.
         var ranked: [String: Double] = [:]
@@ -226,7 +235,7 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         // text post-processing) or ABSENT (the 48 px input lost the L — image/
         // resolution problem)? Remove with the diagnostic UI.
         func beamSummary(_ beams: [(text: String, logScore: Double)]) -> String {
-            beams.prefix(5).map { "\($0.text)(\(String(format: "%.1f", $0.logScore)))" }
+            beams.prefix(8).map { "\($0.text)(\(String(format: "%.1f", $0.logScore)))" }
                 .joined(separator: " ")
         }
 
@@ -299,18 +308,18 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
                 // TR/DL 81). 0.20 keeps genuinely unreadable rows out without throwing
                 // away a correct pair. assembleTwoRows still validates the whole plate.
                 guard rowConfidence >= 0.2 else {
-                    twoRowNote = "split\(split) 行置信度\(String(format: "%.2f", Double(rowConfidence)))<0.20 top=\(topText) bottom=\(bottomText) 上beam[\(beamSummary(rows[0].beams))] 下beam[\(beamSummary(rows[1].beams))]"
+                    twoRowNote = "split\(split) 行置信度\(String(format: "%.2f", Double(rowConfidence)))<0.20 top=\(topText) bottom=\(bottomText) 上greedy[\(rows[0].greedy)] 下greedy[\(rows[1].greedy)] 上beam[\(beamSummary(rows[0].beams))] 下beam[\(beamSummary(rows[1].beams))]"
                     continue
                 }
                 guard let reading = Self.assembleTwoRows(region: rows[0], identification: rows[1]) else {
-                    twoRowNote = "split\(split) 结构校验失败 top=\(topText) bottom=\(bottomText) 上beam[\(beamSummary(rows[0].beams))] 下beam[\(beamSummary(rows[1].beams))]"
+                    twoRowNote = "split\(split) 结构校验失败 top=\(topText) bottom=\(bottomText) 上greedy[\(rows[0].greedy)] 下greedy[\(rows[1].greedy)] 上beam[\(beamSummary(rows[0].beams))] 下beam[\(beamSummary(rows[1].beams))]"
                     continue
                 }
                 // The two-row reading is recorded ALONE — no whole-crop text is in
                 // the pool, so no artificial score penalty is needed to make it win.
                 record(reading.text, score: reading.score)
                 twoRowJoined = (reading.text, reading.confidence)
-                twoRowNote = "split\(split) top=\(topText) bottom=\(bottomText) → \(reading.text) 上beam[\(beamSummary(rows[0].beams))] 下beam[\(beamSummary(rows[1].beams))]"
+                twoRowNote = "split\(split) top=\(topText) bottom=\(bottomText) → \(reading.text) 上greedy[\(rows[0].greedy)] 下greedy[\(rows[1].greedy)] 上beam[\(beamSummary(rows[0].beams))] 下beam[\(beamSummary(rows[1].beams))]"
                 modelPreviews += rowPreviews // TEMP-MODEL-INPUT-DIAG
                 break
             }
@@ -950,12 +959,12 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         guard !cities.isEmpty, !bodies.isEmpty else { return nil }
 
         var best: (text: String, score: Double)?
-        for city in cities.prefix(6) {
+        for city in cities.prefix(8) {
             let bonus: Double = lexiconBonusEnabled
                 ? (GermanPlateLexicon.contains(city.text) ? 4
                    : (GermanPlateLexicon.fuzzyMatches(for: city.text).isEmpty ? 0 : 1.5))
                 : 0
-            for body in bodies.prefix(6) {
+            for body in bodies.prefix(8) {
                 let joined = "\(city.text)-\(body.text)"
                 guard let canonical = GermanPlateValidator.canonicalize(joined),
                       GermanPlateValidator.isValid(canonical) else { continue }
