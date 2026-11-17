@@ -46,7 +46,11 @@ public struct PlateVideoSample: Sendable, Identifiable {
 /// A recognized plate.
 public struct PlateResult: Identifiable, Sendable {
     public let id = UUID()
-    /// Canonical, format-validated plate text, e.g. `B-AB 1234`.
+    /// Format-validated plate text. Recognition results returned by the SDK carry the
+    /// flat form (letters and digits only, e.g. `BAB1234`): the canonical `CITY-NUMBER`
+    /// form is used internally for validation and flattened at the SDK exit in
+    /// `recognizeImage`. Callers that construct a `PlateResult` directly keep whatever
+    /// string they pass in.
     public let text: String
     /// Confidence of the chosen plate (0...1).
     public let confidence: Float
@@ -444,7 +448,31 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         // Two overlapping detections can cover the same physical plate (IoU below the NMS
         // threshold), which used to yield the same plate twice in the UI. Collapse those.
         let results = PlatePostProcessor.deduplicateOverlapping(perDetection.flatMap { $0 })
-        return PlateFrameResult(detections: detections, plates: results, imageSize: imageSize)
+        // SDK exit: strip separators from every returned reading. The canonical
+        // `CITY-NUMBER` form is still used upstream (validator, vote aggregation,
+        // lexicon ranking all rely on the hyphen), so only what crosses this boundary
+        // becomes flat. Every public entry point funnels through here, so this single
+        // map covers still images, camera frames and sampled video alike.
+        let flat = results.map { Self.flattenForReturn($0) }
+        return PlateFrameResult(detections: detections, plates: flat, imageSize: imageSize)
+    }
+
+    /// Removes every non-alphanumeric character from a result at the SDK boundary.
+    /// Umlauts count as letters, so city codes such as `TÜ` survive intact.
+    private static func flattenForReturn(_ result: PlateResult) -> PlateResult {
+        func flat(_ text: String) -> String {
+            String(text.filter { $0.isLetter || $0.isNumber })
+        }
+        return PlateResult(text: flat(result.text),
+                           confidence: result.confidence,
+                           boundingBox: result.boundingBox,
+                           imageSize: result.imageSize,
+                           candidates: result.candidates.map {
+                               PlateCandidate(text: flat($0.text), confidence: $0.confidence)
+                           },
+                           correctedPlateImage: result.correctedPlateImage,
+                           corners: result.corners,
+                           votes: result.votes)
     }
 
     /// Converts an upright still image to an external BGRA frame, scaling oversized images.

@@ -421,8 +421,10 @@ public struct PlateVoteAggregator: Sendable {
                       height: a.height + (b.height - a.height) * t)
     }
 
-    /// Whether two canonical readings can be the same physical plate: identical, or one
-    /// confusable glyph apart inside the same registration code.
+    /// Whether two readings can be the same physical plate: identical, or one confusable
+    /// glyph apart inside the same registration code. Accepts both canonical (`M-AB 1234`)
+    /// and flat (`MAB1234`) text — the latter is what the SDK returns and what live/video
+    /// voting actually receives.
     ///
     /// Deliberately narrow — `M-AB 1234` and `M-AB 1235` are **not** the same plate (two
     /// cars can be parked side by side), while `M-AB 1234` and `M-AB 123A` are (4/A is a
@@ -431,8 +433,12 @@ public struct PlateVoteAggregator: Sendable {
         if a == b { return true }
         let charsA = Array(a), charsB = Array(b)
         guard charsA.count == charsB.count else { return false }
-        let cityA = String(a.prefix { $0 != "-" })
-        let cityB = String(b.prefix { $0 != "-" })
+        // `PlateResult.text` is flat (`MAB1234`), so the old `prefix { $0 != "-" }`
+        // would hand back the whole string. Recover the district code against the
+        // lexicon instead; the helper also accepts the canonical form for callers
+        // that still pass one in.
+        let cityA = GermanPlateValidator.cityCode(in: a)
+        let cityB = GermanPlateValidator.cityCode(in: b)
         guard cityA == cityB else { return false }
 
         var difference: (Character, Character)?

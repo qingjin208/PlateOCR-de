@@ -33,7 +33,8 @@ final class FramePipelineTests: XCTestCase {
         let result = try await sdk.recognizeFrame(buffer())
         XCTAssertEqual(result.detections.count, 2)
         XCTAssertEqual(result.plates.count, 2)
-        XCTAssertEqual(result.plates.first?.text, "HH-AB 1234")
+        // SDK exit flattens the canonical `HH-AB 1234` to letters+digits only.
+        XCTAssertEqual(result.plates.first?.text, "HHAB1234")
         XCTAssertEqual(result.imageSize, CGSize(width: 1000, height: 600))
     }
     func testNV12AndOrientation() async throws {

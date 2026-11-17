@@ -47,6 +47,30 @@ public enum GermanPlateValidator {
         return core.count <= 8
     }
 
+    /// Recovers the registration district code from either form of a plate string:
+    /// the canonical `B-AB 1234` or the flattened `BAB1234` that `PlateResult.text`
+    /// now carries. The hyphen was the city/series boundary; once it is gone the
+    /// leading letter run contains both. Resolve it against the closed set of real
+    /// codes (longest match first), and only then fall back to a literal separator.
+    /// Structural comparisons use this so flattening cannot change their verdict.
+    public static func cityCode(in text: String) -> String {
+        // Canonical form keeps the authoritative boundary — never re-derive it, or a
+        // longest-lexicon match could rewrite `B-AB 1234`'s city from `B` to `BA`.
+        if let dash = text.firstIndex(of: "-") {
+            let head = String(text[..<dash]).filter { $0.isLetter || $0.isNumber }
+            if !head.isEmpty { return head }
+        }
+        // Flat form (what the SDK returns): recover the boundary against the closed set
+        // of real codes, longest first, so `BAB1234` still reports a district code.
+        let flat = text.filter { $0.isLetter || $0.isNumber }
+        let leading = String(flat.prefix { $0.isLetter })
+        for length in stride(from: min(3, leading.count), through: 1, by: -1) {
+            let head = String(leading.prefix(length))
+            if GermanPlateLexicon.contains(head) { return head }
+        }
+        return leading
+    }
+
     // MARK: - OCR confusion tables
     //
     // Applied *by position*, never globally: a digit in the letter region is only ever

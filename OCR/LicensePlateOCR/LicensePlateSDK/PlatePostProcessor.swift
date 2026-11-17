@@ -106,7 +106,9 @@ public struct PlatePostProcessor: Sendable {
         // (lexicon hit) outranks a higher raw OCR confidence without one — Vision's
         // confidence knows nothing about German plate syntax.
         let lexiconRank: (String) -> Int = { text in
-            GermanPlateLexicon.contains(String(text.prefix { $0 != "-" })) ? 1 : 0
+            // `canonicalize` emits `CITY-NUMBER`, but the helper also handles the flat
+            // form so this keeps working if a caller feeds a normalized string in.
+            GermanPlateLexicon.contains(GermanPlateValidator.cityCode(in: text)) ? 1 : 0
         }
         let flatNorm: (String) -> String = {
             $0.uppercased().replacingOccurrences(of: " ", with: "").replacingOccurrences(of: "-", with: "")
