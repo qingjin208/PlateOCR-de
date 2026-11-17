@@ -253,22 +253,11 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         // read, and why a detected two-row layout may still have been rejected.
         var twoRowNote = "无行间空隙"
         if let primarySplit = Self.horizontalInkSplit(of: image) {
-            // The ink valley can sit a few pixels too HIGH on live camera crops: the
-            // top row's descenders (or a seal edge) leak into the bottom crop and CTC
-            // drops the bottom row's first glyph (TR/DL 81 → "D81", i.e. the L is gone).
-            // A down-shifted split reads "DL81" cleanly and scores ~10 log-units higher.
-            // The OLD code stopped at the FIRST structurally-legal assembly — "D81" is
-            // legal on its own — so it never reached the better split. Now every split
-            // contributes its assembly to the scored candidate pool; `record` keeps the
-            // max, so the higher-scoring "DL81" wins. A quality gate stops early once a
-            // clearly-good assembly is found, keeping the common case at one split.
-            let step = max(2, image.height / 20)
-            let splits = [primarySplit, primarySplit + step, primarySplit - step,
-                          primarySplit + 2 * step, primarySplit - 2 * step]
+            // Try the valley first. The ±step retries run ONLY when that split fails
+            // to assemble, so the common case still costs two row decodes.
+            let step = max(2, image.height / 40)
             var attempted = false
-            var bestAssembly: (text: String, score: Double, confidence: Float, split: Int)?
-            var lastNote = "无行间空隙"
-            for split in splits {
+            for split in [primarySplit, primarySplit + step, primarySplit - step] {
                 guard split > image.height / 4, split < image.height * 3 / 4,
                       let rawTop = image.cropping(to: CGRect(x: 0, y: 0,
                                                              width: CGFloat(image.width),
@@ -304,34 +293,19 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
                 // TR/DL 81). 0.20 keeps genuinely unreadable rows out without throwing
                 // away a correct pair. assembleTwoRows still validates the whole plate.
                 guard rowConfidence >= 0.2 else {
-                    lastNote = "split\(split) 行置信度\(String(format: "%.2f", Double(rowConfidence)))<0.20 top=\(topText) bottom=\(bottomText)"
+                    twoRowNote = "split\(split) 行置信度\(String(format: "%.2f", Double(rowConfidence)))<0.20 top=\(topText) bottom=\(bottomText)"
                     continue
                 }
                 guard let reading = Self.assembleTwoRows(region: rows[0], identification: rows[1]) else {
-                    lastNote = "split\(split) 结构校验失败 top=\(topText) bottom=\(bottomText)"
+                    twoRowNote = "split\(split) 结构校验失败 top=\(topText) bottom=\(bottomText)"
                     continue
                 }
-                // Feed EVERY legal assembly into the scored pool. A high split that
-                // clips the bottom row produces a legal-but-incomplete read ("D81")
-                // with a far lower score; the max in `record` lets the complete read
-                // ("DL81") win regardless of which split produced it.
                 record(reading.text, score: reading.score)
-                if bestAssembly == nil || reading.score > bestAssembly!.score {
-                    bestAssembly = (reading.text, reading.score, reading.confidence, split)
-                }
-                lastNote = "split\(split) top=\(topText) bottom=\(bottomText) → \(reading.text) s=\(String(format: "%.1f", reading.score))"
-                // Early exit ONLY on a near-perfect score. A merely "legal" assembly
-                // from a too-high split (e.g. "TR-D 1", ≈ -4.8) also clears a loose
-                // gate; -2.0 is reached by a complete, confident read ("TR-DL 81",
-                // ≈ -1.2) but not by the clipped variants, so we still probe on.
-                if reading.score >= -2.0 { break }
+                twoRowJoined = (reading.text, reading.confidence)
+                twoRowNote = "split\(split) top=\(topText) bottom=\(bottomText) → \(reading.text)"
+                break
             }
-            if let best = bestAssembly {
-                twoRowJoined = (best.text, best.confidence)
-                twoRowNote = "split\(best.split) → \(best.text) s=\(String(format: "%.1f", best.score))"
-            } else {
-                twoRowNote = attempted ? lastNote : "split\(primarySplit) 无法裁剪"
-            }
+            if !attempted { twoRowNote = "split\(primarySplit) 无法裁剪" }
         }
         if twoRowJoined != nil {
             // A confirmed whole-plate assembly outranks any whole-crop reading: on a
