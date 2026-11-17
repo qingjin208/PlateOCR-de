@@ -163,7 +163,15 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         /// OCR-level gate applied at the SDK exit. Detector confidence gates raw anchors;
         /// this one suppresses low-confidence alternative readings that would otherwise
         /// show up as separate plate rows in the UI.
-        var minimumResultConfidence: Float = 0.20
+        ///
+        /// 0.30 rather than 0.20: a detected region that is NOT a plate (wall lettering,
+        /// signage, decoration) still produces a *format-valid* reading — the showroom
+        /// "custom" sign reads `CU50`, and `CU` is a real German city code, so neither the
+        /// validator nor the lexicon can reject it. What separates it from a real plate is
+        /// only how sure the recogniser is: genuine readings on real plates land at
+        /// 0.7–0.9, misreads of signage at 0.15–0.25. The floor sits in that gap. Raising
+        /// it trades a little recall on very dim plates for not showing invented plates.
+        var minimumResultConfidence: Float = 0.30
     }
 
     private let detector: LicensePlateDetecting
@@ -267,7 +275,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     /// Minimum OCR confidence for a reading to be returned as a plate. The detector's
     /// `confidenceThreshold` gates raw plate anchors; this gate removes the low-confidence
     /// tail that OCR emits as alternative readings (e.g. 10% / 4% / 1% rows for one plate).
-    /// Default 0.20; set to 0 to keep every internally validated reading.
+    /// Default 0.30; set to 0 to keep every internally validated reading.
     public var minimumResultConfidence: Float {
         get { runtimeState.withLock { $0.minimumResultConfidence } }
         set { runtimeState.withLock { $0.minimumResultConfidence = min(1, max(0, newValue)) } }
