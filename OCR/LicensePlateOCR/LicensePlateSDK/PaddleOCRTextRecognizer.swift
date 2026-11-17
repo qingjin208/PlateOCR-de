@@ -220,38 +220,28 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
             ranked[text] = max(ranked[text] ?? -Double.infinity, score)
         }
 
-        for variant in Self.variants(for: image, mode: mode) {
-            try Task.checkCancellation()
-            let prepared = try Self.prepare(variant)
-            let output = try await Self.decode(prepared, engine: engine)
-            let beams = Self.beamDecode(compact: output.compact, time: output.time,
-                                        engine: engine, width: beamWidth, limit: candidateLimit)
-            for beam in beams { record(beam.text, score: beam.logScore) }
-            // The full-dictionary greedy reading is a CLEANING-QUALITY SIGNAL, not
-            // a candidate. When it contains characters outside the plate alphabet
-            // (e.g. '@' from a seal), the constrained beam would silently swallow
-            // them and return a confident but wrong string. Keep it for diagnostics.
-            if !output.greedyText.isEmpty { greedyReadings.append(output.greedyText) }
-            bestGreedyConfidence = max(bestGreedyConfidence, output.greedyConfidence)
-        }
+        // Classify the layout FIRST, then run only the matching OCR path.
+        // Whole-crop OCR is now LAZY (see `needsWholeImage` below): it runs for a
+        // single-row plate, or as a last-resort fallback when a CONFIRMED two-row
+        // plate fails every split. It no longer runs unconditionally up front, so
+        // on a two-row plate its interleaved garbage never enters the candidate
+        // pool and no artificial score penalty ("-4") is needed to suppress it.
 
         // Two-row plates (zweizeilige Kennzeichen): CTC on the WHOLE crop interleaves
-        // both rows and returns a plausible but wrong string (e.g. "R-B 2H" for "KR"
-        // + "RY75H") that is often CONFIDENT, because every glyph is locally crisp.
-        // The horizontal ink projection proves the layout, then each row is read on
-        // its own. Unlike the old top-1-only code, the TOP K beams of both rows are
-        // combined into candidate pairs and each pair is validated as a WHOLE plate —
-        // a non-code misread in one row's top beam can no longer void the reading.
-        // The winner is assembled straight into canonical `CITY-ID` form so
-        // `GermanPlateValidator` never has to re-guess the city/series boundary.
-        // Runs in BOTH modes: a single-line plate fails the ink gate immediately
-        // (EU aspect ≈ 4.5 fails the < 2.6 ratio check; tighter single rows fail the
-        // two-peak / mid-waist valley checks).
-        let fullCropKeys = Set(ranked.keys)
+        // both rows and returns a plausible but wrong string (e.g. "TRD181" for
+        // "TR / DL 81"). The horizontal ink projection proves the layout, then each
+        // row is read on its own. The TOP K beams of both rows are combined into
+        // candidate pairs and each pair is validated as a WHOLE plate, so a non-code
+        // misread in one row's top beam cannot void the reading. The winner is
+        // assembled straight into canonical `CITY-ID` form.
         var twoRowJoined: (text: String, confidence: Float)?
         // Read-only note for the debug panel: which split was used, what each row
         // read, and why a detected two-row layout may still have been rejected.
-        var twoRowNote = "无行间空隙"
+        var twoRowNote = "单行牌（未判定两行）"
+        // Whether the whole-crop CTC pass must run. False on the common two-row
+        // success path; flipped to true only for single-row plates or as a lazy
+        // fallback after every two-row split failed.
+        var needsWholeImage = false
         if let primarySplit = Self.horizontalInkSplit(of: image) {
             // Try the valley first. The ±step retries run ONLY when that split fails
             // to assemble, so the common case still costs two row decodes.
@@ -289,7 +279,7 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
                 // waist) is stronger evidence than a single row's CTC confidence. On
                 // small/live camera crops one row often dips to 0.2–0.3 because the
                 // glyphs are thin; gating at 0.3 discarded the whole two-row pass and
-                // left only the interleaved whole-crop reading (e.g. "DLR81" for
+                // left only the interleaved whole-crop reading (e.g. "TRD181" for
                 // TR/DL 81). 0.20 keeps genuinely unreadable rows out without throwing
                 // away a correct pair. assembleTwoRows still validates the whole plate.
                 guard rowConfidence >= 0.2 else {
@@ -300,21 +290,45 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
                     twoRowNote = "split\(split) 结构校验失败 top=\(topText) bottom=\(bottomText)"
                     continue
                 }
+                // The two-row reading is recorded ALONE — no whole-crop text is in
+                // the pool, so no artificial score penalty is needed to make it win.
                 record(reading.text, score: reading.score)
                 twoRowJoined = (reading.text, reading.confidence)
                 twoRowNote = "split\(split) top=\(topText) bottom=\(bottomText) → \(reading.text)"
                 break
             }
             if !attempted { twoRowNote = "split\(primarySplit) 无法裁剪" }
+
+            if twoRowJoined == nil {
+                // Every split failed on a plate we KNOW is two-row: fall back to the
+                // whole-crop reading now. This is the ONLY case where the interleaved
+                // reading is allowed into the pool — lazily, not unconditionally.
+                twoRowNote += " → 两行组装失败，回退整图 OCR"
+                needsWholeImage = true
+            }
+        } else {
+            // Single-row plate: the whole-crop reading is the correct primary path.
+            needsWholeImage = true
         }
-        if twoRowJoined != nil {
-            // A confirmed whole-plate assembly outranks any whole-crop reading: on a
-            // two-row plate the latter is ALWAYS an interleaved mix of the two rows
-            // that can coincidentally look like a legal plate ("DLR81" for TR/DL81).
-            // -1.5 left room for such a cross-row string to win when it scored high;
-            // -4 gives the two-row result a decisive but bounded edge (a false split
-            // is still recoverable via the two-row candidates kept below).
-            for key in fullCropKeys { ranked[key]? -= 4 }
+
+        // WHOLE-CROP CTC PASS — inlined here (instead of a local async func that
+        // captures and mutates the vars above) so Swift 6 strict-concurrency does
+        // not flag "mutation of captured var in concurrently-executing code".
+        if needsWholeImage {
+            for variant in Self.variants(for: image, mode: mode) {
+                try Task.checkCancellation()
+                let prepared = try Self.prepare(variant)
+                let output = try await Self.decode(prepared, engine: engine)
+                let beams = Self.beamDecode(compact: output.compact, time: output.time,
+                                            engine: engine, width: beamWidth, limit: candidateLimit)
+                for beam in beams { record(beam.text, score: beam.logScore) }
+                // The full-dictionary greedy reading is a CLEANING-QUALITY SIGNAL, not
+                // a candidate. When it contains characters outside the plate alphabet
+                // (e.g. '@' from a seal), the constrained beam would silently swallow
+                // them and return a confident but wrong string. Keep it for diagnostics.
+                if !output.greedyText.isEmpty { greedyReadings.append(output.greedyText) }
+                bestGreedyConfidence = max(bestGreedyConfidence, output.greedyConfidence)
+            }
         }
 
         PaddleOCRDiagnostics.record(greedyReadings: greedyReadings, twoRow: twoRowNote)
