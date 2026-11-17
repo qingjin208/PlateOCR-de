@@ -902,20 +902,22 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
     }
 
     /// Detects a genuine two-row plate from its horizontal ink profile and returns
-    /// the row to split at, or `nil` for the overwhelmingly common one-row plate.
+    /// the row to split at, or `nil` for a one-row plate.
     ///
-    /// Method: find a text-carrying peak in each half of the plate, then take the
-    /// minimum-ink row *between* the two peaks as the split. This replaces the old
-    /// "≥3 continuous blank rows in the middle" gate, which failed on two-row plates
-    /// that carry a printed divider line or a registration seal in the gap (the ink
-    /// there is nonzero, so no blank band was ever found and the whole two-row pass
-    /// was skipped). A valley relative to two proven peaks is robust to that ink:
-    /// the divider is a thin spike whose neighbouring rows are still the minima.
+    /// Method: find a text peak in each half of the plate, then split at the longest
+    /// low-ink run between them. Two details are load-bearing:
+    ///   • Near-full-width dark rows are the plate frame / bumper, not text. They used
+    ///     to win the lower-peak search (row ink ≈ 1.0) and destroyed the valley; they
+    ///     are now excluded from both the peak and valley searches.
+    ///   • The valley is RELATIVE to the weaker peak (≤ 60%, capped at 0.30). Real
+    ///     two-row plates keep 0.2–0.3 ink in the gap because of screws, a divider or
+    ///     a seal between the rows; the old 0.045 absolute floor rejected them all.
     ///
-    /// Two independent guards keep a one-row plate out: the aspect gate (single-row
-    /// EU plates are ≈4.7:1, two-row FZV sizes 0.9–2.0:1) and a required contrast
-    /// between each peak and the valley. A washed-out single row has one broad band,
-    /// not two separated peaks, so no deep valley exists between two strong peaks.
+    /// A compact one-row plate still fails the aspect gate, and a single text band has
+    /// no deep mid-height valley between two peaks. The old horizontal-span guard was
+    /// removed: a city seal on the top row makes both rows span almost the full plate
+    /// width, so it rejected genuine two-row plates (e.g. DA / H 220H). A false split
+    /// now falls back safely because `assembleTwoRows` validates the whole plate.
     private static func horizontalInkSplit(of image: CGImage) -> Int? {
         let w = image.width, h = image.height
         // Keep the original 2.6 aspect gate: a compact single-row plate (FZV
@@ -947,6 +949,13 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
             }
             ink[y] = Double(dark) / Double(w)
         }
+        // Near-full-width dark rows are the plate frame / bumper, not glyphs. On the
+        // real DA / H 220H crop 14 bottom rows have ink ≈ 1.0; the old lower-peak
+        // search picked one of them, leaving no inter-row valley at all. Zero those
+        // rows so both peak searches see text only.
+        let borderInkLimit = 0.90
+        var textInk = ink
+        for y in 0..<h where ink[y] >= borderInkLimit { textInk[y] = 0 }
         // NOTE: no flip idiom during the draw above — same rule as `prepare`:
         // a plain `draw` leaves buffer row 0 as the visual top, so `ink[y]` indexes
         // rows top-down and the returned split row is directly usable for
@@ -960,22 +969,21 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         let lowerLo = min(h - 1, max(upperHi, Int(Double(h) * 0.58)))
         let lowerHi = min(h, max(lowerLo + 1, Int(Double(h) * 0.90)))
         guard upperLo < upperHi, lowerLo < lowerHi else { return nil }
-        let upperPeak = (upperLo..<upperHi).max { ink[$0] < ink[$1] } ?? upperLo
-        let lowerPeak = (lowerLo..<lowerHi).max { ink[$0] < ink[$1] } ?? lowerLo
-        guard ink[upperPeak] > 0.05, ink[lowerPeak] > 0.05 else { return nil }
+        let upperPeak = (upperLo..<upperHi).max { textInk[$0] < textInk[$1] } ?? upperLo
+        let lowerPeak = (lowerLo..<lowerHi).max { textInk[$0] < textInk[$1] } ?? lowerLo
+        guard textInk[upperPeak] > 0.05, textInk[lowerPeak] > 0.05 else { return nil }
 
-        // Find the LOWEST-INK run between the two peaks and split at its centre.
-        // Taking a single darkest row is wrong: a broad inter-row gap has many equally
-        // dark rows and `min` picks whichever comes first (the gap's edge), leaving
-        // the split hugging one row. The longest sub-threshold run centres it instead.
-        // A thin printed divider (1–2 px) interrupts a run but leaves the wider runs
-        // on either side intact, so the longest one still lands in the real gap.
-        let peakFloor = min(ink[upperPeak], ink[lowerPeak])
-        let threshold = min(peakFloor * 0.5, 0.045)
+        // Find the longest low-ink run between the two peaks and split at its centre.
+        // The floor is RELATIVE to the weaker text peak, not an absolute "blank row"
+        // threshold: screws, a printed divider or the city seal keep 0.2–0.3 ink in
+        // a genuine inter-row gap. The old 0.045 floor saw no valley on either real
+        // two-row sample and silently skipped the whole two-row pass.
+        let peakFloor = min(textInk[upperPeak], textInk[lowerPeak])
+        let threshold = min(peakFloor * 0.60, 0.30)
         var bestRun: (start: Int, end: Int)?
         var runStart: Int?
         for y in (upperPeak + 1)..<lowerPeak {
-            if ink[y] < threshold {
+            if textInk[y] < threshold {
                 if runStart == nil { runStart = y }
             } else if let start = runStart {
                 if bestRun == nil || (y - start) > (bestRun!.end - bestRun!.start) {
@@ -998,30 +1006,10 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         // even when the two rows carry different amounts of text.
         guard valley >= Int(Double(h) * 0.40), valley <= Int(Double(h) * 0.60) else { return nil }
 
-        // Final discriminator against a single text row whose inter-character gap
-        // happened to land at mid-height: on a genuine two-row plate the region row
-        // (1–3 letters) and identification row cover visibly different horizontal
-        // spans, while two halves of ONE row cover almost the same span. Requiring a
-        // noticeable coverage difference rejects the false split; the threshold is
-        // deliberately loose so a long city code with a short identification still
-        // passes. A plate whose two rows genuinely span the same width is rare and
-        // will fall back to whole-crop decoding (safe) rather than mislead the reader.
-        func inkSpan(_ from: Int, _ to: Int) -> Double {
-            var lo = w, hi = -1
-            for y in from..<to {
-                let row = y * bytesPerRow
-                for x in 0..<w {
-                    let o = row + x * 4
-                    if pixels[o] < 150, pixels[o + 1] < 150, pixels[o + 2] < 150 {
-                        lo = min(lo, x); hi = max(hi, x)
-                    }
-                }
-            }
-            return hi >= lo ? Double(hi - lo + 1) / Double(w) : 0
-        }
-        let topSpan = inkSpan(0, valley)
-        let bottomSpan = inkSpan(valley, h)
-        guard abs(topSpan - bottomSpan) >= 0.12 else { return nil }
+        // No horizontal-span guard here. A city seal on the top row (DA / H 220H)
+        // makes both halves span almost the entire plate width, so the old ≥0.12
+        // span difference rejected real two-row plates. Full-plate validation in
+        // `assembleTwoRows` already makes a false split harmless.
         return valley
     }
 }
