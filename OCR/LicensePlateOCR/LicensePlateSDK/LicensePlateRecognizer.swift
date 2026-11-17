@@ -153,6 +153,10 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         /// (`true` = the PC/OpenCV layout). Default `true`.
         var flipY: Bool
         var enhancements: RecognitionEnhancements
+        /// OCR-level gate applied at the SDK exit. Detector confidence gates raw anchors;
+        /// this one suppresses low-confidence alternative readings that would otherwise
+        /// show up as separate plate rows in the UI.
+        var minimumResultConfidence: Float = 0.20
     }
 
     private let detector: LicensePlateDetecting
@@ -251,6 +255,15 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     public var confidenceThreshold: Float {
         get { detector.confidenceThreshold }
         set { detector.confidenceThreshold = newValue }
+    }
+
+    /// Minimum OCR confidence for a reading to be returned as a plate. The detector's
+    /// `confidenceThreshold` gates raw plate anchors; this gate removes the low-confidence
+    /// tail that OCR emits as alternative readings (e.g. 10% / 4% / 1% rows for one plate).
+    /// Default 0.20; set to 0 to keep every internally validated reading.
+    public var minimumResultConfidence: Float {
+        get { runtimeState.withLock { $0.minimumResultConfidence } }
+        set { runtimeState.withLock { $0.minimumResultConfidence = min(1, max(0, newValue)) } }
     }
 
     /// NMS IoU (see `LicensePlateDetecting`). Default 0.7, matching the PC reference.
@@ -445,9 +458,17 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
             return buckets
         }
 
-        // Two overlapping detections can cover the same physical plate (IoU below the NMS
-        // threshold), which used to yield the same plate twice in the UI. Collapse those.
-        let results = PlatePostProcessor.deduplicateOverlapping(perDetection.flatMap { $0 })
+        // Drop the low-confidence OCR tail before any geometry grouping: a 1–10% reading
+        // is an alternative hypothesis for the SAME physical plate, not a second plate.
+        // Keep it configurable so a difficult night scene can still opt back in.
+        let minimumConfidence = runtimeState.withLock { $0.minimumResultConfidence }
+        let confident = perDetection.flatMap { $0 }.filter {
+            $0.confidence.isFinite && $0.confidence >= minimumConfidence
+        }
+        // Overlapping detections (and OCR alternatives from a merged crop) can produce
+        // several readings of one plate with different text. Collapse those to the best
+        // reading; genuinely separate plates keep their own rows.
+        let results = PlatePostProcessor.deduplicateOverlapping(confident)
         // SDK exit: strip separators from every returned reading. The canonical
         // `CITY-NUMBER` form is still used upstream (validator, vote aggregation,
         // lexicon ranking all rely on the hyphen), so only what crosses this boundary

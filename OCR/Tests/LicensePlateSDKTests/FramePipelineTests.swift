@@ -18,6 +18,12 @@ private struct MockOCR: PlateTextRecognizing {
             string: "HH-AB 1234", confidence: 0.95, candidates: [])]
     }
 }
+private struct LowConfidenceOCR: PlateTextRecognizing {
+    func recognize(in image: CGImage, mode: RecognitionMode) async throws -> [PlateObservation] {
+        [PlateObservation(boundingBox: CGRect(x: 0, y: 0, width: 1, height: 1),
+                          string: "HH-AB 1234", confidence: 0.10, candidates: [])]
+    }
+}
 final class FramePipelineTests: XCTestCase {
     private func buffer(width: Int = 1000, height: Int = 600, format: OSType = kCVPixelFormatType_32BGRA) throws -> CVPixelBuffer {
         var result: CVPixelBuffer?
@@ -37,6 +43,14 @@ final class FramePipelineTests: XCTestCase {
         XCTAssertEqual(result.plates.first?.text, "HHAB1234")
         XCTAssertEqual(result.imageSize, CGSize(width: 1000, height: 600))
     }
+    func testLowConfidenceReadingsAreFilteredAtSDKExit() async throws {
+        let sdk = LicensePlateRecognizer(detector: MockDetector(), recognizer: LowConfidenceOCR())
+        XCTAssertTrue(try await sdk.recognizeFrame(buffer()).plates.isEmpty)
+        // Opting back in keeps every internally validated reading.
+        sdk.minimumResultConfidence = 0
+        XCTAssertEqual(try await sdk.recognizeFrame(buffer()).plates.count, 2)
+    }
+
     func testNV12AndOrientation() async throws {
         let sdk = LicensePlateRecognizer(detector: MockDetector(), recognizer: MockOCR())
         for format in [kCVPixelFormatType_420YpCbCr8BiPlanarFullRange, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange] {
@@ -143,6 +157,25 @@ final class FramePipelineTests: XCTestCase {
         // Highest confidence wins the collapsed pair, and the caller's order is preserved.
         XCTAssertEqual(kept.first?.confidence ?? 0, 0.90, accuracy: 0.0001)
         XCTAssertEqual(kept.last?.boundingBox, elsewhere.boundingBox)
+    }
+
+    func testOverlappingNearDuplicateTextsCollapseTransitively() {
+        func plate(_ text: String, _ box: CGRect, _ confidence: Float) -> PlateResult {
+            PlateResult(text: text, confidence: confidence, boundingBox: box,
+                        imageSize: CGSize(width: 100, height: 50), candidates: [])
+        }
+        // Real-screenshot shape: one full reading plus a partial reading and a one-edit
+        // variant from overlapping detections of the SAME plate.
+        let full = plate("ST-EK 440", CGRect(x: 0.10, y: 0.10, width: 0.60, height: 0.20), 0.97)
+        let partial = plate("EK 440", CGRect(x: 0.30, y: 0.11, width: 0.35, height: 0.18), 0.97)
+        let typo = plate("ENK 440", CGRect(x: 0.31, y: 0.12, width: 0.34, height: 0.17), 0.10)
+        // A separate plate elsewhere must survive.
+        let elsewhere = plate("M-XY 99", CGRect(x: 0.75, y: 0.60, width: 0.20, height: 0.10), 0.95)
+
+        let kept = PlatePostProcessor.deduplicateOverlapping([full, partial, typo, elsewhere])
+        XCTAssertEqual(kept.count, 2)
+        XCTAssertEqual(kept.first?.text, "ST-EK 440")
+        XCTAssertTrue(kept.contains { $0.text == "M-XY 99" })
     }
 
     // MARK: - Enhanced mode (opt-in, `RecognitionEnhancements`)

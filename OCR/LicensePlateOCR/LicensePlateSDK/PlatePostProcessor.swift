@@ -204,28 +204,87 @@ public struct PlatePostProcessor: Sendable {
         return best.values.sorted { $0.confidence > $1.confidence }
     }
 
-    /// Collapses the same plate reported more than once *within one frame*, which happens
-    /// when the detector emits two boxes over one plate (their IoU can stay below the NMS
-    /// threshold) — previously that produced two identical rows and two tinted quads.
+    /// Collapses readings of the same physical plate *within one frame*. Overlapping
+    /// detections can produce several rows for one plate: a full reading (`ST-EK 440`)
+    /// plus a partial / near-duplicate alternative (`EK 440`, `ENK 440`) from a box that
+    /// covers only part of the same plate. Exact-text equality is too narrow to catch
+    /// that, so overlapping readings are collapsed when their texts are equal, one is a
+    /// substring of the other, or they differ by at most one character.
     ///
-    /// Unlike `deduplicate` (text only, across video frames) this also requires the boxes
-    /// to overlap, so two physically distinct plates that happen to read the same text are
-    /// both kept.
+    /// The winner is the highest-confidence reading; ties go to the larger box and then
+    /// the longer text (the more complete reading). Boxes must still overlap, so two
+    /// distinct plates that read the same text at different positions are both kept.
     public static func deduplicateOverlapping(_ results: [PlateResult],
                                               minimumOverlap: CGFloat = 0.45) -> [PlateResult] {
-        var kept: [PlateResult] = []
-        kept.reserveCapacity(results.count)
-        for candidate in results.sorted(by: { $0.confidence > $1.confidence }) {
-            let isDuplicate = kept.contains { existing in
-                guard existing.text == candidate.text else { return false }
-                return overlapRatio(existing.boundingBox, candidate.boundingBox) >= minimumOverlap
+        let ranked = results.sorted { lhs, rhs in
+            if lhs.confidence != rhs.confidence { return lhs.confidence > rhs.confidence }
+            let lhsArea = lhs.boundingBox.width * lhs.boundingBox.height
+            let rhsArea = rhs.boundingBox.width * rhs.boundingBox.height
+            if lhsArea != rhsArea { return lhsArea > rhsArea }
+            return lhs.text.count > rhs.text.count
+        }
+        // Aliases make the collapse transitive: `EK 440` is a substring of
+        // `ST-EK 440`, and `ENK 440` is a one-edit variant of `EK 440` but not of the
+        // full reading. Both must land in the same group.
+        var groups: [(result: PlateResult, aliases: [String])] = []
+        groups.reserveCapacity(results.count)
+        for candidate in ranked {
+            var merged = false
+            for index in groups.indices {
+                let group = groups[index]
+                guard overlapRatio(group.result.boundingBox, candidate.boundingBox) >= minimumOverlap
+                else { continue }
+                let knownTexts = [group.result.text] + group.aliases
+                if knownTexts.contains(where: { samePlateText($0, candidate.text) }) {
+                    groups[index].aliases.append(candidate.text)
+                    merged = true
+                    break
+                }
             }
-            if !isDuplicate { kept.append(candidate) }
+            if !merged { groups.append((candidate, [])) }
         }
         // Restore the caller's ordering (detection order drives the overlay numbering).
+        let kept = groups.map(\.result)
         var order: [UUID: Int] = [:]
         for (index, result) in results.enumerated() { order[result.id] = index }
         return kept.sorted { (order[$0.id] ?? 0) < (order[$1.id] ?? 0) }
+    }
+
+    /// Text relation used by `deduplicateOverlapping`. Plate text is normalized to
+    /// letters + digits, so `ST-EK 440` and `STEK440` compare identically.
+    private static func samePlateText(_ a: String, _ b: String) -> Bool {
+        let na = normalizedPlateText(a), nb = normalizedPlateText(b)
+        if na == nb || na.contains(nb) || nb.contains(na) { return true }
+        return withinOneEdit(na, nb)
+    }
+
+    private static func normalizedPlateText(_ text: String) -> String {
+        text.uppercased().filter { $0.isLetter || $0.isNumber }
+    }
+
+    /// True when deleting at most one character from the longer string yields the
+    /// shorter one (or the two equal-length strings differ at one position). Enough to
+    /// merge OCR alternatives such as `EK440` / `ENK440` without a full edit-distance DP.
+    private static func withinOneEdit(_ a: String, _ b: String) -> Bool {
+        let left = Array(a), right = Array(b)
+        let delta = left.count - right.count
+        if abs(delta) > 1 { return false }
+        if delta == 0 {
+            return zip(left, right).filter { $0 != $1 }.count <= 1
+        }
+        let longer = delta > 0 ? left : right
+        let shorter = delta > 0 ? right : left
+        var i = 0, j = 0, skipped = false
+        while i < longer.count && j < shorter.count {
+            if longer[i] == shorter[j] {
+                i += 1; j += 1
+            } else {
+                if skipped { return false }
+                skipped = true
+                i += 1
+            }
+        }
+        return true
     }
 
     /// Intersection over the *smaller* box rather than IoU: a merged detection and the
