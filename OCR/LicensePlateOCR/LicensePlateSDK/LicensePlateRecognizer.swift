@@ -416,31 +416,46 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         // while aiming, never on productive frames. Off-center plates still come from
         // the full-frame pass; this crop only rescues the centered small ones.
         if merged.isEmpty, roiFallback {
-            let side = CGFloat(Int(min(image.width, image.height) * 0.7))
-            if side >= 64, side < CGFloat(min(image.width, image.height)) {
-                let crop = CGRect(x: (CGFloat(image.width) - side) / 2,
-                                  y: (CGFloat(image.height) - side) / 2,
-                                  width: side, height: side).integral
+            // Explicit `CGFloat` locals: `min(image.width, image.height)` is `Int`, so
+            // `Int * 0.7` does not type-check — every arithmetic step below stays `CGFloat`.
+            let shortSide = CGFloat(min(image.width, image.height))
+            let side = (shortSide * 0.7).rounded()
+            if side >= 64, side < shortSide {
+                let cropX = ((CGFloat(image.width) - side) / 2).rounded()
+                let cropY = ((CGFloat(image.height) - side) / 2).rounded()
+                let crop = CGRect(x: cropX, y: cropY, width: side, height: side)
                 if let roi = image.cropping(to: crop) {
                     let roiDetections = try await detector.detect(in: roi)
-                    if !roiDetections.isEmpty {
-                        func mapX(_ nx: CGFloat) -> CGFloat {
-                            min(1, max(0, (crop.minX + nx * crop.width) / CGFloat(image.width)))
+                    // Written as an explicit loop with typed locals: a single `map` with
+                    // this much arithmetic nested inside the initializer blows up Swift's
+                    // type checker ("unable to type-check this expression in reasonable time").
+                    let width = CGFloat(image.width)
+                    let height = CGFloat(image.height)
+                    let scaleX = crop.width / width
+                    let scaleY = crop.height / height
+                    var mapped: [PlateDetection] = []
+                    mapped.reserveCapacity(roiDetections.count)
+                    for detection in roiDetections {
+                        let normalizedX = crop.minX + detection.rect.minX * crop.width
+                        let normalizedY = crop.minY + detection.rect.minY * crop.height
+                        let rect = CGRect(x: normalizedX / width,
+                                          y: normalizedY / height,
+                                          width: detection.rect.width * scaleX,
+                                          height: detection.rect.height * scaleY)
+                        var keypoints: [CGPoint]?
+                        if let points = detection.keypoints {
+                            keypoints = points.map { point in
+                                CGPoint(x: (crop.minX + point.x * crop.width) / width,
+                                        y: (crop.minY + point.y * crop.height) / height)
+                            }
                         }
-                        func mapY(_ ny: CGFloat) -> CGFloat {
-                            min(1, max(0, (crop.minY + ny * crop.height) / CGFloat(image.height)))
-                        }
-                        let mapped = roiDetections.map { detection in
-                            PlateDetection(
-                                rect: CGRect(x: mapX(detection.rect.minX),
-                                             y: mapY(detection.rect.minY),
-                                             width: detection.rect.width * crop.width / CGFloat(image.width),
-                                             height: detection.rect.height * crop.height / CGFloat(image.height)),
-                                confidence: detection.confidence,
-                                label: detection.label,
-                                keypoints: detection.keypoints?.map { CGPoint(x: mapX($0.x), y: mapY($0.y)) },
-                                keypointConfidences: detection.keypointConfidences)
-                        }
+                        mapped.append(PlateDetection(rect: rect,
+                                                     confidence: detection.confidence,
+                                                     label: detection.label,
+                                                     keypoints: keypoints,
+                                                     keypointConfidences: detection.keypointConfidences))
+                    }
+                    if !mapped.isEmpty {
                         merged = YOLOOutputDecoder.suppress(mapped, threshold: detector.nmsIoUThreshold)
                     }
                 }
