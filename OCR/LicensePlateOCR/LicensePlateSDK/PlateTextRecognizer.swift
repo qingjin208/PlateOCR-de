@@ -22,6 +22,28 @@ public struct PlateObservation: Sendable {
     public let confidence: Float
     /// Up to 10 alternative candidates `(string, confidence)`.
     public let candidates: [(text: String, confidence: Float)]
+    /// [TEMP-MODEL-INPUT-DIAG] The EXACT images rendered into the model's input
+    /// tensor (for PaddleOCR: the `[1,3,48,W]` crops — whole image, or the two
+    /// rows of a two-row plate, in reading order). Empty for the Vision engine.
+    /// Shown in the UI next to the OCR input so a device-only misread can be
+    /// traced to the 48 px downscale. Remove with the diagnostic UI.
+    public let modelInputs: [CGImage]
+
+    /// Declared explicitly: a `let` property with a default value does NOT get a
+    /// parameter in the synthesized memberwise initializer, which would make it
+    /// impossible for the PaddleOCR recognizer to pass these previews in while
+    /// every other call site (Vision engine, tests) keeps compiling unchanged.
+    public init(boundingBox: CGRect,
+                string: String,
+                confidence: Float,
+                candidates: [(text: String, confidence: Float)],
+                modelInputs: [CGImage] = []) {
+        self.boundingBox = boundingBox
+        self.string = string
+        self.confidence = confidence
+        self.candidates = candidates
+        self.modelInputs = modelInputs
+    }
 }
 
 /// Abstraction over the text recognizer so the engine can be swapped/tested.

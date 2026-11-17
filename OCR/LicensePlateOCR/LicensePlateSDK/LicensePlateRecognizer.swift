@@ -67,6 +67,11 @@ public struct PlateResult: Identifiable, Sendable {
     /// enhancement. Shown next to `correctedPlateImage` so the eye can compare the
     /// rectified plate with what the model actually reads. Remove with the diagnostic UI.
     public let ocrInputImage: CGImage?
+    /// [TEMP-MODEL-INPUT-DIAG] The EXACT images inside the OCR model's input tensor
+    /// (`[1,3,48,W]` crops — whole plate, or top+bottom rows of a two-row plate).
+    /// Shown in the UI so a device-only misread (e.g. L→1) can be traced to the
+    /// 48 px downscale the eye cannot see. Remove with the diagnostic UI.
+    public let modelInputImages: [CGImage]
     /// The plate outline (normalized, top-left origin) taken from the detection's pose
     /// keypoints. `nil` for sub-boxes carved out of a multi-plate crop, where the corners
     /// of the shared region would be wrong.
@@ -89,6 +94,7 @@ public struct PlateResult: Identifiable, Sendable {
                 candidates: [PlateCandidate],
                 correctedPlateImage: CGImage? = nil,
                 ocrInputImage: CGImage? = nil, // TEMP-OCR-INPUT-DIAG
+                modelInputImages: [CGImage] = [], // TEMP-MODEL-INPUT-DIAG
                 corners: [CGPoint]? = nil,
                 votes: Int = 1) {
         self.text = text
@@ -98,6 +104,7 @@ public struct PlateResult: Identifiable, Sendable {
         self.candidates = candidates
         self.correctedPlateImage = correctedPlateImage
         self.ocrInputImage = ocrInputImage // TEMP-OCR-INPUT-DIAG
+        self.modelInputImages = modelInputImages // TEMP-MODEL-INPUT-DIAG
         self.corners = corners
         self.votes = votes
     }
@@ -114,6 +121,7 @@ extension PlateResult {
                     candidates: candidates,
                     correctedPlateImage: correctedPlateImage,
                     ocrInputImage: ocrInputImage, // TEMP-OCR-INPUT-DIAG
+                    modelInputImages: modelInputImages, // TEMP-MODEL-INPUT-DIAG
                     corners: corners,
                     votes: votes)
     }
@@ -454,6 +462,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
                                                        imageSize: imageSize,
                                                        correctedImage: corrected,
                                                        ocrInputImage: enhanced, // TEMP-OCR-INPUT-DIAG
+                                                       modelInputImages: observations.first?.modelInputs ?? [], // TEMP-MODEL-INPUT-DIAG
                                                        corners: detection.keypoints,
                                                        enhancements: enhancements)
                     return (offset: offset, plates: plates)
@@ -501,6 +510,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
                            },
                            correctedPlateImage: result.correctedPlateImage,
                            ocrInputImage: result.ocrInputImage, // TEMP-OCR-INPUT-DIAG
+                           modelInputImages: result.modelInputImages, // TEMP-MODEL-INPUT-DIAG
                            corners: result.corners,
                            votes: result.votes)
     }

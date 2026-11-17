@@ -220,6 +220,20 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
             ranked[text] = max(ranked[text] ?? -Double.infinity, score)
         }
 
+        // [TEMP-BEAM-DIAG] Top-5 beam candidates + log scores for one row. A device
+        // screenshot of the diagnostic field then answers the decisive question for
+        // e.g. `DL 81` → `D81`: is `DL81` IN the pool (scoring problem, fixable in
+        // text post-processing) or ABSENT (the 48 px input lost the L — image/
+        // resolution problem)? Remove with the diagnostic UI.
+        func beamSummary(_ beams: [(text: String, logScore: Double)]) -> String {
+            beams.prefix(5).map { "\($0.text)(\(String(format: "%.1f", $0.logScore)))" }
+                .joined(separator: " ")
+        }
+
+        // [TEMP-MODEL-INPUT-DIAG] Exact 48 px tensor inputs, in reading order:
+        // two-row plates → [top row, bottom row]; single-row → whole-crop variants.
+        var modelPreviews: [CGImage] = []
+
         // Classify the layout FIRST, then run only the matching OCR path.
         // Whole-crop OCR is now LAZY (see `needsWholeImage` below): it runs for a
         // single-row plate, or as a last-resort fallback when a CONFIRMED two-row
@@ -260,6 +274,7 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
                 attempted = true
                 try Task.checkCancellation()
                 var rows: [RowReading] = []
+                var rowPreviews: [CGImage] = [] // TEMP-MODEL-INPUT-DIAG
                 for piece in [top, bottom] {
                     try Task.checkCancellation()
                     let prepared = try Self.prepare(piece)
@@ -268,6 +283,7 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
                                                 engine: engine, width: beamWidth, limit: candidateLimit)
                     rows.append(RowReading(beams: beams, greedy: output.greedyText,
                                            confidence: output.greedyConfidence))
+                    if let p = prepared.preview { rowPreviews.append(p) } // TEMP-MODEL-INPUT-DIAG
                     if !output.greedyText.isEmpty { greedyReadings.append(output.greedyText) }
                     bestGreedyConfidence = max(bestGreedyConfidence, output.greedyConfidence)
                 }
@@ -283,18 +299,19 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
                 // TR/DL 81). 0.20 keeps genuinely unreadable rows out without throwing
                 // away a correct pair. assembleTwoRows still validates the whole plate.
                 guard rowConfidence >= 0.2 else {
-                    twoRowNote = "split\(split) 行置信度\(String(format: "%.2f", Double(rowConfidence)))<0.20 top=\(topText) bottom=\(bottomText)"
+                    twoRowNote = "split\(split) 行置信度\(String(format: "%.2f", Double(rowConfidence)))<0.20 top=\(topText) bottom=\(bottomText) 上beam[\(beamSummary(rows[0].beams))] 下beam[\(beamSummary(rows[1].beams))]"
                     continue
                 }
                 guard let reading = Self.assembleTwoRows(region: rows[0], identification: rows[1]) else {
-                    twoRowNote = "split\(split) 结构校验失败 top=\(topText) bottom=\(bottomText)"
+                    twoRowNote = "split\(split) 结构校验失败 top=\(topText) bottom=\(bottomText) 上beam[\(beamSummary(rows[0].beams))] 下beam[\(beamSummary(rows[1].beams))]"
                     continue
                 }
                 // The two-row reading is recorded ALONE — no whole-crop text is in
                 // the pool, so no artificial score penalty is needed to make it win.
                 record(reading.text, score: reading.score)
                 twoRowJoined = (reading.text, reading.confidence)
-                twoRowNote = "split\(split) top=\(topText) bottom=\(bottomText) → \(reading.text)"
+                twoRowNote = "split\(split) top=\(topText) bottom=\(bottomText) → \(reading.text) 上beam[\(beamSummary(rows[0].beams))] 下beam[\(beamSummary(rows[1].beams))]"
+                modelPreviews += rowPreviews // TEMP-MODEL-INPUT-DIAG
                 break
             }
             if !attempted { twoRowNote = "split\(primarySplit) 无法裁剪" }
@@ -322,6 +339,7 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
                 let beams = Self.beamDecode(compact: output.compact, time: output.time,
                                             engine: engine, width: beamWidth, limit: candidateLimit)
                 for beam in beams { record(beam.text, score: beam.logScore) }
+                if let p = prepared.preview { modelPreviews.append(p) } // TEMP-MODEL-INPUT-DIAG
                 // The full-dictionary greedy reading is a CLEANING-QUALITY SIGNAL, not
                 // a candidate. When it contains characters outside the plate alphabet
                 // (e.g. '@' from a seal), the constrained beam would silently swallow
@@ -369,7 +387,8 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         return [PlateObservation(boundingBox: CGRect(x: 0, y: 0, width: 1, height: 1),
                                  string: primary.key,
                                  confidence: primaryConfidence,
-                                 candidates: alternatives)]
+                                 candidates: alternatives,
+                                 modelInputs: modelPreviews)] // TEMP-MODEL-INPUT-DIAG
     }
 
     // MARK: - Inference
@@ -447,6 +466,9 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
     private struct PreparedInput: Sendable {
         let floats: [Float]
         let width: Int
+        /// [TEMP-MODEL-INPUT-DIAG] CGImage rebuilt from the exact BGRA pixels the
+        /// CTC model consumes. Remove with the diagnostic UI.
+        let preview: CGImage?
     }
 
     /// Only the columns the beam can emit, plus the full-dictionary greedy reading.
@@ -543,7 +565,26 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
             diag("prepare src=\(image.width)x\(image.height) W=\(imgW) resizedW=\(resizedW) mean=\(String(format: "%.3f", stats.mean)) std=\(String(format: "%.3f", stats.std))")
         }
         dumpPreparedIfNeeded(pixels: pixels, width: imgW, height: imgH, source: image)
-        return PreparedInput(floats: floats, width: imgW)
+        let preview = Self.preparedPreview(pixels: pixels, width: imgW, height: imgH) // TEMP-MODEL-INPUT-DIAG
+        return PreparedInput(floats: floats, width: imgW, preview: preview)
+    }
+
+    /// [TEMP-MODEL-INPUT-DIAG] Rebuilds a CGImage from the prepared BGRA buffer —
+    /// the exact pixels the CTC model consumes (same rebuild as `dumpPreparedIfNeeded`,
+    /// but returned for UI display instead of written to disk). Remove with the UI.
+    private static func preparedPreview(pixels: [UInt8], width: Int, height: Int) -> CGImage? {
+        var buffer = pixels
+        let bytesPerRow = width * 4
+        return buffer.withUnsafeMutableBytes { raw in
+            guard let base = raw.baseAddress,
+                  let context = CGContext(data: base, width: width, height: height,
+                                          bitsPerComponent: 8, bytesPerRow: bytesPerRow,
+                                          space: SDKGraphics.sRGB,
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                              | CGBitmapInfo.byteOrder32Little.rawValue)
+            else { return nil }
+            return context.makeImage()
+        }
     }
 
     /// Runs the graph and reduces `[1,T,18385]` to `[T,42]` in a SINGLE full-matrix

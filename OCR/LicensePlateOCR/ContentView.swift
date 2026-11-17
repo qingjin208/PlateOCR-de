@@ -1144,6 +1144,7 @@ private struct CorrectedPlateView: View {
 private struct OCRInputCompareView: View {
     let corrected: CGImage?
     let ocrInput: CGImage?
+    let models: [CGImage] // TEMP-MODEL-INPUT-DIAG
     let text: String
 
     var body: some View {
@@ -1160,8 +1161,25 @@ private struct OCRInputCompareView: View {
                     Text("送入OCR的图").font(.caption2).foregroundStyle(.secondary)
                 }
             }
+            // TEMP-MODEL-INPUT-DIAG: what the CTC model ACTUALLY consumes — the
+            // 48 px tensor crops (two-row plates show top+bottom). Nearest-neighbour
+            // so no smoothing hides what the model sees. Remove with the diagnostic UI.
+            if !models.isEmpty {
+                VStack(spacing: 2) {
+                    ForEach(models.indices, id: \.self) { i in
+                        Image(models[i], scale: 1, label: Text("model input"))
+                            .resizable()
+                            .interpolation(.none)
+                            .aspectRatio(CGFloat(max(models[i].width, 1)) / CGFloat(max(models[i].height, 1)),
+                                         contentMode: .fit)
+                            .frame(maxWidth: .infinity)
+                    }
+                    Text(models.count > 1 ? "模型所见48px(上/下)" : "模型所见48px")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
         }
-        .frame(maxWidth: 260)
+        .frame(maxWidth: models.isEmpty ? 260 : 360)
     }
 }
 
@@ -1200,6 +1218,7 @@ private struct PlateCardView: View {
                 HStack(spacing: 10) {
                     OCRInputCompareView(corrected: result.correctedPlateImage, // TEMP-OCR-INPUT-DIAG
                                         ocrInput: result.ocrInputImage,
+                                        models: result.modelInputImages,
                                         text: result.text)
                     Spacer(minLength: 0)
                     // The recognized reading itself, prominent: the corrected image alone
@@ -1301,6 +1320,7 @@ private struct HistoryCardView: View {
                     // the detector produced no keypoint quad for this frame).
                     OCRInputCompareView(corrected: entry.result.correctedPlateImage, // TEMP-OCR-INPUT-DIAG
                                         ocrInput: entry.result.ocrInputImage,
+                                        models: entry.result.modelInputImages,
                                         text: entry.result.text)
                     Spacer(minLength: 0)
                     VStack(alignment: .trailing, spacing: 2) {
