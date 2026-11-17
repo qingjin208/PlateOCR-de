@@ -638,10 +638,15 @@ struct PixelBuffer {
             for x in 0..<limit {
                 var hit = mark[y * width + x]
                 if !hit {
-                    for dy in -1...1, dx in -1...1 {
-                        let ny = y + dy, nx = x + dx
-                        if ny >= 0, ny < height, nx >= 0, nx < limit,
-                           mark[ny * width + nx] { hit = true; break }
+                    search: for dy in -1...1 {
+                        for dx in -1...1 {
+                            let ny = y + dy, nx = x + dx
+                            if ny >= 0, ny < height, nx >= 0, nx < limit,
+                               mark[ny * width + nx] {
+                                hit = true
+                                break search
+                            }
+                        }
                     }
                 }
                 if hit {
