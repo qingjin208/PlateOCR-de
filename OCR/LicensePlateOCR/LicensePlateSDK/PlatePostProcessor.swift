@@ -41,7 +41,6 @@ public struct PlatePostProcessor: Sendable {
                         imageSize: CGSize,
                         correctedImage: CGImage? = nil,
                         ocrInputImage: CGImage? = nil, // TEMP-OCR-INPUT-DIAG
-                        modelInputImages: [CGImage] = [], // TEMP-MODEL-INPUT-DIAG
                         corners: [CGPoint]? = nil,
                         enhancements: RecognitionEnhancements = .off) -> [PlateResult] {
         guard !observations.isEmpty else { return [] }
@@ -176,7 +175,6 @@ public struct PlatePostProcessor: Sendable {
                                candidates: candidates,
                                correctedPlateImage: correctedImage,
                                ocrInputImage: ocrInputImage, // TEMP-OCR-INPUT-DIAG
-                               modelInputImages: modelInputImages, // TEMP-MODEL-INPUT-DIAG
                                corners: quad)
         }
     }
