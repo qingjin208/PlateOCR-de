@@ -96,8 +96,15 @@ public struct PlateImageCleaner: Sendable {
         let w = Double(canvas.width), h = Double(canvas.height)
 
         if euFraction > 0 {
-            canvas.fillRect(x0: 0, x1: Int((euFraction * w).rounded()), y0: 0,
-                            y1: canvas.height, value: 255)
+            // EU strip fix: paint only the BLUE pixels inside the strip columns,
+            // never a full-height rectangle. On a two-row plate the EU band sits
+            // above the first bottom-row character (e.g. the 'H' in DA/H 220H);
+            // a full-height fillRect wiped that character. Black glyph strokes
+            // carry no blue saturation, so a mask-based white-out spares them.
+            canvas.whiteOutBlue(x1: Int((euFraction * w).rounded()),
+                                hueRange: euHueRange,
+                                satMin: euSaturationMin,
+                                valMin: euValueMin)
         }
         for badge in badgeFractions {
             canvas.fillCircle(cx: badge.x * w, cy: badge.y * h,
@@ -607,6 +614,42 @@ struct PixelBuffer {
             total += Double(dark) / Double(height * (2 * halfW + 1))
         }
         return total
+    }
+
+    /// Paints only blue pixels (plus a 1px halo for antialiased edges) white inside
+    /// columns `0..<x1`. Unlike a full-height rect this cannot erase dark glyphs that
+    /// happen to sit under the EU strip on a two-row plate.
+    mutating func whiteOutBlue(x1: Int, hueRange: (Double, Double),
+                               satMin: UInt8, valMin: UInt8) {
+        let limit = max(0, min(x1, width))
+        // First pass: mark blue pixels, dilate by one pixel so the strip's soft edge
+        // is covered too. Glyph strokes are neutral/black and never match the blue gate.
+        var mark = [Bool](repeating: false, count: width * height)
+        for y in 0..<height {
+            for x in 0..<limit {
+                let c = hsv(at: x, y)
+                if c.h >= hueRange.0, c.h <= hueRange.1,
+                   c.s >= Double(satMin), c.v >= Double(valMin) {
+                    mark[y * width + x] = true
+                }
+            }
+        }
+        for y in 0..<height {
+            for x in 0..<limit {
+                var hit = mark[y * width + x]
+                if !hit {
+                    for dy in -1...1, dx in -1...1 {
+                        let ny = y + dy, nx = x + dx
+                        if ny >= 0, ny < height, nx >= 0, nx < limit,
+                           mark[ny * width + nx] { hit = true; break }
+                    }
+                }
+                if hit {
+                    let i = (y * width + x) * 4
+                    data[i] = 255; data[i + 1] = 255; data[i + 2] = 255; data[i + 3] = 255
+                }
+            }
+        }
     }
 
     mutating func fillRect(x0: Int, x1: Int, y0: Int, y1: Int, value: UInt8) {
