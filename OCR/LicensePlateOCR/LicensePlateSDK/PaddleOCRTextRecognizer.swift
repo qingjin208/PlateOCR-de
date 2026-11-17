@@ -897,6 +897,10 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
     /// CTC misread ranks the wrong one higher, the bottom row carries no evidence to
     /// overturn it. Fixing that class requires the recognition model or real samples;
     /// this stage deliberately does not guess against the model's confidence.
+    /// TEMP-EXPERIMENT [词表关闭]: when `false` (current), candidate pairs rank by
+    /// PURE CTC scores — the lexicon bonus below is bypassed. Set `true` to restore.
+    private static let lexiconBonusEnabled = false
+
     private static func assembleTwoRows(region: RowReading,
                                         identification: RowReading)
         -> (text: String, score: Double, confidence: Float)? {
@@ -906,8 +910,10 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
 
         var best: (text: String, score: Double)?
         for city in cities.prefix(6) {
-            let bonus: Double = GermanPlateLexicon.contains(city.text) ? 4
-                : (GermanPlateLexicon.fuzzyMatches(for: city.text).isEmpty ? 0 : 1.5)
+            let bonus: Double = lexiconBonusEnabled
+                ? (GermanPlateLexicon.contains(city.text) ? 4
+                   : (GermanPlateLexicon.fuzzyMatches(for: city.text).isEmpty ? 0 : 1.5))
+                : 0
             for body in bodies.prefix(6) {
                 let joined = "\(city.text)-\(body.text)"
                 guard let canonical = GermanPlateValidator.canonicalize(joined),

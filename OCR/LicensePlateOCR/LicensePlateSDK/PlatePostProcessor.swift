@@ -106,10 +106,15 @@ public struct PlatePostProcessor: Sendable {
         // Candidate rescoring: a reading whose city code is a real registration code
         // (lexicon hit) outranks a higher raw OCR confidence without one — Vision's
         // confidence knows nothing about German plate syntax.
+        // TEMP-EXPERIMENT [词表关闭]: set `useLexiconRank` to `true` to restore the
+        // lexicon preference. Currently disabled so alternative readings sort by raw
+        // confidence only — pure OCR signal, no dictionary preference.
+        let useLexiconRank = false
         let lexiconRank: (String) -> Int = { text in
             // `canonicalize` emits `CITY-NUMBER`, but the helper also handles the flat
             // form so this keeps working if a caller feeds a normalized string in.
-            GermanPlateLexicon.contains(GermanPlateValidator.cityCode(in: text)) ? 1 : 0
+            guard useLexiconRank else { return 0 }
+            return GermanPlateLexicon.contains(GermanPlateValidator.cityCode(in: text)) ? 1 : 0
         }
         let flatNorm: (String) -> String = {
             $0.uppercased().replacingOccurrences(of: " ", with: "").replacingOccurrences(of: "-", with: "")
