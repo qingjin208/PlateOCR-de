@@ -484,8 +484,7 @@ final class CameraController: NSObject {
             // time. Detections still come back in upright portrait space, so the overlay
             // mapping, the corrector and the vote tracker are unaffected.
             let result = try await recognizer.recognizeFrame(frame.buffer, orientation: .right,
-                                                             mode: mode, tiled: false,
-                                                             roiFallback: true) { // TEMP-EXPERIMENT [相机ROI兜底]
+                                                             mode: mode, tiled: false) {
                 [weak self] detections, _ in
                 Task { @MainActor in
                     guard let self, self.active, self.liveEnabled, !self.paused,
