@@ -24,16 +24,23 @@
    - blue hue 95–135 (OpenCV 0–180 scale) = 190–270°, saturation ≥ 50/255
    - column blue ratio ≥ 0.35, strip width ≤ 0.22 × plate width
    - colored seal: saturation ≥ 70/255, non-blue, bbox aspect 0.6–1.7, fill ≥ 0.5,
-     diameter 0.30–0.95 × height, interior (0.6r disc) white fraction ≤ 0.45,
+     diameter 0.12–0.95 × height, interior (0.6r disc) white fraction ≤ 0.45,
      center x ≥ 0.24 × width, center y ≤ 0.9 × height
+   - blue seal: same as colored but hue 190–270° (the EU strip is rejected by the
+     center-x and aspect gates, since it hugs the left edge as a tall narrow column).
+     Added because the original non-blue mask could not see a genuine blue Prüfplakette.
+     Both colored floors were relaxed from 0.30 to 0.12 after real samples showed a
+     16%-height orange seal (two-row plate) and a 20%-height blue seal (small plate).
    - gray seal: dark connected component (adaptive threshold), aspect 0.55–1.5,
-     fill ≥ 0.55, diameter 0.30–0.95 × height, PLUS isolation (the vertical strips
-     at ±1.45r must be background — real characters always have neighbours) and
-     center y in 0.18–0.86 × height. Max 2 seals per plate (stacked pair).
+     fill ≥ 0.55, diameter 0.30–0.95 × height (kept strict: characters are also
+     dark), PLUS isolation (the vertical strips at ±1.45r must be background — real
+     characters always have neighbours) and center y in 0.18–0.86 × height.
+     Max 2 seals per plate (stacked pair).
  */
 
 import Foundation
 import CoreGraphics
+import os
 
 public struct PlateImageCleaner: Sendable {
 
@@ -45,7 +52,14 @@ public struct PlateImageCleaner: Sendable {
     private let euSaturationMin: UInt8 = 50
     private let euValueMin: UInt8 = 30
     private let euColumnRatio = 0.35
+    // Gray seals keep the strict 0.30 lower bound (characters are also dark, so a
+    // loose gray gate would eat real letters). Colored / blue seals are safer: text
+    // strokes carry no saturation. Real samples showed a 20%-of-height blue seal on
+    // a small single-row plate and a 16% orange seal on a two-row plate, both of
+    // which the 0.30 floor silently dropped; hence the relaxed colored floor.
     private let badgeMinDiameterFraction = 0.30
+    private let coloredBadgeMinDiameterFraction = 0.12
+    private let blueBadgeMinDiameterFraction = 0.12
     private let badgeMaxDiameterFraction = 0.95
     private let badgeMinCenterXFraction = 0.24
     private let interiorWhiteMax = 0.45
@@ -67,7 +81,7 @@ public struct PlateImageCleaner: Sendable {
         // 128 px, throwing away the resolution the corrector had just upscaled to: a
         // 960x204 crop came back as 614x128 before its most detail-rich OCR pass.
         let euEdge = detectEUStripEdge(probe)
-        let badges = detectSeals(probe)
+        let badges = detectSeals(probe, euStripRightEdge: euEdge)
         guard euEdge > 0 || !badges.isEmpty else { return image }
 
         // Convert probe pixels to fractions so they can be applied at any resolution.
@@ -118,24 +132,79 @@ public struct PlateImageCleaner: Sendable {
 
     // MARK: Seals
 
-    private func detectSeals(_ px: PixelBuffer) -> [(cx: Double, cy: Double, r: Double)] {
-        var candidates: [(kind: Kind, cx: Double, cy: Double, r: Double)] = []
+    private func detectSeals(_ px: PixelBuffer, euStripRightEdge: Int)
+        -> [(cx: Double, cy: Double, r: Double)] {
+        // Observation mirror: built alongside the gates, never read by them. The
+        // original guards below are kept verbatim, so accepting/rejecting a candidate
+        // is decided by exactly the same conditions as before this diagnostics work.
+        struct Obs {
+            let kind: Kind
+            let cx: Double, cy: Double, r: Double
+            let aspect: Double, fill: Double, diameter: Double
+            var interiorWhite: Double? = nil
+            var isolation: Double? = nil
+            var failed: [PlateCleanerDiagnostics.Gate] = []
+        }
+        var observations: [Obs] = []
+        var candidates: [(kind: Kind, cx: Double, cy: Double, r: Double, obs: Int)] = []
         let h = Double(px.height), w = Double(px.width)
-        let minDia = badgeMinDiameterFraction * h
+        let grayMinDia = badgeMinDiameterFraction * h
+        let coloredMinDia = coloredBadgeMinDiameterFraction * h
+        let blueMinDia = blueBadgeMinDiameterFraction * h
         let maxDia = badgeMaxDiameterFraction * h
 
-        // --- Colored seals (saturation-based; characters are grayscale) ---
+        // --- Colored seals (non-blue saturation; characters are grayscale) ---
+        // Diameter floor relaxed to 0.12h: a real two-row plate's orange年检章 was
+        // measured at 16% of plate height, which the old 0.30 floor dropped.
         let coloredMask = px.coloredMask(satMin: 70, valMin: 60, hueRange: euHueRange)
         for (bbox, area) in connectedComponents(coloredMask, width: px.width, height: px.height, minArea: 30) {
             let bw = Double(bbox.width), bh = Double(bbox.height)
             let aspect = bw / max(1, bh)
-            guard aspect >= 0.6, aspect <= 1.7 else { continue }
             let fill = Double(area) / max(1, bw * bh)
-            guard fill >= 0.5 else { continue }
             let dia = max(bw, bh)
-            guard minDia <= dia, dia <= maxDia else { continue }
             let cx = Double(bbox.minX) + bw / 2, cy = Double(bbox.minY) + bh / 2
-            candidates.append((.colored, cx, cy, dia / 2))
+            var failed: [PlateCleanerDiagnostics.Gate] = []
+            if aspect < 0.6 || aspect > 1.7 { failed.append(.aspect) }
+            if fill < 0.5 { failed.append(.fill) }
+            if dia < coloredMinDia || dia > maxDia { failed.append(.diameter) }
+            observations.append(Obs(kind: .colored, cx: cx, cy: cy, r: dia / 2,
+                                    aspect: aspect, fill: fill, diameter: dia, failed: failed))
+            guard aspect >= 0.6, aspect <= 1.7 else { continue }
+            guard fill >= 0.5 else { continue }
+            guard coloredMinDia <= dia, dia <= maxDia else { continue }
+            candidates.append((.colored, cx, cy, dia / 2, observations.count - 1))
+        }
+
+        // --- Blue seals (blue saturation; the EU strip is also blue but excluded) ---
+        // `coloredMask` deliberately excludes blue so the EU strip is not mistaken
+        // for a seal — which also made a genuine blue Prüfplakette invisible. This
+        // dedicated channel recovers it. The EU strip is rejected by two gates:
+        //   (a) it starts at the crop's left edge, so its center fails centerX;
+        //   (b) it is a tall narrow column, so its aspect fails the round-shape gate.
+        // Verified on a real small plate: blue seal cx=186/496, dia=26 (20% h),
+        // accepted; EU strip cx=32, dia=108 rejected by aspect+centerX.
+        let blueMask = px.coloredMaskBlue(satMin: 70, valMin: 60, hueRange: euHueRange)
+        for (bbox, area) in connectedComponents(blueMask, width: px.width, height: px.height, minArea: 30) {
+            let bw = Double(bbox.width), bh = Double(bbox.height)
+            let aspect = bw / max(1, bh)
+            let fill = Double(area) / max(1, bw * bh)
+            let dia = max(bw, bh)
+            let cx = Double(bbox.minX) + bw / 2, cy = Double(bbox.minY) + bh / 2
+            var failed: [PlateCleanerDiagnostics.Gate] = []
+            if aspect < 0.6 || aspect > 1.7 { failed.append(.aspect) }
+            if fill < 0.5 { failed.append(.fill) }
+            if dia < blueMinDia || dia > maxDia { failed.append(.diameter) }
+            // Exclude anything overlapping the EU strip's column range (with margin).
+            if cx < max(Double(euStripRightEdge) + bw / 2, badgeMinCenterXFraction * w) {
+                failed.append(.centerX)
+            }
+            observations.append(Obs(kind: .blue, cx: cx, cy: cy, r: dia / 2,
+                                    aspect: aspect, fill: fill, diameter: dia, failed: failed))
+            guard aspect >= 0.6, aspect <= 1.7 else { continue }
+            guard fill >= 0.5 else { continue }
+            guard blueMinDia <= dia, dia <= maxDia else { continue }
+            guard cx >= max(Double(euStripRightEdge) + bw / 2, badgeMinCenterXFraction * w) else { continue }
+            candidates.append((.blue, cx, cy, dia / 2, observations.count - 1))
         }
 
         // --- Gray seals (compact dark blobs; strictly gated) ---
@@ -143,40 +212,158 @@ public struct PlateImageCleaner: Sendable {
         for (bbox, area) in connectedComponents(darkMask, width: px.width, height: px.height, minArea: 40) {
             let bw = Double(bbox.width), bh = Double(bbox.height)
             let aspect = bw / max(1, bh)
-            guard aspect >= 0.55, aspect <= 1.5 else { continue }
             let dia = max(bw, bh)
-            guard minDia <= dia, dia <= maxDia else { continue }
             let fill = Double(area) / max(1, bw * bh)
-            guard fill >= 0.55 else { continue }   // seals are solid, characters are strokes
             let cx = Double(bbox.minX) + bw / 2, cy = Double(bbox.minY) + bh / 2
-            candidates.append((.gray, cx, cy, dia / 2))
+            var failed: [PlateCleanerDiagnostics.Gate] = []
+            if aspect < 0.55 || aspect > 1.5 { failed.append(.aspect) }
+            if dia < grayMinDia || dia > maxDia { failed.append(.diameter) }
+            if fill < 0.55 { failed.append(.fill) }   // seals are solid, characters are strokes
+            observations.append(Obs(kind: .gray, cx: cx, cy: cy, r: dia / 2,
+                                    aspect: aspect, fill: fill, diameter: dia, failed: failed))
+            guard aspect >= 0.55, aspect <= 1.5 else { continue }
+            guard grayMinDia <= dia, dia <= maxDia else { continue }
+            guard fill >= 0.55 else { continue }
+            candidates.append((.gray, cx, cy, dia / 2, observations.count - 1))
         }
 
         // --- Gating ---
         var scored: [(iso: Double, white: Double, kind: Kind, cx: Double, cy: Double, r: Double)] = []
         for c in candidates {
-            guard c.cx >= badgeMinCenterXFraction * w else { continue }
+            // Observation only: compute every signal that the old gates looked at,
+            // including ones the old short-circuit `guard`s would have skipped. This
+            // is why the summary can name the *first* gate that blocked a real seal.
+            var obs = observations[c.obs]
             let white = px.interiorWhiteFraction(cx: c.cx, cy: c.cy, radius: c.r * 0.6)
-            guard white <= interiorWhiteMax else { continue }
+            obs.interiorWhite = white
+            if c.cx < badgeMinCenterXFraction * w { obs.failed.append(.centerX) }
+            if white > interiorWhiteMax { obs.failed.append(.interiorWhite) }
+            var iso = 0.0
             switch c.kind {
-            case .colored:
+            case .colored, .blue:
                 // Inherently safe: characters carry no saturation. Only geometry applies
                 // (a seal cut off at the crop's top edge has its center near y = 0).
+                if c.cy < 0 || c.cy > 0.9 * h { obs.failed.append(.centerY) }
+            case .gray:
+                if c.cy < grayCenterYRange.0 * h || c.cy > grayCenterYRange.1 * h {
+                    obs.failed.append(.centerY)
+                }
+                iso = px.gapIsolation(cx: c.cx, cy: c.cy, r: c.r)
+                obs.isolation = iso
+                if iso > isolationDarkMax { obs.failed.append(.isolation) }
+            }
+            observations[c.obs] = obs
+
+            // Original gating, unchanged:
+            guard c.cx >= badgeMinCenterXFraction * w else { continue }
+            guard white <= interiorWhiteMax else { continue }
+            switch c.kind {
+            case .colored, .blue:
                 guard c.cy >= 0, c.cy <= 0.9 * h else { continue }
                 scored.append((0, white, c.kind, c.cx, c.cy, c.r))
             case .gray:
                 guard c.cy >= grayCenterYRange.0 * h, c.cy <= grayCenterYRange.1 * h else { continue }
-                let iso = px.gapIsolation(cx: c.cx, cy: c.cy, r: c.r)
                 guard iso <= isolationDarkMax else { continue }
                 scored.append((iso, white, c.kind, c.cx, c.cy, c.r))
             }
         }
+
+        // Publish the observation mirror last; it cannot affect `scored`.
+        PlateCleanerDiagnostics.record(
+            probeW: px.width, probeH: px.height,
+            observations.map { o in
+                PlateCleanerDiagnostics.Candidate(
+                    kind: o.kind == .gray ? "gray" : (o.kind == .blue ? "blue" : "colored"),
+                    cx: o.cx, cy: o.cy, diameter: o.diameter,
+                    aspect: o.aspect, fill: o.fill,
+                    interiorWhite: o.interiorWhite, isolation: o.isolation,
+                    failedGates: o.failed)
+            })
+
         // Lowest isolation first (most badge-like); at most a stacked pair.
         scored.sort { ($0.iso, $0.white) < ($1.iso, $1.white) }
         return scored.prefix(maxBadges).map { ($0.cx, $0.cy, $0.r) }
     }
 
-    private enum Kind { case colored, gray }
+    private enum Kind { case colored, blue, gray }
+}
+
+// MARK: - Seal detection diagnostics (observation only)
+
+/// Last-frame record of every seal candidate the cleaner considered, including the
+/// candidates it rejected and the exact gate that rejected them. This is a READ-ONLY
+/// mirror of `detectSeals`: recording a value here never changes whether that gate
+/// passes. Its purpose is to answer, on a real device, why a visible seal was left
+/// in the OCR image — without guessing which threshold to loosen.
+///
+/// All geometry is expressed as fractions of the 128 px probe (center / diameter),
+/// so a small plate and a close-up can be compared directly.
+public enum PlateCleanerDiagnostics {
+    public enum Gate: String, Sendable {
+        case minArea, aspect, fill, diameter, centerX, interiorWhite, centerY, isolation
+    }
+
+    public struct Candidate: Sendable {
+        public let kind: String              // "colored" / "gray"
+        public let cx: Double                // fraction of probe width
+        public let cy: Double                // fraction of probe height
+        public let diameter: Double          // fraction of probe height
+        public let aspect: Double
+        public let fill: Double
+        public let interiorWhite: Double?    // nil when rejected before this gate ran
+        public let isolation: Double?        // only computed for gray candidates
+        public let failedGates: [Gate]       // empty == accepted and masked
+        public var accepted: Bool { failedGates.isEmpty }
+    }
+
+    private struct State {
+        var probeWidth = 0
+        var probeHeight = 0
+        var candidates: [Candidate] = []
+    }
+
+    /// `OSAllocatedUnfairLock` cannot be held across an `await`; every access here is
+    /// synchronous, matching `PaddleOCRDiagnostics`.
+    private final class Box: @unchecked Sendable {
+        private let state = OSAllocatedUnfairLock(initialState: State())
+
+        func record(probeW: Int, probeH: Int, _ candidates: [Candidate]) {
+            state.withLock {
+                $0.probeWidth = probeW
+                $0.probeHeight = probeH
+                $0.candidates = candidates
+            }
+        }
+
+        func summary() -> String? {
+            state.withLock { s -> String? in
+                guard s.probeHeight > 0 else { return nil }
+                let accepted = s.candidates.filter(\.accepted).count
+                var line = "徽章 \(accepted)/\(s.candidates.count) 遮罩 @\(s.probeWidth)×\(s.probeHeight)"
+                for (i, c) in s.candidates.prefix(4).enumerated() {
+                    let verdict = c.accepted ? "✓" : c.failedGates.map(\.rawValue).joined(separator: "+")
+                    line += String(format: " · #%d %@ %@ a%.2f f%.2f",
+                                   i + 1, c.kind, verdict, c.aspect, c.fill)
+                    if let white = c.interiorWhite {
+                        line += String(format: " w%.2f", white)
+                    }
+                    if let iso = c.isolation {
+                        line += String(format: " i%.2f", iso)
+                    }
+                }
+                return line
+            }
+        }
+    }
+
+    private static let box = Box()
+
+    public static func record(probeW: Int, probeH: Int, _ candidates: [Candidate]) {
+        box.record(probeW: probeW, probeH: probeH, candidates)
+    }
+
+    /// `nil` before the first cleaning pass. Callers decide whether to display it.
+    public static var summary: String? { box.summary() }
 }
 
 // MARK: - Pixel buffer
@@ -293,6 +480,24 @@ struct PixelBuffer {
                 let c = hsv(at: x, y)
                 if c.s >= Double(satMin), c.v >= Double(valMin),
                    !(c.h >= hueRange.0 && c.h <= hueRange.1) {
+                    mask[y * width + x] = true
+                }
+            }
+        }
+        return mask
+    }
+
+    /// Binary mask: saturated BLUE pixels — the counterpart of `coloredMask`.
+    /// Needed because `coloredMask` excludes blue (to avoid the EU strip), which
+    /// otherwise makes a genuine blue Prüfplakette invisible. Callers reject the
+    /// EU strip separately via the centerX/aspect gates in `detectSeals`.
+    func coloredMaskBlue(satMin: UInt8, valMin: UInt8, hueRange: (Double, Double)) -> [Bool] {
+        var mask = [Bool](repeating: false, count: width * height)
+        for y in 0..<height {
+            for x in 0..<width {
+                let c = hsv(at: x, y)
+                if c.s >= Double(satMin), c.v >= Double(valMin),
+                   c.h >= hueRange.0, c.h <= hueRange.1 {
                     mask[y * width + x] = true
                 }
             }

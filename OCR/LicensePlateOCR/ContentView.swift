@@ -629,6 +629,11 @@ struct ContentView: View {
            let note = PaddleOCRDiagnostics.summary {
             text += " · \(note)"
         }
+        // Seal-detection triage: every candidate the cleaner saw, the gate that
+        // blocked it, and its geometry. Read-only — shown only with diagnostics on.
+        if showDiagnostics, let note = PlateCleanerDiagnostics.summary {
+            text += " · \(note)"
+        }
         return text
     }
 
