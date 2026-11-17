@@ -128,6 +128,9 @@ public enum PaddleOCRDiagnostics {
     private struct State {
         var readings: [String] = []
         var strayCharacters: String?
+        /// Last two-row decision: split row, row readings and why a split may have
+        /// been rejected. Read-only mirror; it never affects recognition.
+        var twoRow: String?
     }
 
     /// `OSAllocatedUnfairLock` is Apple's supported Swift wrapper for
@@ -136,29 +139,34 @@ public enum PaddleOCRDiagnostics {
     private final class Box: @unchecked Sendable {
         private let state = OSAllocatedUnfairLock(initialState: State())
 
-        func record(_ newReadings: [String]) {
+        func record(_ newReadings: [String], _ twoRow: String?) {
             state.withLock { current in
                 current.readings = newReadings
                 let stray = Set(newReadings.joined().map { String($0) })
                     .subtracting(PlateOCRAlphabet.allowedSet)
                 current.strayCharacters = stray.isEmpty ? nil : stray.sorted().joined()
+                current.twoRow = twoRow
             }
         }
 
         func summary() -> String? {
             state.withLock { current -> String? in
                 guard let reading = current.readings.first, !reading.isEmpty else { return nil }
+                var line = "OCR 原始读数 \(reading)"
                 if let stray = current.strayCharacters {
-                    return "OCR 原始读数 \(reading) · 异常字符 \(stray)（清洁未彻底？）"
+                    line += " · 异常字符 \(stray)（清洁未彻底？）"
                 }
-                return "OCR 原始读数 \(reading)"
+                if let twoRow = current.twoRow { line += " · 两行 \(twoRow)" }
+                return line
             }
         }
     }
 
     private static let box = Box()
 
-    public static func record(greedyReadings: [String]) { box.record(greedyReadings) }
+    public static func record(greedyReadings: [String], twoRow: String? = nil) {
+        box.record(greedyReadings, twoRow)
+    }
 
     /// `nil` before the first PaddleOCR frame. The caller decides whether to show it.
     public static var summary: String? { box.summary() }

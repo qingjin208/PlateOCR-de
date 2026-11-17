@@ -249,42 +249,62 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         // two-peak / mid-waist valley checks).
         let fullCropKeys = Set(ranked.keys)
         var twoRowJoined: (text: String, confidence: Float)?
-        if let split = Self.horizontalInkSplit(of: image),
-           let rawTop = image.cropping(to: CGRect(x: 0, y: 0,
-                                                  width: CGFloat(image.width), height: CGFloat(split))),
-           let rawBottom = image.cropping(to: CGRect(x: 0, y: CGFloat(split),
-                                                     width: CGFloat(image.width),
-                                                     height: CGFloat(image.height - split))),
-           let top = Self.paddedRow(rawTop),
-           let bottom = Self.paddedRow(rawBottom) {
-            var rows: [RowReading] = []
-            for piece in [top, bottom] {
+        // Read-only note for the debug panel: which split was used, what each row
+        // read, and why a detected two-row layout may still have been rejected.
+        var twoRowNote = "无行间空隙"
+        if let primarySplit = Self.horizontalInkSplit(of: image) {
+            // Try the valley first. The ±step retries run ONLY when that split fails
+            // to assemble, so the common case still costs two row decodes.
+            let step = max(2, image.height / 40)
+            var attempted = false
+            for split in [primarySplit, primarySplit + step, primarySplit - step] {
+                guard split > image.height / 4, split < image.height * 3 / 4,
+                      let rawTop = image.cropping(to: CGRect(x: 0, y: 0,
+                                                             width: CGFloat(image.width),
+                                                             height: CGFloat(split))),
+                      let rawBottom = image.cropping(to: CGRect(x: 0, y: CGFloat(split),
+                                                                width: CGFloat(image.width),
+                                                                height: CGFloat(image.height - split))),
+                      let top = Self.paddedRow(rawTop),
+                      let bottom = Self.paddedRow(rawBottom) else { continue }
+                attempted = true
                 try Task.checkCancellation()
-                let prepared = try Self.prepare(piece)
-                let output = try await Self.decode(prepared, engine: engine)
-                let beams = Self.beamDecode(compact: output.compact, time: output.time,
-                                            engine: engine, width: beamWidth, limit: candidateLimit)
-                rows.append(RowReading(beams: beams, greedy: output.greedyText,
-                                       confidence: output.greedyConfidence))
-                if !output.greedyText.isEmpty { greedyReadings.append(output.greedyText) }
-                bestGreedyConfidence = max(bestGreedyConfidence, output.greedyConfidence)
-            }
-            // Promotion gate: both rows must read with usable confidence, and the
-            // lexicon/structure picker must produce a format-valid canonical string.
-            // A false-positive split on a washed-out single-line plate can therefore
-            // never outrank the (demoted but still present) whole-crop reading.
-            if rows.count == 2,
-               min(rows[0].confidence, rows[1].confidence) >= 0.3,
-               let reading = Self.assembleTwoRows(region: rows[0], identification: rows[1]) {
+                var rows: [RowReading] = []
+                for piece in [top, bottom] {
+                    try Task.checkCancellation()
+                    let prepared = try Self.prepare(piece)
+                    let output = try await Self.decode(prepared, engine: engine)
+                    let beams = Self.beamDecode(compact: output.compact, time: output.time,
+                                                engine: engine, width: beamWidth, limit: candidateLimit)
+                    rows.append(RowReading(beams: beams, greedy: output.greedyText,
+                                           confidence: output.greedyConfidence))
+                    if !output.greedyText.isEmpty { greedyReadings.append(output.greedyText) }
+                    bestGreedyConfidence = max(bestGreedyConfidence, output.greedyConfidence)
+                }
+                guard rows.count == 2 else { continue }
+                let rowConfidence = min(rows[0].confidence, rows[1].confidence)
+                let topText = rows[0].beams.first?.text ?? rows[0].greedy
+                let bottomText = rows[1].beams.first?.text ?? rows[1].greedy
+                guard rowConfidence >= 0.3 else {
+                    twoRowNote = "split\(split) 行置信度\(String(format: "%.2f", Double(rowConfidence)))<0.30 top=\(topText) bottom=\(bottomText)"
+                    continue
+                }
+                guard let reading = Self.assembleTwoRows(region: rows[0], identification: rows[1]) else {
+                    twoRowNote = "split\(split) 结构校验失败 top=\(topText) bottom=\(bottomText)"
+                    continue
+                }
                 record(reading.text, score: reading.score)
                 twoRowJoined = (reading.text, reading.confidence)
+                twoRowNote = "split\(split) top=\(topText) bottom=\(bottomText) → \(reading.text)"
+                break
             }
+            if !attempted { twoRowNote = "split\(primarySplit) 无法裁剪" }
         }
         if twoRowJoined != nil {
             for key in fullCropKeys { ranked[key]? -= 1.5 }
         }
 
-        PaddleOCRDiagnostics.record(greedyReadings: greedyReadings)
+        PaddleOCRDiagnostics.record(greedyReadings: greedyReadings, twoRow: twoRowNote)
 
         if ranked.isEmpty {
             // No legal CTC path survived (unusual plate format / heavy pruning).
