@@ -129,8 +129,16 @@ public struct PlateCandidate: Sendable, Identifiable {
 /// The full recognition pipeline: detect -> crop -> recognize -> post-process.
 public protocol LicensePlateRecognizing: Sendable {
     /// Accepts caller-owned BGRA/NV12 frames without creating a capture session.
+    /// - Parameter roiFallback: TEMP-EXPERIMENT [相机ROI兜底] — when the whole-frame
+    ///   pass finds NOTHING, re-run detection once on a centered 70% square crop.
+    ///   Portrait frames letterbox into only 288×512 of the 512² canvas, so a small
+    ///   plate lands at ~20 px where the model scores 0.02–0.20 (below the 0.25
+    ///   gate); the square crop restores the wasted canvas and roughly doubles the
+    ///   plate's effective size. Empty frames run no OCR, so the extra inference
+    ///   fires only while the user is still aiming. Measured on-device proxy:
+    ///   90 px plate → full frame 0.20 (miss) vs 70 % square 0.4+ (hit).
     func recognizeFrame(_ pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation,
-                        mode: RecognitionMode, tiled: Bool,
+                        mode: RecognitionMode, tiled: Bool, roiFallback: Bool,
                         onDetections: (@Sendable ([PlateDetection], CGSize) -> Void)?) async throws -> PlateFrameResult
     /// Recognizes plates in a still image.
     func recognize(in image: CGImage, mode: RecognitionMode) async throws -> [PlateResult]
@@ -374,6 +382,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     public func recognizeImage(_ image: CGImage,
                                mode: RecognitionMode = .fast,
                                tiled: Bool = false,
+                               roiFallback: Bool = false,
                                onDetections: (@Sendable ([PlateDetection], CGSize) -> Void)? = nil) async throws -> PlateFrameResult {
         try Task.checkCancellation()
         // Cap the working resolution the same way `recognizeFrame` caps buffers: a
@@ -388,15 +397,54 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         // 1024px tiles and therefore shows the model plates at a very different scale —
         // the "right on the PC, wrong on the phone" case.
         let primary = try await detector.detect(in: image)
-        let merged: [PlateDetection]
+        var merged = primary
         // Tiling only adds information when the picture actually exceeds one tile
         // (`detectTiled`'s own 1024-px default): for a smaller image it degenerates to a
         // second identical full-frame `detect` pass, so skip it and save an inference.
         if tiled, max(image.width, image.height) > 1024 {
             let tiledDetections = try await detector.detectTiled(in: image)
             merged = (primary + tiledDetections)
-        } else {
-            merged = primary
+        }
+        // TEMP-EXPERIMENT [相机ROI兜底] — verify on device, revert = drop the
+        // `roiFallback` flag at the call site (CameraController) and this block.
+        // A portrait camera frame (1080×1920) letterboxes into only 288×512 of the
+        // 512² model canvas — the sides are wasted gray. A plate the user is aiming
+        // at lands at ~20 px there, where the model scores 0.02–0.20 (below the 0.25
+        // gate); a centered 70 % square crop restores the wasted canvas and roughly
+        // doubles the plate's effective size. Runs ONLY when the full frame found
+        // nothing: empty frames do no OCR anyway, so the extra inference fires just
+        // while aiming, never on productive frames. Off-center plates still come from
+        // the full-frame pass; this crop only rescues the centered small ones.
+        if merged.isEmpty, roiFallback {
+            let side = CGFloat(Int(min(image.width, image.height) * 0.7))
+            if side >= 64, side < CGFloat(min(image.width, image.height)) {
+                let crop = CGRect(x: (CGFloat(image.width) - side) / 2,
+                                  y: (CGFloat(image.height) - side) / 2,
+                                  width: side, height: side).integral
+                if let roi = image.cropping(to: crop) {
+                    let roiDetections = try await detector.detect(in: roi)
+                    if !roiDetections.isEmpty {
+                        func mapX(_ nx: CGFloat) -> CGFloat {
+                            min(1, max(0, (crop.minX + nx * crop.width) / CGFloat(image.width)))
+                        }
+                        func mapY(_ ny: CGFloat) -> CGFloat {
+                            min(1, max(0, (crop.minY + ny * crop.height) / CGFloat(image.height)))
+                        }
+                        let mapped = roiDetections.map { detection in
+                            PlateDetection(
+                                rect: CGRect(x: mapX(detection.rect.minX),
+                                             y: mapY(detection.rect.minY),
+                                             width: detection.rect.width * crop.width / CGFloat(image.width),
+                                             height: detection.rect.height * crop.height / CGFloat(image.height)),
+                                confidence: detection.confidence,
+                                label: detection.label,
+                                keypoints: detection.keypoints?.map { CGPoint(x: mapX($0.x), y: mapY($0.y)) },
+                                keypointConfidences: detection.keypointConfidences)
+                        }
+                        merged = YOLOOutputDecoder.suppress(mapped, threshold: detector.nmsIoUThreshold)
+                    }
+                }
+            }
         }
         // Re-anchor each detection's box on its pose keypoints (see
         // `PlateDetection.alignedToKeypoints`): the model's box head and keypoint head can
@@ -520,6 +568,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
                                orientation: CGImagePropertyOrientation = .up,
                                mode: RecognitionMode = .fast,
                                tiled: Bool = false,
+                               roiFallback: Bool = false,
                                onDetections: (@Sendable ([PlateDetection], CGSize) -> Void)? = nil) async throws -> PlateFrameResult {
         let width = CVPixelBufferGetWidth(pixelBuffer), height = CVPixelBufferGetHeight(pixelBuffer)
         let format = CVPixelBufferGetPixelFormatType(pixelBuffer)
@@ -542,7 +591,8 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         }
         // Delegate to the CGImage core: one geometry, one set of thresholds, and no
         // second render for media that never needed a pixel buffer in the first place.
-        return try await recognizeImage(image, mode: mode, tiled: tiled, onDetections: onDetections)
+        return try await recognizeImage(image, mode: mode, tiled: tiled,
+                                        roiFallback: roiFallback, onDetections: onDetections)
     }
 
     /// Scales an oversized still/frame down to the working resolution the detector is
