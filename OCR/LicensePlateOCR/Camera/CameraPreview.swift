@@ -33,6 +33,10 @@ struct CameraPreview: UIViewRepresentable {
 
 final class PreviewView: UIView {
     private var detections: [PlateDetection] = []
+    /// Every raw detection of the current frame, drawn as thin rectangles immediately.
+    /// `detections` above holds only the 2-hit confirmed tracks (filled plate outlines),
+    /// so keeping the two sets apart makes "the model saw it" visible on the first frame.
+    private var rawBoxes: [PlateDetection] = []
     private var results: [PlateResult] = []
     private var labels: [CATextLayer] = []
     /// One layer per plate: semi-transparent solid fill + same-colour solid outline.
@@ -84,9 +88,14 @@ final class PreviewView: UIView {
     /// Draws top-left normalized boxes for the upright portrait frame the SDK analyzes.
     /// No pixel size is needed: `toLayer` routes every point through
     /// `layerPointConverted`, which applies the preview's own videoGravity + rotation.
-    func draw(detections: [PlateDetection], results: [PlateResult]) {
+    /// - Parameter detections: confirmed tracks, drawn as filled plate quads.
+    /// - Parameter rawBoxes: all detections from this frame, drawn as thin rectangles.
+    ///   Defaults to `detections` so older call sites keep their previous behaviour.
+    func draw(detections: [PlateDetection], results: [PlateResult],
+              rawBoxes: [PlateDetection]? = nil) {
         self.detections = detections
         self.results = results
+        self.rawBoxes = rawBoxes ?? detections
         renderOverlay()
     }
 
@@ -162,8 +171,12 @@ final class PreviewView: UIView {
         }
 
         var usedResultIndices = Set<Int>()
+        // Thin rectangles for every raw detection of this frame (instant feedback).
+        for box in rawBoxes {
+            detectionPath.addRect(toLayerRect(box.rect))
+        }
+        // Filled plate outlines only for tracks that survived confirmation.
         for (index, detection) in detections.enumerated() {
-            detectionPath.addRect(toLayerRect(detection.rect))
             // Prefer the OCR result that belongs to this detection so the colour is keyed
             // on the plate text (stable across frames); otherwise key on the position.
             let matched = results.indices.first { i in
@@ -268,6 +281,7 @@ final class PreviewView: UIView {
 
     func clearOverlay() {
         detections = []
+        rawBoxes = []
         results = []
         labels.forEach { $0.removeFromSuperlayer() }
         labels = []
