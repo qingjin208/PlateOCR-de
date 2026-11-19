@@ -312,7 +312,7 @@ final class FramePipelineTests: XCTestCase {
         XCTAssertFalse(gated.effectiveFoldAwareScoring)
         XCTAssertFalse(gated.effectiveStrictNumericPart)
         XCTAssertFalse(gated.effectiveKeypointQuads)
-        XCTAssertEqual(RecognitionEnhancements.off.summary, "关闭")
+        XCTAssertEqual(RecognitionEnhancements.off.summary, "Off")
     }
 
     func testEnhancedKeypointQuadsAttachToPlateThatOwnsTheCrop() {

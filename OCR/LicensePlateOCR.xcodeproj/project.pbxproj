@@ -160,7 +160,7 @@
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 1600;
 				LastUpgradeCheck = 1600;
-				ORGANIZATIONNAME = "衿青";
+				ORGANIZATIONNAME = "Qingjin";
 				TargetAttributes = {
 					LPR0000000000000000000050 = {
 						CreatedOnToolsVersion = 16.0;
@@ -398,7 +398,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSCameraUsageDescription = "需要访问相机以实时识别车牌";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Camera access is required to recognize license plates in real time";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -437,7 +437,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSCameraUsageDescription = "需要访问相机以实时识别车牌";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Camera access is required to recognize license plates in real time";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

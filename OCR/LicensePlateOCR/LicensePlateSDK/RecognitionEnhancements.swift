@@ -94,12 +94,12 @@ public struct RecognitionEnhancements: Sendable, Equatable {
 
     /// Short human-readable state, for on-device diagnostics.
     public var summary: String {
-        guard isEnabled else { return "关闭" }
+        guard isEnabled else { return "Off" }
         var parts: [String] = []
-        if foldAwareScoring { parts.append("折叠排序") }
-        if strictNumericPart { parts.append("数字段严格") }
-        if keypointQuads { parts.append("角点四边形") }
-        if plateImageCleaning { parts.append("图像清理") }
-        return parts.isEmpty ? "已开启（无生效子项）" : "已开启（\(parts.joined(separator: "、"))）"
+        if foldAwareScoring { parts.append("Fold-aware ranking") }
+        if strictNumericPart { parts.append("Strict numeric part") }
+        if keypointQuads { parts.append("Keypoint quads") }
+        if plateImageCleaning { parts.append("Image cleanup") }
+        return parts.isEmpty ? "On (no active sub-options)" : "On (\(parts.joined(separator: ", ")))"
     }
 }

@@ -14,7 +14,7 @@
 // per-configuration settings (e.g. SWIFT_ACTIVE_COMPILATION_CONDITIONS).
 // Paths are relative to this file (Configuration/ -> ../Pods/...).
 
-// Set DEVELOPMENT_TEAM to your Personal Team ("衿青") in Xcode:
-//   Signing & Capabilities -> Team -> 衿青 (Personal Team)
+// Set DEVELOPMENT_TEAM to your Personal Team ("Qingjin") in Xcode:
+//   Signing & Capabilities -> Team -> Qingjin (Personal Team)
 // Xcode writes the 10-character Team ID here automatically once selected.
 DEVELOPMENT_TEAM = $(inherited)

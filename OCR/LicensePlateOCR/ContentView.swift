@@ -3,8 +3,8 @@
 
  Abstract:
  Redesigned UI (see Mockups/plate-ocr-demo-redesign.html): a clean header with a
- settings gear, a sliding source segmented control (拍照 / 相册 / 视频), an inline
- 极速 / 精准 mode toggle, a dark rounded preview with the SDK's aligned detection
+ settings gear, a sliding source segmented control (Camera / Photos / Video), an inline
+ Fast / Accurate mode toggle, a dark rounded preview with the SDK's aligned detection
  overlay, and German-plate result cards. Advanced controls (input channel, enhancement,
  detector thresholds) moved into a bottom sheet.
 
