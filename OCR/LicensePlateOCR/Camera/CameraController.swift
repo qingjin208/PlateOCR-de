@@ -132,8 +132,10 @@ final class CameraController: NSObject {
             refreshAnalysisGate()
         }
     }
-    /// When true, analysis is halted (frozen) but the camera keeps showing the last frame,
-    /// and results + overlay stay on screen. Toggled by the pause button — distinct from
+    /// When true, analysis is halted (frozen) but the camera keeps showing the last frame
+    /// and the rolling recognition history stays on screen. The detection boxes are cleared
+    /// on pause: no further `draw` happens while frozen, so leaving them would show a stale
+    /// snapshot on a stopped picture. Toggled by the pause button — distinct from
     /// `liveEnabled`, which fully stops the live feature and clears everything.
     ///
     /// `isAnalyzing` is cleared here rather than in the view: it drives the status pill and
@@ -143,7 +145,13 @@ final class CameraController: NSObject {
     var paused = false {
         didSet {
             guard paused != oldValue else { return }
-            if paused { isAnalyzing = false }
+            if paused {
+                isAnalyzing = false
+                // Pause freezes the feed, so no later frame will redraw the overlay.
+                // Drop the boxes now instead of leaving a stale snapshot; the rolling
+                // recognition-history list is intentionally left untouched.
+                previewView?.clearOverlay()
+            }
             refreshAnalysisGate()
         }
     }

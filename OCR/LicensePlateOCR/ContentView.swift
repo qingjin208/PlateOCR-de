@@ -1300,12 +1300,12 @@ private struct HistoryCardView: View {
                 .frame(width: 8, height: 44)
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 10) {
-                    // The plate region the pose model's 4 corner keypoints cut out and
-                    // perspective-corrected (falls back to the synthetic plate only when
-                    // the detector produced no keypoint quad for this frame).
-                    OCRInputCompareView(corrected: entry.result.correctedPlateImage, // TEMP-OCR-INPUT-DIAG
-                                        ocrInput: entry.result.ocrInputImage,
-                                        text: entry.result.text)
+                    // Only the perspective-corrected plate image is shown in the history
+                    // list. The OCR-engine input (post-cleaning/enhancement) and its caption
+                    // were diagnostic-only and are intentionally omitted here.
+                    CorrectedPlateView(cgImage: entry.result.correctedPlateImage,
+                                       text: entry.result.text)
+                        .frame(width: 160)
                     Spacer(minLength: 0)
                     VStack(alignment: .trailing, spacing: 2) {
                         // The recognized reading itself, prominent: the corrected image alone
