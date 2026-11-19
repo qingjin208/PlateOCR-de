@@ -2,10 +2,10 @@
  License Plate OCR SDK
  
  Abstract:
- The public entry point of the SDK. Locates German license plates with a YOLO model,
- then reads each plate with Apple's Vision OCR engine (the same one Apple demonstrates in
- "Locating and displaying recognized text"), and cleans the result with German-plate
- post-processing. Works on a single image or on a video.
+ The public entry point of the SDK. Locates German license plates with a YOLO pose model,
+ corrects each plate to a rectified crop, reads it with PaddleOCR PP-OCRv5 (via the linked
+ ONNX Runtime), and cleans the result with German-plate post-processing. Works on a single
+ image, a video, or a live camera feed.
  */
 
 import Foundation
@@ -156,12 +156,10 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
 
     /// The UI-driven mutable state, guarded by `runtimeState`.
     private struct RuntimeState: Sendable {
+        /// The single text recognizer (PaddleOCR). Its graph is loaded lazily off
+        /// the main thread (see `PaddleOCRTextRecognizer.EngineStore`); the wrapper
+        /// itself is fixed for the recognizer's lifetime — no engine switching.
         var recognizer: PlateTextRecognizing
-        /// One recognizer per engine. The PaddleOCR graph itself is loaded lazily
-        /// off the main thread (see `PaddleOCRTextRecognizer.EngineStore`); caching
-        /// the wrapper still avoids duplicate resource lookups on A/B toggling.
-        var recognizerCache: [OCREngine: PlateTextRecognizing]
-        var engine: OCREngine
         var useRGB: Bool
         /// See `ONNXPoseLicensePlateDetector.flipY`: top-row-first letterbox buffer
         /// (`true` = the PC/OpenCV layout). Default `true`.
@@ -180,32 +178,9 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     private let postProcessor: PlatePostProcessor
     private let corrector: PerspectivePlateCorrector
     private let plateImageCleaner = PlateImageCleaner()
-    private let recognitionLanguages: [Locale.Language]
     /// Shared process-wide context (Apple: do not create many CIContext instances).
     private let context = SDKGraphics.ciContext
     private let runtimeState: OSAllocatedUnfairLock<RuntimeState>
-
-    /// The OCR engine currently in use. Switching reuses a cached recognizer when
-    /// that engine has already been built, so A/B toggling does not reload the model.
-    public var ocrEngine: OCREngine {
-        get { runtimeState.withLock { $0.engine } }
-        set {
-            // Apple's OSAllocatedUnfairLock docs: it is a NON-RECURSIVE lock and the
-            // critical section must stay tight. `makeRecognizer` used to run inside
-            // it — any resource lookup / ORT work there would block every reader and
-            // a same-thread re-entrant call would trap. Build OUTSIDE, then only
-            // assign (as one atomic pair, so concurrent switches stay consistent).
-            let alreadyActive = runtimeState.withLock { $0.engine == newValue }
-            guard !alreadyActive else { return }
-            let cached = runtimeState.withLock { $0.recognizerCache[newValue] }
-            let created = cached ?? newValue.makeRecognizer(languages: recognitionLanguages)
-            runtimeState.withLock { state in
-                state.engine = newValue
-                state.recognizer = created
-                state.recognizerCache[newValue] = created
-            }
-        }
-    }
 
     /// Channel order fed to the ONNX detector (RGB vs BGR). Defaults to RGB because that
     /// is what Ultralytics trains on and what the PC reference implementation feeds
@@ -323,25 +298,23 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         set { runtimeState.withLock { $0.enhancements = newValue } }
     }
 
+    /// - Parameter recognizer: the text recognizer to use. Production callers pass
+    ///   `PaddleOCR.makeRecognizer()`; tests inject a mock. There is no engine switch —
+    ///   PaddleOCR is the SDK's sole OCR engine.
     public init(detector: LicensePlateDetecting,
                 recognizer: PlateTextRecognizing,
-                recognitionLanguages: [Locale.Language] = [Locale.Language(identifier: "de-DE")],
-                ocrEngine: OCREngine = OCREngine.defaultEngine,
                 postProcessor: PlatePostProcessor = PlatePostProcessor(),
                 enhancements: RecognitionEnhancements = .off) {
         self.detector = detector
-        self.recognitionLanguages = recognitionLanguages
         self.postProcessor = postProcessor
         self.corrector = PerspectivePlateCorrector()
         self.runtimeState = OSAllocatedUnfairLock(initialState: RuntimeState(
-            recognizer: recognizer,
-            recognizerCache: [ocrEngine: recognizer],
-            engine: ocrEngine, useRGB: true, flipY: true,
+            recognizer: recognizer, useRGB: true, flipY: true,
             enhancements: enhancements))
     }
 
     /// Convenience initializer that wires the trained German-plate corner model
-    /// (running through ONNX Runtime) with the selected OCR engine.
+    /// (running through ONNX Runtime) with the PaddleOCR text recognizer.
     ///
     /// The SDK has exactly ONE detector: the LibreYOLO (YOLO-NAS-pose) export
     /// `De-plate-pose` (512 input, four outputs; older Ultralytics exports keep working
@@ -353,8 +326,6 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     /// - Parameters:
     ///   - poseModelName: Resource name of the `.onnx` model (without extension).
     ///   - config: YOLO output layout (default `.germanPlatePoseLibre`).
-    ///   - engine: OCR engine.
-    ///   - recognitionLanguages: OCR languages (default `[de-DE]`).
     ///   - enhancements: Opt-in strengthening (default `.off` = legacy behaviour).
     ///   - poseThreads: Intra-op threads for the ONNX session (default 2). ORT's own default
     ///     is one thread per core, which keeps the performance cores saturated during a long
@@ -362,8 +333,6 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc) || canImport(onnxruntime_objc)
     public convenience init(poseModelName: String = "De-plate-pose",
                             config: YOLOConfig = .germanPlatePoseLibre,
-                            engine: OCREngine = OCREngine.defaultEngine,
-                            recognitionLanguages: [Locale.Language] = [Locale.Language(identifier: "de-DE")],
                             enhancements: RecognitionEnhancements = .off,
                             poseThreads: Int32 = 2) {
         let detector: LicensePlateDetecting
@@ -374,9 +343,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
             detector = LicensePlateDetectorUnavailable(error: error)
         }
         self.init(detector: detector,
-                  recognizer: engine.makeRecognizer(languages: recognitionLanguages),
-                  recognitionLanguages: recognitionLanguages,
-                  ocrEngine: engine,
+                  recognizer: PaddleOCR.makeRecognizer(),
                   postProcessor: PlatePostProcessor(),
                   enhancements: enhancements)
     }

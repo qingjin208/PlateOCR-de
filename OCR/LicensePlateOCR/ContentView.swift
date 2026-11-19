@@ -5,8 +5,8 @@
  Redesigned UI (see Mockups/plate-ocr-demo-redesign.html): a clean header with a
  settings gear, a sliding source segmented control (拍照 / 相册 / 视频), an inline
  极速 / 精准 mode toggle, a dark rounded preview with the SDK's aligned detection
- overlay, and German-plate result cards. Advanced controls (OCR engine, input channel,
- enhancement) moved into a bottom sheet.
+ overlay, and German-plate result cards. Advanced controls (input channel, enhancement,
+ detector thresholds) moved into a bottom sheet.
 
  IMPORTANT — detection/overlay alignment:
  The image overlay (`PlateQuadOverlay`) still maps normalized detection boxes onto the
@@ -20,7 +20,6 @@ import SwiftUI
 import PhotosUI
 import CoreTransferable
 import CoreGraphics
-import Vision
 import CoreImage
 import ImageIO
 import UniformTypeIdentifiers
@@ -37,7 +36,7 @@ enum MediaSource: String, CaseIterable, Hashable {
 }
 
 struct ContentView: View {
-    // Share the bundled plate detector and Apple OCR across all media sources.
+    // Share the bundled plate detector and PaddleOCR across all media sources.
     @State private var recognizer: LicensePlateRecognizer
     @State private var source: MediaSource = .camera
     @State private var cameraController: CameraController
@@ -52,22 +51,19 @@ struct ContentView: View {
         let enhancements = RecognitionEnhancements.on
         let rec: LicensePlateRecognizer
         #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc) || canImport(onnxruntime_objc)
-        // ONNX Runtime linked: use the trained German-plate YOLOv8-pose model directly.
+        // ONNX Runtime linked: use the trained German-plate pose model + PaddleOCR.
         rec = LicensePlateRecognizer(poseModelName: "De-plate-pose",
-                                     engine: OCREngine.defaultEngine,
                                      enhancements: enhancements)
         #else
         // No ONNX runtime linked: the SDK has exactly one detector (the LibreYOLO ONNX
-        // pose model), so without the pod there is NO detector at all. Build around the
-        // unavailable-stub so the app still runs and the triage line explains why
-        // nothing can be detected instead of crashing. PaddleOCR needs the same ORT
-        // runtime, so this build explicitly uses Apple Vision.
+        // pose model) and one OCR engine (PaddleOCR), both requiring ORT. Without the
+        // pod there is NO detector at all. Build around the unavailable-stubs so the
+        // app still runs and the triage line explains why nothing works instead of
+        // crashing. `PaddleOCR.makeRecognizer()` returns the fail-loud stub here.
         rec = LicensePlateRecognizer(detector: LicensePlateDetectorUnavailable(error:
                 LicensePlateError.invalidInput(
                     "未链接 onnxruntime：请先运行 pod install，然后用 LicensePlateOCR.xcworkspace 编译。")),
-                                     recognizer: OCREngine.appleVision.makeRecognizer(
-                                        languages: [Locale.Language(identifier: "de-DE")]),
-                                     ocrEngine: .appleVision)
+                                     recognizer: PaddleOCR.makeRecognizer())
         rec.enhancements = enhancements
         #endif
         _recognizer = State(initialValue: rec)
@@ -85,9 +81,6 @@ struct ContentView: View {
     @State private var videoURL: URL?
 
     @State private var mode: RecognitionMode = .fast   // default = fast
-    /// Starts on PaddleOCR when its model + dictionary are bundled, otherwise on
-    /// Apple Vision (see `OCREngine.defaultEngine`).
-    @State private var ocrEngine: OCREngine = OCREngine.defaultEngine
     /// Input channel order for the ONNX detector. RGB matches Ultralytics training and the
     /// PC reference pipeline; switch to BGR only if an export needs it.
     @State private var useRGB: Bool = true
@@ -125,7 +118,7 @@ struct ContentView: View {
     /// built-in transport controls).
     @State private var isPlaying = false
 
-    /// Bottom-sheet for advanced controls (OCR engine / input channel / enhancement).
+    /// Bottom-sheet for advanced controls (input channel / enhancement / thresholds).
     @State private var showSettings = false
 
     /// The media pass currently running (image or video). A second selection cancels it:
@@ -169,13 +162,12 @@ struct ContentView: View {
             .onChange(of: enhancements) { _, newValue in handleEnhancementsChange(newValue) }
     }
 
-    /// Media-source, engine and app-session reactions.
+    /// Media-source and app-session reactions.
     private var sessionReactions: some View {
         tuningReactions
             .onChange(of: imageItem) { _, newItem in handleImageItemChange(newItem) }
             .onChange(of: videoItem) { _, newItem in handleVideoItemChange(newItem) }
             .onChange(of: mode) { _, newMode in handleModeChange(newMode) }
-            .onChange(of: ocrEngine) { _, newEngine in handleOCREngineChange(newEngine) }
             .onChange(of: videoURL) { _, newURL in handleVideoURLChange(newURL) }
             .onChange(of: source) { _, newSource in handleSourceChange(newSource) }
             .onChange(of: scenePhase) { _, phase in handleScenePhaseChange(phase) }
@@ -252,7 +244,6 @@ struct ContentView: View {
                     .ignoresSafeArea()
                     .onTapGesture { withAnimation { showSettings = false } }
             SettingsSheet(mode: $mode,
-                          ocrEngine: $ocrEngine,
                           useRGB: $useRGB,
                           flipLetterbox: $flipLetterbox,
                           confidenceThreshold: $confidenceThreshold,
@@ -284,13 +275,6 @@ struct ContentView: View {
 
     private func handleModeChange(_ newMode: RecognitionMode) {
         cameraController.mode = newMode
-    }
-
-    private func handleOCREngineChange(_ newEngine: OCREngine) {
-        recognizer.ocrEngine = newEngine
-        // Switching engines is now a cheap wrapper swap; start the deferred graph
-        // load in the background so the first frame after the switch does not wait.
-        Task.detached(priority: .utility) { await OCREngine.prewarm(newEngine) }
     }
 
     private func handleUseRGBChange(_ newValue: Bool) {
@@ -352,8 +336,7 @@ struct ContentView: View {
         // for expensive initialization ("Reducing your app's launch time"). The
         // PaddleOCR graph loads on its private serial queue; the first recognition
         // awaits that same one-time load if the user starts before it finishes.
-        let engine = ocrEngine
-        Task.detached(priority: .utility) { await OCREngine.prewarm(engine) }
+        Task.detached(priority: .utility) { await PaddleOCR.prewarm() }
         // Kick the camera session once at launch when we open on the camera tab.
         if source == .camera { await cameraController.setup() }
     }
@@ -618,15 +601,13 @@ struct ContentView: View {
             text += String(format: " · 模型最高分 %.2f", score)
         }
         #endif
-        text += " · OCR \(ocrEngine.displayName)"
-        if !OCREngine.paddleOCR.isAvailable {
+        text += " · OCR \(PaddleOCR.displayName)"
+        if !PaddleOCR.isAvailable {
             text += " · \(PaddleOCRResources.statusDescription)"
         }
         // Full-dictionary greedy reading is a cleaning-quality signal, not a
-        // candidate. Surface it only in the diagnostics panel and only when the
-        // PaddleOCR engine actually produced it.
-        if showDiagnostics, ocrEngine == .paddleOCR,
-           let note = PaddleOCRDiagnostics.summary {
+        // candidate. Surface it only in the diagnostics panel.
+        if showDiagnostics, let note = PaddleOCRDiagnostics.summary {
             text += " · \(note)"
         }
         // Seal-detection triage: every candidate the cleaner saw, the gate that
@@ -856,7 +837,6 @@ private struct SourceSegment: View {
 
 private struct SettingsSheet: View {
     @Binding var mode: RecognitionMode
-    @Binding var ocrEngine: OCREngine
     @Binding var useRGB: Bool
     @Binding var flipLetterbox: Bool
     @Binding var confidenceThreshold: Double
@@ -878,17 +858,6 @@ private struct SettingsSheet: View {
     /// Debug-only options (RGB/BGR channel order) are collapsed by default so the sheet's
     /// first screen stays focused on the controls a normal user needs.
     @State private var showDebug = false
-
-    /// Engines actually usable in this build. Offering an unavailable engine made the
-    /// picker lie: `.paddleOCR` fell back to Apple Vision, so the UI claimed PaddleOCR
-    /// was running while Vision did the reading.
-    private var availableEngines: [OCREngine] { OCREngine.allCases.filter(\.isAvailable) }
-
-    private var ocrSubtitle: String {
-        OCREngine.paddleOCR.isAvailable
-            ? "PaddleOCR PP-OCRv5 为默认；Apple Vision 仅用于 A/B 对照"
-            : PaddleOCRResources.statusDescription
-    }
 
     var body: some View {
         VStack(spacing: 12) {
@@ -915,24 +884,6 @@ private struct SettingsSheet: View {
                         .pickerStyle(.segmented)
                         .frame(width: 180)
                         .tint(appAccent)
-                    }
-
-                    settingRow(title: "OCR 引擎", subtitle: ocrSubtitle) {
-                        // A single available engine leaves nothing to choose, and a one-segment
-                        // segmented control reads as broken — show the engine as text. The
-                        // picker comes back by itself once the PaddleOCR resources are bundled.
-                        if availableEngines.count > 1 {
-                            Picker("OCR 引擎", selection: $ocrEngine) {
-                                ForEach(availableEngines, id: \.self) { Text($0.displayName) }
-                            }
-                            .pickerStyle(.segmented)
-                            .frame(width: 190)
-                            .tint(appAccent)
-                        } else {
-                            Text(availableEngines.first?.displayName ?? ocrEngine.displayName)
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                        }
                     }
 
                     settingRow(title: "检测置信度", subtitle: "PC 参考默认值 0.25；调低可召回更多，调高更保守") {

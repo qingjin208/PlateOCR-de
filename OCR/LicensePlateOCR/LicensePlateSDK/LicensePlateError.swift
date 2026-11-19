@@ -15,10 +15,10 @@ public enum LicensePlateError: LocalizedError {
     case modelNotFound(String)
     /// A model output tensor (pose detector or PaddleOCR rec) could not be parsed.
     case invalidModelOutput(String)
-    /// Text recognition (Vision) failed.
+    /// Text recognition failed.
     case recognitionFailed(String)
     /// PaddleOCR could not be initialized (missing ONNX model/dictionary, or ORT
-    /// session creation failed). Never silently downgrade to Vision when this fires.
+    /// session creation failed). Reported explicitly instead of being swallowed.
     case paddleOCRUnavailable(String)
     /// The provided media could not be read.
     case invalidInput(String)

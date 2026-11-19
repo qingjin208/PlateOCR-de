@@ -1,8 +1,8 @@
 # 德国车牌识别：车牌检测 + PaddleOCR 字符识别
 
-当前分支使用 **LibreYOLO（YOLO-NAS-pose）导出的 `De-plate-pose.onnx`**（4 角点关键点模型），通过 ONNX Runtime 执行车牌检测——这是 SDK 唯一的检测器。检测后用 4 角点做透视矫正，再交给 **PaddleOCR PP-OCRv5 mobile 识别模型**（同样经 ONNX Runtime 推理）读取字符；Apple Vision `RecognizeTextRequest` 保留为可切换的 A/B 对照引擎。旧 Core ML 检测器（`license_plate_yolo.mlmodel`）已随本分支退役并从包中移除。
+当前分支使用 **LibreYOLO（YOLO-NAS-pose）导出的 `De-plate-pose.onnx`**（4 角点关键点模型），通过 ONNX Runtime 执行车牌检测——这是 SDK 唯一的检测器。检测后用 4 角点做透视矫正，再交给 **PaddleOCR PP-OCRv5 mobile 识别模型**（同样经 ONNX Runtime 推理）读取字符。旧 Core ML 检测器（`license_plate_yolo.mlmodel`）已随本分支退役并从包中移除。
 
-> **本分支变更：OCR 引擎由 Apple Vision 替换为 PaddleOCR**。字符识别不再调用 Vision 的 `.fast/.accurate` 两档，而是把矫正后的整行车牌送入 `PP-OCRv5_rec_mobile_infer.onnx` + `ppocrv5_dict.txt`，用受德国车牌字符集约束的 CTC 束搜索生成主结果与候选。关键点检测、透视矫正、图像清洁与德国车牌校验链路完全不变。详见 [POSE_INTEGRATION.md](POSE_INTEGRATION.md) 与 `Scripts/paddleocr_rec_reference.py`。链接 `onnxruntime`（`pod install`）后 pose 检测与 PaddleOCR 同时启用；未链接时 App 仍可启动，但检测器为不可用桩并在界面上显示原因。
+> **OCR 固定为 PaddleOCR（Apple Vision 已彻底移除）**。字符识别把矫正后的整行车牌送入 `PP-OCRv5_rec_mobile_infer.onnx` + `ppocrv5_dict.txt`，用受德国车牌字符集约束的 CTC 束搜索生成主结果与候选。关键点检测、透视矫正、图像清洁与德国车牌校验链路完全不变。详见 [POSE_INTEGRATION.md](POSE_INTEGRATION.md) 与 `Scripts/paddleocr_rec_reference.py`。链接 `onnxruntime`（`pod install`）后 pose 检测与 PaddleOCR 同时启用；未链接时 App 仍可启动，但检测器为不可用桩并在界面上显示原因。
 
 `main` 保留原 Paddle Lite / `.nb` 方案，基准提交为 `9ec6f24`。本分支不链接 Paddle Lite，也不向 App 打包 `.nb`；原 `.nb` 仅保留在 `Models/source/` 作为离线转换输入。
 
@@ -13,7 +13,7 @@
 - **图片**：选择图片后自动识别，按图片方向处理并显示车牌框和结果。
 - **视频**：选择视频后通过 `AVAssetReader` 解码，默认最多采样 60 帧；结果按文本多数票去重 —— 至少两帧一致才列出，只出现一帧的读数需要置信度 ≥ 0.85 才会显示，单帧误读不会单独成行。
 - **相机**：点「开始实时识别」后持续检测；先显示车牌检测框，再显示 OCR 文字和置信度。历史列表按同一车牌跨帧投票合并成一行（`票数/总帧数`），不会把同一辆车的每次识别都记一条。
-- **模式**：`fast` / `accurate` 在 PaddleOCR 下映射为「单次推理」与「多裁剪 + 更宽 CTC 候选搜索」（切到 Apple Vision 时仍是 `recognitionLevel` 两档），适用于图片、视频和实时相机。
+- **模式**：`fast` / `accurate`（界面「极速 / 精准」）由 PaddleOCR 自身实现，分别对应「单次推理」与「三裁剪 + 更宽 CTC 候选搜索」（约 4.7× 成本），适用于图片、视频和实时相机。
 
 实时相机默认使用 1080p NV12，最多每秒处理 5 帧。同一时间只处理一帧，忙时丢弃新帧，避免积压。实际速度取决于设备和每帧车牌数量；界面显示每次完整处理的耗时。离开相机页面或进入后台会停止相机，返回后恢复。
 
@@ -55,7 +55,7 @@ python Scripts/paddleocr_rec_reference.py rectified.png --mode fast
 python Scripts/paddleocr_rec_reference.py --eval samples/ --labels samples/labels.tsv
 ```
 
-真值来自 TSV（`文件名<TAB>期望车牌`）或图片文件名，输出准确率与字符错误率（CER）。**真机 A/B**：用同一批矫正图在设置页分别切换 PaddleOCR / Apple Vision 各记录一次读数，即可量化替换收益。目前仓库只有 4 张 Arial 合成样本的自检结果，尚无真实 FE-Schrift 车牌的精度证据。
+真值来自 TSV（`文件名<TAB>期望车牌`）或图片文件名，输出准确率与字符错误率（CER）。**真机对比**：用同一批矫正图，分别以 `fast` / `accurate` 两档各跑一次，即可量化模式间收益。目前仓库只有 4 张 Arial 合成样本的自检结果，尚无真实 FE-Schrift 车牌的精度证据。
 
 两点容易混淆：
 

@@ -4,7 +4,7 @@
  Abstract:
  Locates the PP-OCRv5 recognition model and its CTC character dictionary in the app
  bundle (or in `Bundle.module` for the SwiftPM target). Kept free of any ONNX Runtime
- import so `OCREngine.isAvailable` can be evaluated in builds that do not link ORT.
+ import so `PaddleOCR.isAvailable` can be evaluated in builds that do not link ORT.
 
  Model provenance
  ----------------
@@ -18,12 +18,12 @@
  The Xcode target uses `fileSystemSynchronizedGroups` and `PBXResourcesBuildPhase.files`
  is empty, so the relative path Xcode preserves for the `LicensePlateSDK/Resources`
 folder is
- not guaranteed. A flat `url(forResource:)` returning nil used to make
- `OCREngine.defaultEngine` silently fall back to Apple Vision — the App then claimed
- nothing was wrong while the entire PaddleOCR branch was dead. We now probe several
- layouts and fall back to a bounded recursive scan; if both resources still cannot be
- found, `OCREngine.makeRecognizer` returns a recognizer that throws an explicit error
- instead of quietly running Vision.
+ not guaranteed. A flat `url(forResource:)` returning nil used to make the engine
+ lookup silently fall back to Apple Vision — the App then claimed nothing was wrong
+ while the PaddleOCR branch was dead. Vision has since been removed; we now probe
+ several layouts and fall back to a bounded recursive scan. If both resources still
+ cannot be found, `PaddleOCR.makeRecognizer` returns a recognizer that throws an
+ explicit error instead of reporting a false success.
  */
 
 import Foundation
@@ -101,8 +101,8 @@ public enum PaddleOCRResources {
     public static var dictionaryURL: URL? { resolvedDictionary }
 
     /// `true` when both the ONNX graph and the CTC dictionary are packaged. The App
-    /// uses this to hide the PaddleOCR option instead of claiming an engine that would
-    /// silently fall back to Apple Vision.
+    /// uses this to explain a missing-resource build instead of claiming recognition
+    /// works when it cannot.
     public static var areBundled: Bool { modelURL != nil && dictionaryURL != nil }
 
     /// Human-readable engine state for the diagnostics panel. Naming the bundle makes

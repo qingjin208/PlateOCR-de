@@ -233,7 +233,7 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         _ = try? await store.get()
     }
 
-    /// Allocation-only: `OCREngine.makeRecognizer` keeps its non-throwing signature
+    /// Allocation-only: `PaddleOCR.makeRecognizer` keeps its non-throwing signature
     /// and the App's `init` stays cheap.
     public init() {}
 

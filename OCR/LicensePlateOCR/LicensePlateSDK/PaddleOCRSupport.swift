@@ -1,97 +1,59 @@
 /*
- License Plate OCR SDK — OCR engine selection
+ License Plate OCR SDK — PaddleOCR support
 
  Abstract:
- The App can choose the OCR engine ("Apple Vision" or "PaddleOCR") and the SDK
- switches engines at runtime. Both are `PlateTextRecognizing` implementations, so
- the detection + perspective-correction + validation pipeline is identical.
-
- PaddleOCR here is NOT a separate iOS framework: it reuses the already-linked
- ONNX Runtime to execute PaddleOCR's PP-OCRv5 mobile **recognition** graph
+ The SDK uses PaddleOCR exclusively for plate text recognition. PaddleOCR here is
+ NOT a separate iOS framework: it reuses the linked ONNX Runtime to execute the
+ PP-OCRv5 mobile **recognition** graph
  (`PP-OCRv5_rec_mobile_infer.onnx` + `ppocrv5_dict.txt`). The plate keypoints
- already deliver a rectified text line, so PaddleOCR's DB text detector is not
- used. Apple Vision remains selectable for A/B comparison on device.
+ already deliver a rectified text line, so PaddleOCR's DB text detector is not used.
+
+ This file holds the single-engine factory plus the German CTC decoder alphabet
+ and the last-frame diagnostic box. The engine-agnostic value types (observation,
+ protocol, quality mode) live in `OCRTypes.swift`.
  */
 
 import Foundation
 import CoreGraphics
 import os
 
-/// OCR engine used to read the plate characters.
-public enum OCREngine: String, CaseIterable, Sendable {
-    case appleVision
-    case paddleOCR
-
-    /// User-facing label for the in-App picker.
-    public var displayName: String {
-        switch self {
-        case .appleVision: return "Apple Vision"
-        case .paddleOCR: return "PaddleOCR"
-        }
-    }
-
-    /// The engine the App starts with. PaddleOCR is the default once its model and
-    /// dictionary are packaged; if they are missing (e.g. a build that skipped the
-    /// Resources folder) the App falls back to Vision instead of binding the picker
-    /// to an engine that is not linked.
-    public static var defaultEngine: OCREngine {
-        paddleOCR.isAvailable ? .paddleOCR : .appleVision
-    }
-
-    /// Builds the recognizer backing this engine.
-    ///
-    /// - Note: `languages` is an Apple Vision option only. PaddleOCR's PP-OCRv5 rec
-    ///   head has no runtime language switch — its character set is fixed by the ONNX
-    ///   graph and dictionary. The German constraint is applied by the CTC decoder
-    ///   and `GermanPlateValidator`, not by a locale.
-    ///
-    /// When `.paddleOCR` is requested but its resources are missing, this returns a
-    /// stub that throws `paddleOCRUnavailable` on the first frame. It deliberately
-    /// does NOT fall back to Vision: a silent downgrade made the whole branch look
-    /// healthy while Apple Vision was doing the reading. `defaultEngine` still starts
-    /// on Vision when resources are absent, and the diagnostics row explains why.
-    public func makeRecognizer(languages: [Locale.Language] = [Locale.Language(identifier: "de-DE")]) -> PlateTextRecognizing {
-        switch self {
-        case .appleVision:
-            return PlateTextRecognizer(languages: languages)
-        case .paddleOCR:
-            #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc) || canImport(onnxruntime_objc)
-            if PaddleOCRResources.areBundled { return PaddleOCRTextRecognizer() }
-            #endif
-            return PaddleOCRUnavailableRecognizer(reason: PaddleOCRResources.statusDescription)
-        }
-    }
-
-    /// Whether this engine is actually usable in the current build.
-    public var isAvailable: Bool {
-        switch self {
-        case .appleVision:
-            return true
-        case .paddleOCR:
-            #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc) || canImport(onnxruntime_objc)
-            return PaddleOCRResources.areBundled
-            #else
-            return false
-            #endif
-        }
-    }
-
-    /// Warms the selected engine's model AFTER the first frame is on screen.
-    ///
-    /// Apple's "Reducing your app's launch time" requires the main thread to stay
-    /// available for UIKit's first frame and recommends deferring expensive
-    /// initialization to first use. Call this from the view's `.task`, not `init`.
-    public static func prewarm(_ engine: OCREngine) async {
+/// PaddleOCR is the SDK's only text-recognition engine. The factory keeps the
+/// resource check and the fail-loud stub so a build missing its model/dictionary
+/// reports the reason instead of producing silently wrong readings.
+public enum PaddleOCR {
+    /// True when ONNX Runtime is linked and both the model and dictionary are bundled.
+    public static var isAvailable: Bool {
         #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc) || canImport(onnxruntime_objc)
-        if engine == .paddleOCR { await PaddleOCRTextRecognizer.prewarm() }
+        return PaddleOCRResources.areBundled
         #else
-        _ = engine
+        return false
         #endif
     }
+
+    /// Builds the recognizer. Missing resources yield a stub that throws
+    /// `paddleOCRUnavailable` on the first frame — no silent downgrade.
+    public static func makeRecognizer() -> PlateTextRecognizing {
+        #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc) || canImport(onnxruntime_objc)
+        if PaddleOCRResources.areBundled { return PaddleOCRTextRecognizer() }
+        #endif
+        return PaddleOCRUnavailableRecognizer(reason: PaddleOCRResources.statusDescription)
+    }
+
+    /// Warms the model AFTER the first frame is on screen. Apple's "Reducing your
+    /// app's launch time" keeps the main thread free for UIKit's first frame and
+    /// defers expensive initialization to first use. Call from the view's `.task`.
+    public static func prewarm() async {
+        #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc) || canImport(onnxruntime_objc)
+        await PaddleOCRTextRecognizer.prewarm()
+        #endif
+    }
+
+    /// Stable label for the on-device diagnostics line.
+    public static let displayName = "PaddleOCR"
 }
 
-/// Returned when `.paddleOCR` is selected in a build without its model/dictionary.
-/// Fails loudly instead of silently running Apple Vision under the PaddleOCR label.
+/// Returned when PaddleOCR's model/dictionary are missing in the current build.
+/// Fails loudly instead of running a silent fallback under the PaddleOCR label.
 private struct PaddleOCRUnavailableRecognizer: PlateTextRecognizing {
     let reason: String
 

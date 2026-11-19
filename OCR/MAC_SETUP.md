@@ -41,7 +41,7 @@ bash setup_mac.sh
 ---
 
 ## PaddleOCR（已实现，复用 ONNX Runtime）
-- App 内「Apple Vision / PaddleOCR」选择器可用，**默认 PaddleOCR**；Apple Vision 仅供 A/B 对照。
+- OCR 固定为 PaddleOCR（Apple Vision 已彻底移除，无引擎选择器）。「极速 / 精准」两档仍可切换。
 - 不再需要 `PaddleOCR-iOS` / Paddle Lite：识别直接复用 `pod 'onnxruntime-objc'` 加载
   `Resources/PP-OCRv5_rec_mobile_infer.onnx`（16.5 MB）与 `Resources/ppocrv5_dict.txt`。
 - 只跑 **rec**（不做 DB 文本检测）：关键点矫正图本身就是一条规整文本行，跑 det 反而会把 EU 蓝条和年检章切成伪文本框。
@@ -51,10 +51,10 @@ bash setup_mac.sh
   `PP-OCRv5_rec_mobile_infer.onnx` 与 `ppocrv5_dict.txt` 确实进了包。工程用
   `fileSystemSynchronizedGroups`（`files` 为空），`PaddleOCRResources` 会先按 Apple 文档把
   `subdirectory` 当作顶层 bundle 目录做多候选探测，仅在全部落空时才**限定在 `resourceURL` 内、
-  跳过 Frameworks/PlugIns/*.lproj、最多 2000 项**地按文件名查找；两个资源仍找不到时设置页会显示原因，
-  选择 PaddleOCR 会**显式报错**而非静默跑 Vision。
+  跳过 Frameworks/PlugIns/*.lproj、最多 2000 项**地按文件名查找；两个资源仍找不到时 triage 行会显示原因，
+  识别会**显式报错**而非假装成功。
 - 精度对照：`python Scripts/paddleocr_rec_reference.py --eval samples/ --labels samples/labels.tsv`
-  输出准确率与 CER；用同一批矫正图在真机切换两个引擎各跑一次即可量化收益。设置页打开「诊断」
+  输出准确率与 CER；用同一批矫正图在真机分别以 `fast` / `accurate` 各跑一次即可量化模式间收益。设置页打开「诊断」
   后，检测信息行会显示全字典 greedy 原始读数与异常字符（清洁是否彻底的信号）。
 - 若真机上 PaddleOCR 结果异常，先用该脚本对同一张矫正图跑一遍，区分「张量/解码问题」与「图片质量问题」。
 
@@ -73,9 +73,9 @@ bash setup_mac.sh
   9 处 `CGColorSpaceCreateDeviceRGB()`（device-dependent）统一为命名 sRGB，保证与 PC 参考的字节级一致。
 - **后台执行**（《Extending your app's background execution time》）：图片 / 视频识别 pass 现在成对申请
   `beginBackgroundTask(withName:expirationHandler:)` / `endBackgroundTask`，用户锁屏时不会在 5 秒后被挂起中断。
-- **Vision A/B 分支**：`usesLanguageCorrection = false` 时 Apple 明确 `customWords` 会被忽略，
-  所以 727 条城市码只交给 `GermanPlateValidator`；`minimumTextHeightFraction = 0.1` 用于滤徽章小字，
-  **滤不掉 EU 蓝条的 D**（与主字符等高），蓝条仍靠 `PlateImageCleaner` 遮白。
+- **字符约束**：PaddleOCR 的字符表由 ONNX 图与字典固定（18,385 类），运行时不可改；
+  727 条城市码只作为择优提示交给 `GermanPlateValidator`，不硬过滤（词表缺项不误拒真牌）。
+  EU 蓝条的 D 与主字符等高，靠 `PlateImageCleaner` 遮白，不靠字符过滤。
 - **隐私 / 上架**：`PhotosPicker` 进程外取图，**不需要** `NSPhotoLibraryUsageDescription`；
   相机描述 `NSCameraUsageDescription` 已声明。App 自身未使用 `UserDefaults`、文件时间戳等
   required reason API，**目前不需要** `PrivacyInfo.xcprivacy`；上架前请检查
@@ -90,7 +90,7 @@ bash setup_mac.sh
 
 ## 本次新增 / 改动文件
 - 新增：`setup_mac.sh`（CocoaPods 一键接入）、`POSE_INTEGRATION.md`
-- 改动：`LicensePlateRecognizer.swift`、`YOLOOutputDecoder.swift`、`LicensePlateDetector.swift`、`ContentView.swift`、新增 `ONNXPoseLicensePlateDetector.swift` / `PerspectivePlateCorrector.swift` / `OCREngine.swift` / `PaddleOCRTextRecognizer.swift`
+- 改动：`LicensePlateRecognizer.swift`、`YOLOOutputDecoder.swift`、`LicensePlateDetector.swift`、`ContentView.swift`、新增 `ONNXPoseLicensePlateDetector.swift` / `PerspectivePlateCorrector.swift` / `PaddleOCRSupport.swift`（原 `OCREngine.swift`） / `OCRTypes.swift` / `PaddleOCRTextRecognizer.swift`
 - 资源：`Resources/De-plate-pose.onnx`、`Resources/PP-OCRv5_rec_mobile_infer.onnx`、
   `Resources/ppocrv5_dict.txt`
 - PC 校验脚本：`Scripts/paddleocr_rec_reference.py`（`--self-test` / `--eval` / `--fetch-models`）
