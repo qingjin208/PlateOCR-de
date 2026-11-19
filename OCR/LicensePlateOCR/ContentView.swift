@@ -84,15 +84,15 @@ struct ContentView: View {
     /// Letterbox buffer orientation for the detector (top-row-first = PC layout). Debug
     /// switch: with the wrong value the boxes land vertically mirrored and OCR reads nothing.
     @State private var flipLetterbox: Bool = true
-    /// Detection confidence gate. 0.25 mirrors the PC reference's Ultralytics default
-    /// (`截取车牌区域并保存-2.py` calls `model(image)` with no overrides). Raise it only
-    /// if a pass starts reporting obvious false positives.
-    @State private var confidenceThreshold: Double = 0.25
+    /// Detection confidence gate. The PC reference's Ultralytics default is 0.25
+    /// (`截取车牌区域并保存-2.py` calls `model(image)` with no overrides); the app
+    /// ships 0.35 to be stricter against false positives.
+    @State private var confidenceThreshold: Double = 0.35
     /// NMS IoU. 0.7 mirrors the PC reference. Lower values merge neighbouring plates into
     /// one — the "2-3 plates in frame, only 1 reported" case.
     @State private var nmsIoU: Double = 0.7
     /// Frames sampled from a video (the PC script processes every frame).
-    @State private var videoSampleLimit: Double = 60
+    @State private var videoSampleLimit: Double = 50
     /// Reveals the raw model input and the raw detections, so one screenshot settles
     /// whether a bad pass is a wrong tensor or a wrong decode.
     @State private var showDiagnostics: Bool = false
@@ -855,7 +855,7 @@ private struct SettingsSheet: View {
             // absorbs the overflow and keeps the button pinned at the bottom.
             ScrollView {
                 VStack(spacing: 12) {
-                    settingRow(title: "Detection Confidence", subtitle: "PC reference default 0.25; lower recalls more, higher is stricter") {
+                    settingRow(title: "Detection Confidence", subtitle: "App default 0.35 (PC reference 0.25); lower recalls more, higher is stricter") {
                         sliderRow(value: $confidenceThreshold, range: 0.05...0.9, step: 0.05, format: "%.2f")
                     }
 
@@ -873,7 +873,7 @@ private struct SettingsSheet: View {
                                 .pickerStyle(.segmented)
                                 .tint(appAccent)
                             }
-                            settingRow(title: "Video Sample Frames", subtitle: "PC processes every frame; mobile defaults to 60 frames; adjust by video length") {
+                            settingRow(title: "Video Sample Frames", subtitle: "PC processes every frame; mobile defaults to 50 frames; adjust by video length") {
                                 sliderRow(value: $videoSampleLimit, range: 10...180, step: 10, format: "%.0f")
                             }
                             settingRow(title: "Detection Diagnostics", subtitle: "Show the 640 input image fed to the model and raw boxes/confidence") {
