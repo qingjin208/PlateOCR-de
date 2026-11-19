@@ -365,20 +365,23 @@ struct ContentView: View {
     // MARK: - Header
 
     private var header: some View {
-        HStack(alignment: .center, spacing: 10) {
-            Text("Plate Recognition").font(.headline.bold())
+        VStack(spacing: 10) {
+            HStack {
+                Text("Plate Recognition").font(.headline.bold())
+                Spacer(minLength: 0)
+                Button {
+                    withAnimation { showSettings = true }
+                } label: {
+                    Image(systemName: "gearshape.fill")
+                        .font(.system(size: 18))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 38, height: 38)
+                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                }
+            }
             SourceSegment(selection: $source)
                 .frame(width: 198)
-            Spacer(minLength: 0)
-            Button {
-                withAnimation { showSettings = true }
-            } label: {
-                Image(systemName: "gearshape.fill")
-                    .font(.system(size: 18))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 38, height: 38)
-                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
-            }
+                .frame(maxWidth: .infinity)
         }
         .padding(.horizontal)
         .padding(.top, 8)
