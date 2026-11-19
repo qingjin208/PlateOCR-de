@@ -81,9 +81,6 @@ struct ContentView: View {
     @State private var videoURL: URL?
 
     @State private var mode: RecognitionMode = .fast   // default = fast
-    /// Input channel order for the ONNX detector. RGB matches Ultralytics training and the
-    /// PC reference pipeline; switch to BGR only if an export needs it.
-    @State private var useRGB: Bool = true
     /// Letterbox buffer orientation for the detector (top-row-first = PC layout). Debug
     /// switch: with the wrong value the boxes land vertically mirrored and OCR reads nothing.
     @State private var flipLetterbox: Bool = true
@@ -154,7 +151,6 @@ struct ContentView: View {
     /// recognizer without further handling logic).
     private var tuningReactions: some View {
         decoratedContent
-            .onChange(of: useRGB) { _, newValue in handleUseRGBChange(newValue) }
             .onChange(of: flipLetterbox) { _, newValue in handleFlipLetterboxChange(newValue) }
             .onChange(of: confidenceThreshold) { _, v in recognizer.confidenceThreshold = Float(v) }
             .onChange(of: nmsIoU) { _, v in recognizer.nmsIoUThreshold = Float(v) }
@@ -244,14 +240,12 @@ struct ContentView: View {
                     .ignoresSafeArea()
                     .onTapGesture { withAnimation { showSettings = false } }
             SettingsSheet(mode: $mode,
-                          useRGB: $useRGB,
                           flipLetterbox: $flipLetterbox,
                           confidenceThreshold: $confidenceThreshold,
                           nmsIoU: $nmsIoU,
                           videoSampleLimit: $videoSampleLimit,
                           showDiagnostics: $showDiagnostics,
                           enhancements: $enhancements,
-                          channelOrderConfigurable: recognizer.honorsInputChannelOrder,
                           controller: cameraController) { withAnimation { showSettings = false } }
                     .padding(.horizontal, 4)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -275,10 +269,6 @@ struct ContentView: View {
 
     private func handleModeChange(_ newMode: RecognitionMode) {
         cameraController.mode = newMode
-    }
-
-    private func handleUseRGBChange(_ newValue: Bool) {
-        recognizer.useRGB = newValue
     }
 
     private func handleFlipLetterboxChange(_ newValue: Bool) {
@@ -839,18 +829,12 @@ private struct SourceSegment: View {
 
 private struct SettingsSheet: View {
     @Binding var mode: RecognitionMode
-    @Binding var useRGB: Bool
     @Binding var flipLetterbox: Bool
     @Binding var confidenceThreshold: Double
     @Binding var nmsIoU: Double
     @Binding var videoSampleLimit: Double
     @Binding var showDiagnostics: Bool
     @Binding var enhancements: RecognitionEnhancements
-    /// Whether the active detector actually reads `useRGB` (see
-    /// `LicensePlateRecognizer.honorsInputChannelOrder`). The LibreYOLO YOLO-NAS-pose
-    /// export is BGR-only and the Core ML detector normalizes the buffer itself, so in
-    /// those builds the switch is shown disabled instead of pretending to work.
-    let channelOrderConfigurable: Bool
     /// Camera controller, so the sheet can toggle the on-device diagnostic echo
     /// (`debugEchoEnabled`) that reveals whether the frame fed to detection matches the
     /// displayed preview — the key to diagnosing the "plate box in the wrong place" report.
@@ -873,65 +857,34 @@ private struct SettingsSheet: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             // The sheet has more rows than an iPhone SE screen can hold. A plain VStack
-            // simply overflowed — the 完成 button and the last switches were off-screen and
+            // simply overflowed — the Done button and the last switches were off-screen and
             // unreachable. The ScrollView is the flexible element of this VStack, so it
             // absorbs the overflow and keeps the button pinned at the bottom.
             ScrollView {
                 VStack(spacing: 12) {
-                    settingRow(title: "Recognition Mode", subtitle: "Fast: single inference; Accurate: multi-crop + wider CTC candidate search (Fast by default)") {
-                        Picker("Recognition Mode", selection: $mode) {
-                            Text("Fast").tag(RecognitionMode.fast)
-                            Text("Accurate").tag(RecognitionMode.accurate)
-                        }
-                        .pickerStyle(.segmented)
-                        .frame(width: 180)
-                        .tint(appAccent)
-                    }
-
                     settingRow(title: "Detection Confidence", subtitle: "PC reference default 0.25; lower recalls more, higher is stricter") {
-                        VStack(alignment: .trailing, spacing: 0) {
-                            Text(String(format: "%.2f", confidenceThreshold)).font(.caption.monospacedDigit())
-                            Slider(value: $confidenceThreshold, in: 0.05...0.9, step: 0.05)
-                                .frame(width: 150)
-                                .tint(appAccent)
-                        }
+                        sliderRow(value: $confidenceThreshold, range: 0.05...0.9, step: 0.05, format: "%.2f")
                     }
 
                     settingRow(title: "NMS IoU", subtitle: "PC reference value 0.7; too low merges neighboring plates into one") {
-                        VStack(alignment: .trailing, spacing: 0) {
-                            Text(String(format: "%.2f", nmsIoU)).font(.caption.monospacedDigit())
-                            Slider(value: $nmsIoU, in: 0.1...0.9, step: 0.05)
-                                .frame(width: 150)
-                                .tint(appAccent)
-                        }
+                        sliderRow(value: $nmsIoU, range: 0.1...0.9, step: 0.05, format: "%.2f")
                     }
 
                     DisclosureGroup("Debug Options", isExpanded: $showDebug) {
                         VStack(spacing: 12) {
-                            settingRow(title: "Video Sample Frames", subtitle: "PC processes every frame; mobile defaults to 60 frames; adjust by video length") {
-                                VStack(alignment: .trailing, spacing: 0) {
-                                    Text("\(Int(videoSampleLimit))").font(.caption.monospacedDigit())
-                                    Slider(value: $videoSampleLimit, in: 10...180, step: 10)
-                                        .frame(width: 150)
-                                        .tint(appAccent)
+                            settingRow(title: "Recognition Mode", subtitle: "Fast: single inference; Accurate: three crops + wider CTC search (~4.7x slower, higher recall)") {
+                                Picker("Recognition Mode", selection: $mode) {
+                                    Text("Fast").tag(RecognitionMode.fast)
+                                    Text("Accurate").tag(RecognitionMode.accurate)
                                 }
+                                .pickerStyle(.segmented)
+                                .tint(appAccent)
+                            }
+                            settingRow(title: "Video Sample Frames", subtitle: "PC processes every frame; mobile defaults to 60 frames; adjust by video length") {
+                                sliderRow(value: $videoSampleLimit, range: 10...180, step: 10, format: "%.0f")
                             }
                             settingRow(title: "Detection Diagnostics", subtitle: "Show the 640 input image fed to the model and raw boxes/confidence") {
                                 Toggle("", isOn: $showDiagnostics)
-                            }
-                            settingRow(title: "Input Channel Order",
-                                       subtitle: channelOrderConfigurable
-                                           ? "RGB by default (matches the PC reference); switch to BGR only if detection is clearly wrong"
-                                           : "The current model is fixed to BGR (LibreYOLO export / Core ML); this switch has no effect") {
-                                Picker("Input Channel", selection: $useRGB) {
-                                    Text("RGB").tag(true)
-                                    Text("BGR").tag(false)
-                                }
-                                .pickerStyle(.segmented)
-                                .frame(width: 130)
-                                .tint(appAccent)
-                                .disabled(!channelOrderConfigurable)
-                                .opacity(channelOrderConfigurable ? 1 : 0.45)
                             }
                             settingRow(title: "Letterbox Buffer Orientation",
                                        subtitle: "Forward (same as PC, default) / Reverse; switch to Reverse if boxes are mirrored vertically") {
@@ -940,7 +893,6 @@ private struct SettingsSheet: View {
                                     Text("Reverse").tag(false)
                                 }
                                 .pickerStyle(.segmented)
-                                .frame(width: 130)
                                 .tint(appAccent)
                             }
                             settingRow(title: "Diagnostic Echo", subtitle: "Show the raw frame + boxes fed to detection in a preview corner, for troubleshooting alignment/rotation") {
@@ -1010,18 +962,36 @@ private struct SettingsSheet: View {
         .shadow(color: .black.opacity(0.2), radius: 20, y: -8)
     }
 
+    /// Vertical layout: title + description on top, control on the row below. This keeps
+    /// the explanatory text readable instead of squeezing it into a narrow left column.
     private func settingRow<Content: View>(title: String, subtitle: String,
                                            @ViewBuilder content: () -> Content) -> some View {
-        HStack(alignment: .center, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.subheadline)
                 Text(subtitle).font(.caption2).foregroundStyle(.secondary)
             }
-            Spacer(minLength: 0)
-            content()
+            HStack {
+                Spacer(minLength: 0)
+                content()
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    /// Full-width slider with its current value shown above it.
+    private func sliderRow(value: Binding<Double>, range: ClosedRange<Double>,
+                           step: Double, format: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(String(format: format, value.wrappedValue))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+            Slider(value: value, in: range, step: step)
+                .tint(appAccent)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
