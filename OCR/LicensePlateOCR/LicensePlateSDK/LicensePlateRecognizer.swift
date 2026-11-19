@@ -63,10 +63,6 @@ public struct PlateResult: Identifiable, Sendable {
     /// The rectified plate image actually fed to the OCR engine (perspective-corrected
     /// from the 4 corner keypoints). `nil` when the detector fell back to a box crop.
     public let correctedPlateImage: CGImage?
-    /// [TEMP-OCR-INPUT-DIAG] Exact image fed to the OCR engine AFTER cleaning +
-    /// enhancement. Shown next to `correctedPlateImage` so the eye can compare the
-    /// rectified plate with what the model actually reads. Remove with the diagnostic UI.
-    public let ocrInputImage: CGImage?
     /// The plate outline (normalized, top-left origin) taken from the detection's pose
     /// keypoints. `nil` for sub-boxes carved out of a multi-plate crop, where the corners
     /// of the shared region would be wrong.
@@ -88,7 +84,6 @@ public struct PlateResult: Identifiable, Sendable {
                 imageSize: CGSize,
                 candidates: [PlateCandidate],
                 correctedPlateImage: CGImage? = nil,
-                ocrInputImage: CGImage? = nil, // TEMP-OCR-INPUT-DIAG
                 corners: [CGPoint]? = nil,
                 votes: Int = 1) {
         self.text = text
@@ -97,7 +92,6 @@ public struct PlateResult: Identifiable, Sendable {
         self.imageSize = imageSize
         self.candidates = candidates
         self.correctedPlateImage = correctedPlateImage
-        self.ocrInputImage = ocrInputImage // TEMP-OCR-INPUT-DIAG
         self.corners = corners
         self.votes = votes
     }
@@ -113,7 +107,6 @@ extension PlateResult {
                     imageSize: imageSize,
                     candidates: candidates,
                     correctedPlateImage: correctedPlateImage,
-                    ocrInputImage: ocrInputImage, // TEMP-OCR-INPUT-DIAG
                     corners: corners,
                     votes: votes)
     }
@@ -449,7 +442,6 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
                                                        region: detection.rect,
                                                        imageSize: imageSize,
                                                        correctedImage: corrected,
-                                                       ocrInputImage: enhanced, // TEMP-OCR-INPUT-DIAG
                                                        corners: detection.keypoints,
                                                        enhancements: enhancements)
                     return (offset: offset, plates: plates)
@@ -496,7 +488,6 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
                                PlateCandidate(text: flat($0.text), confidence: $0.confidence)
                            },
                            correctedPlateImage: result.correctedPlateImage,
-                           ocrInputImage: result.ocrInputImage, // TEMP-OCR-INPUT-DIAG
                            corners: result.corners,
                            votes: result.votes)
     }

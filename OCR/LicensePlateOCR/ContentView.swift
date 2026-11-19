@@ -455,13 +455,6 @@ struct ContentView: View {
                 VideoPlatePreview(player: player, samples: samples)
                     .frame(height: 340)
                     .clipShape(RoundedRectangle(cornerRadius: 16))
-                    .overlay(alignment: .bottom) {
-                        Text("Video preview (colored areas mark plates recognized in sampled frames; see the list below)")
-                            .font(.caption2).foregroundStyle(.white)
-                            .padding(6)
-                            .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
-                            .padding(8)
-                    }
                 Button(action: togglePlayback) {
                     Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
                         .font(.system(size: 30))
@@ -1065,33 +1058,6 @@ private struct CorrectedPlateView: View {
     }
 }
 
-/// TEMP-OCR-INPUT-DIAG — shows the rectified plate next to the exact image the OCR
-/// engine received (after cleaning + enhancement). Delete this whole struct with the
-/// diagnostic; nothing else depends on it.
-private struct OCRInputCompareView: View {
-    let corrected: CGImage?
-    let ocrInput: CGImage?
-    let text: String
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            VStack(spacing: 2) {
-                CorrectedPlateView(cgImage: corrected, text: text)
-                    .frame(maxWidth: .infinity)
-                Text("Rectified image (raw)").font(.caption2).foregroundStyle(.secondary)
-            }
-            if ocrInput != nil {
-                VStack(spacing: 2) {
-                    CorrectedPlateView(cgImage: ocrInput, text: text)
-                        .frame(maxWidth: .infinity)
-                    Text("Image fed to OCR").font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-        }
-        .frame(maxWidth: 260)
-    }
-}
-
 private struct ConfidenceBar: View {
     let value: Float
 
@@ -1125,9 +1091,8 @@ private struct PlateCardView: View {
                 .frame(width: 8, height: 44)
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 10) {
-                    OCRInputCompareView(corrected: result.correctedPlateImage, // TEMP-OCR-INPUT-DIAG
-                                        ocrInput: result.ocrInputImage,
-                                        text: result.text)
+                    CorrectedPlateView(cgImage: result.correctedPlateImage,
+                                       text: result.text)
                     Spacer(minLength: 0)
                     // The recognized reading itself, prominent: the corrected image alone
                     // does not communicate what OCR actually decided.
