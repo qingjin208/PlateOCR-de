@@ -54,8 +54,9 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
 
     // MARK: - Model / dictionary
 
-    /// Immutable graph + dictionary. Every `session.run` goes through `ortQueue`,
-    /// so the ObjC `ORTSession`'s missing concurrency annotation is harmless.
+    /// Immutable graph + dictionary. Each `session.run` stays on its engine's private
+    /// serial queue, so the ObjC `ORTSession`'s missing concurrency annotation is harmless
+    /// while different engines still decode in parallel.
     private struct Engine: @unchecked Sendable {
         let session: ORTSession
         let inputName: String
@@ -65,11 +66,16 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         let alphabet: [String]
         /// Class indices the beam may emit: blank + German plate characters.
         let allowed: [Int]
+        /// This session's PRIVATE serial queue. ORTSession is not annotated Sendable,
+        /// so a single session is only ever run on this one queue. Multiple engines
+        /// therefore decode different plates on different queues in parallel without
+        /// ever calling one session from two threads.
+        let queue: DispatchQueue
 
         static let imageHeight = 48
         static let baseWidth = 320
 
-        init() throws {
+        init(queueIndex: Int) throws {
             guard PaddleOCRResources.dictionaryURL != nil else {
                 throw LicensePlateError.paddleOCRUnavailable("缺少 ppocrv5_dict.txt")
             }
@@ -90,6 +96,8 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
             self.session = session
             self.inputName = (try? session.inputNames())?.first ?? "x"
             self.outputName = (try? session.outputNames())?.first ?? "fetch_name_0"
+            self.queue = DispatchQueue(label: "de.plateocr.paddleocr.ort.\(queueIndex)",
+                                       qos: .userInitiated)
             self.alphabet = alphabet
 
             var allowed = [0]
@@ -127,45 +135,61 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         }
     }
 
-    /// Dedicated serial queue for everything that blocks: graph construction and
-    /// `ORTSession.run`. WWDC21 "Swift concurrency: Behind the scenes" is explicit
-    /// that the cooperative pool only has `coreCount` threads, so blocking one of
-    /// them (an `NSLock` around a 9.4 ms CPU inference, N times per multi-plate
-    /// frame) stalls unrelated tasks. A private serial queue keeps the blocking
-    /// work off the pool; `Engine` is only ever touched there.
-    private static let ortQueue = DispatchQueue(
-        label: "de.plateocr.paddleocr.ort", qos: .userInitiated)
+    /// Number of independent ORT sessions kept for multi-plate OCR. Each session is
+    /// pinned to its own private serial queue (see `Engine.queue`), so up to this many
+    /// plates decode concurrently. A single session must never be run from two threads,
+    /// which is why parallelism comes from MORE sessions rather than a concurrent queue.
+    /// Two roughly doubles peak OCR memory (~16.5 MB graph + a dictionary copy each);
+    /// still small next to the pose model, and it removes the serial OCR bottleneck that
+    /// made multi-plate frames slow on older devices. Raise to 3-4 on stronger devices.
+    private static let enginePoolSize = 2
+
+    /// Dedicated queue for the (rare) lazy graph construction. Keeps the blocking
+    /// init work off the cooperative pool. Each `Engine` then runs inference on its
+    /// own queue, NOT here.
+    private static let loadQueue = DispatchQueue(
+        label: "de.plateocr.paddleocr.load", qos: .userInitiated)
 
     private enum LoadState {
         case idle
-        case loaded(Engine)
+        case loaded([Engine])
         case failed(LicensePlateError)
     }
 
-    /// Loads the graph ONCE, lazily, on `ortQueue`.
+    /// Lazily builds a small POOL of engines once, then hands out a different engine
+    /// to each caller (round-robin). Multi-plate frames issue one `recognize` per crop
+    /// concurrently from `LicensePlateRecognizer`; with N engines their `session.run`
+    /// calls no longer queue behind one another.
     ///
     /// Apple's "Reducing your app's launch time": UIKit draws the first frame on
     /// the main thread, so that thread must stay available, and expensive
-    /// initialization belongs on first use. `ContentView.init` used to synchronously
-    /// load 16.5 MB + 18,383 dictionary lines + a warmup inference before the first
-    /// frame; the previous static `let` fixed only REPEATED loads, not the first one.
+    /// initialization belongs on first use. The pool is built once on `loadQueue`.
     private final class EngineStore: @unchecked Sendable {
         private let state = OSAllocatedUnfairLock(initialState: LoadState.idle)
+        /// Monotonic ticket for round-robin engine selection; `Sendable` via the lock.
+        private let nextIndex = OSAllocatedUnfairLock(initialState: 0)
 
         func get() async throws -> Engine {
             try await withCheckedThrowingContinuation { continuation in
-                PaddleOCRTextRecognizer.ortQueue.async {
-                    let result: Result<Engine, LicensePlateError> = self.state.withLock { current in
+                PaddleOCRTextRecognizer.loadQueue.async {
+                    // Resolve the pool (or build it once) under the state lock, then
+                    // pick the engine AFTER unlocking: avoids nesting the nextIndex
+                    // lock inside the state lock and keeps the critical section short.
+                    let resolved: Result<[Engine], LicensePlateError> = self.state.withLock { current in
                         switch current {
-                        case .loaded(let engine):
-                            return .success(engine)
+                        case .loaded(let engines):
+                            return .success(engines)
                         case .failed(let error):
                             return .failure(error)
                         case .idle:
                             do {
-                                let engine = try Engine()
-                                current = .loaded(engine)
-                                return .success(engine)
+                                var engines: [Engine] = []
+                                engines.reserveCapacity(PaddleOCRTextRecognizer.enginePoolSize)
+                                for index in 0..<PaddleOCRTextRecognizer.enginePoolSize {
+                                    engines.append(try Engine(queueIndex: index))
+                                }
+                                current = .loaded(engines)
+                                return .success(engines)
                             } catch {
                                 let wrapped = LicensePlateError.paddleOCRUnavailable(
                                     (error as? LocalizedError)?.errorDescription
@@ -175,6 +199,7 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
                             }
                         }
                     }
+                    let result: Result<Engine, LicensePlateError> = resolved.map { self.pick($0) }
                     // Resume explicitly: `CheckedContinuation` is parameterized on
                     // `any Error`, so a `Result<Engine, LicensePlateError>` cannot be
                     // passed to `resume(with:)` without an existential conversion.
@@ -184,6 +209,17 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
                     }
                 }
             }
+        }
+
+        /// Picks the next engine by atomic ticket. Called under `loadQueue`, so no
+        /// contention with graph construction; the lock is for Sendable correctness.
+        private func pick(_ engines: [Engine]) -> Engine {
+            let index = nextIndex.withLock { ticket -> Int in
+                let chosen = ticket % engines.count
+                ticket += 1
+                return chosen
+            }
+            return engines[index]
         }
     }
 
@@ -551,12 +587,14 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
     /// copied the whole tensor and then scanned it three times (normalize, greedy,
     /// beam); on PC that decoding cost ~10.2 ms, as much as the inference itself.
     ///
-    /// Both the blocking `Session::Run` and the ObjC tensor read happen on
-    /// `ortQueue`. Only the pure-Swift `DecoderOutput` crosses back, so the CTC
-    /// beam search still runs concurrently for each plate in a multi-plate frame.
+    /// Both the blocking `Session::Run` and the ObjC tensor read happen on this
+    /// engine's PRIVATE serial queue. Different engines use different queues, so
+    /// multi-plate inference is parallel while each ORTSession stays single-threaded.
+    /// Only the pure-Swift `DecoderOutput` crosses back, so the CTC beam search still
+    /// runs concurrently for each plate in a multi-plate frame.
     private static func decode(_ prepared: PreparedInput, engine: Engine) async throws -> DecoderOutput {
         try await withCheckedThrowingContinuation { continuation in
-            Self.ortQueue.async {
+            engine.queue.async {
                 do {
                     let shape = [1, 3, Engine.imageHeight, prepared.width]
                         .map { NSNumber(value: $0) }
@@ -584,7 +622,7 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         }
     }
 
-    /// Pure-CPU reduction of the ORT output; called only on `ortQueue`.
+    /// Pure-CPU reduction of the ORT output; called on the engine's private queue.
     private static func decodeTensor(_ value: ORTValue, engine: Engine) throws -> DecoderOutput {
         let dims = try value.tensorTypeAndShapeInfo().shape.map { $0.intValue }
         guard dims.count >= 2 else {
@@ -679,7 +717,7 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
                                         softmaxApplied: hasNegative || abs(rowSumTotal / Double(time) - 1.0) > 0.05))
     }
 
-    /// One-line diagnostic payload logged on the ortQueue after every inference.
+    /// One-line diagnostic payload logged on the engine queue after every inference.
     struct DecodeLog: Sendable {
         let time: Int
         let classes: Int
