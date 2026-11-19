@@ -17,21 +17,31 @@
 
 实时相机默认使用 1080p NV12，最多每秒处理 5 帧。同一时间只处理一帧，忙时丢弃新帧，避免积压。实际速度取决于设备和每帧车牌数量；界面显示每次完整处理的耗时。离开相机页面或进入后台会停止相机，返回后恢复。
 
-## SDK 外部帧输入
+## SDK 输入：统一 CVPixelBuffer（默认 NV12）
 
-SDK 接收调用方自己的 `AVCaptureSession` 所提供的 **`CVPixelBuffer`**，支持 **BGRA、NV12 全范围、NV12 视频范围**，最大 **3840 × 2160**，也支持对应竖屏尺寸。SDK 本身不会打开相机或请求相机权限。
+App → SDK 的图像输入**只有 `CVPixelBuffer` 一种格式**，支持 **NV12 全范围（默认）**、**NV12 视频范围**、**BGRA**，最大 **3840 × 2160**（含对应竖屏尺寸）。`CGImage` / `Data` / `URL` 都不作为图像载荷跨过这条边界。SDK 本身不会打开相机或请求相机权限。
+
+相机路径天然就是 NV12，直接把裸缓冲区交给 `recognizeFrame`；相册静态图和视频抽帧会得到 `CGImage`，由 SDK 的工厂统一包成 NV12 缓冲区后走同一入口（可用 `inputPixelFormat` 切到 BGRA）。
 
 ```swift
-let sdk = LicensePlateRecognizer()
-let frame = try await sdk.recognizeFrame(pixelBuffer, orientation: .up, mode: .fast)
-for plate in frame.plates {
-    print(plate.text, plate.confidence, plate.boundingBox)
-}
+let sdk = LicensePlateRecognizer()   // inputPixelFormat 默认 .nv12
+
+// 相机：原生 NV12 缓冲区，零转换
+let live = try await sdk.recognizeFrame(pixelBuffer, orientation: .right,
+                                        mode: .fast, tiled: false, onDetections: nil)
+
+// 相册：把摆正的 CGImage 包成 SDK 输入缓冲区（默认 NV12）
+let buffer = try sdk.makeInputBuffer(from: uprightCGImage)
+let still = try await sdk.recognize(in: buffer, orientation: .up, mode: .fast, tiled: true)
+
+// 需要 BGRA 的生产方：切换全局输入格式，或用工厂显式指定
+sdk.inputPixelFormat = .bgra
+let bgra = try PlatePixelBufferFactory.makeBuffer(from: uprightCGImage, format: .bgra)
 ```
 
 `frame.detections` 是所有检测框；`frame.plates` 是通过德国格式校验的 OCR 结果。同一帧支持多个车牌。坐标均相对于按 `orientation` 处理后的画面，使用左上角原点和 0～1 归一化坐标。检测框可通过 `onDetections` 回调在 OCR 完成前显示。
 
-如果相机输出已经旋转为正向画面，应传 `.up`，避免再次旋转。调用结束前不要修改或复用传入缓冲区的内存；实时调用应串行等待并丢弃忙时的新帧。
+如果相机输出已经旋转为正向画面，应传 `.up`，避免再次旋转。调用结束前不要修改或复用传入缓冲区的内存；实时调用应串行等待并丢弃忙时的新帧。视频方法的 `URL` 仅作为**资源定位符**——抽帧后照样转成 CVPixelBuffer 再进入识别入口。
 
 完整接口约定、接入示例、模型来源和验证步骤见 [EXTERNAL_FRAMES.md](EXTERNAL_FRAMES.md)。
 

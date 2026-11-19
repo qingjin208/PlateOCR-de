@@ -4,30 +4,30 @@
 
 The default pipeline uses VINRecognizeSDK's original `yolo.nb` graph and weights converted to `license_plate_yolo.mlmodel`, followed by Apple's Vision `RecognizeTextRequest`. Detection runs through Core ML with eligible compute units set to `.all`. This branch has no Paddle runtime dependency. The SDK does not create a camera or request camera permission. Only the demo's `CameraController` owns an `AVCaptureSession`.
 
-## Input and results
+## The App → SDK boundary is CVPixelBuffer-only (2026-11)
 
-`LicensePlateRecognizer.recognizeFrame` accepts a caller-owned `CVPixelBuffer` in BGRA, NV12 full range, or NV12 video range. The maximum dimensions are 3840 × 2160, including the portrait equivalent. Pass the actual image orientation; use `.up` if the capture output has already rotated the pixels.
+Every public recognition entry takes a `CVPixelBuffer`. `CGImage`, `Data` and `URL` never cross the boundary as an image payload. Two buffer layouts are supported: **NV12 (default)** and **BGRA**. The camera already delivers NV12 full-range frames natively; still photos and video frames are wrapped by the SDK's factory into NV12 buffers before entering the same funnel.
 
 ```swift
-let sdk = LicensePlateRecognizer()
-let result = try await sdk.recognizeFrame(
-    pixelBuffer,
-    orientation: .up,
-    mode: .fast,
-    onDetections: { boxes, size in
-        // Dispatch UI updates to MainActor. These boxes arrive before OCR finishes.
-    }
-)
-for plate in result.plates {
-    print(plate.text, plate.confidence, plate.boundingBox)
-}
+let sdk = LicensePlateRecognizer()          // inputPixelFormat defaults to .nv12
+
+// Camera: raw NV12 buffer, no conversion.
+let live = try await sdk.recognizeFrame(pixelBuffer, orientation: .right,
+                                        mode: .fast, tiled: false, onDetections: nil)
+
+// Still photo: wrap an upright CGImage in the SDK's input buffer (NV12 by default).
+let buffer = try sdk.makeInputBuffer(from: uprightCGImage)
+let still = try await sdk.recognize(in: buffer, orientation: .up, mode: .fast, tiled: true)
+
+// Opt into BGRA if your producer cannot emit NV12:
+sdk.inputPixelFormat = .bgra
+let bgra = try sdk.makeInputBuffer(from: uprightCGImage)
+
+// Or use the factory directly for an explicit layout:
+let explicit = try PlatePixelBufferFactory.makeBuffer(from: uprightCGImage, format: .nv12)
 ```
 
-`detections` contains all localized plates; `plates` contains only OCR readings accepted by the German format validator. Both use normalized coordinates with a top-left origin in the oriented image. `imageSize` gives that image's pixel dimensions. One frame may return several plates, including several detections without readable text. A detector or OCR failure throws instead of being silently hidden.
-
-Do not mutate or reuse a submitted buffer's memory until its call completes. A retained buffer reference keeps the allocation alive but cannot prevent the caller from modifying its contents. Await recognition serially in your frame processing loop. Drop incoming frames while recognition is busy; do not enqueue every camera frame.
-
-Still images are normalized for orientation by the demo, rendered into BGRA buffers, and processed by the same frame API. Oversized still images are scaled down while preserving aspect ratio. Imported videos are decoded using `AVAssetReader`, transformed using the track's preferred transform, and sampled through the same API. The default file-video limit is 30 sampled frames; it is not a guarantee that every transient plate appears in the returned results.
+`recognizeFrame` accepts BGRA, NV12 full range, or NV12 video range. Maximum dimensions are 3840 × 2160 (including the portrait equivalent). Pass the actual image orientation; use `.up` if the pixels are already upright. `recognize(in:orientation:mode:tiled:)` is the still-image convenience that delegates to the same funnel. Video takes a `URL` only as a **resource locator** — sampled frames are decoded, transformed, wrapped as CVPixelBuffers (NV12 by default) and passed through `recognizeFrame` internally.
 
 ## Demo behavior
 

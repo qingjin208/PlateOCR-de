@@ -716,11 +716,15 @@ struct ContentView: View {
             lastDetectionCount = 0
             errorMessage = nil
             recognizer.captureDebugSnapshot = showDiagnostics
-            // Feed the upright CGImage straight into the detector. The old path built a
-            // CVPixelBuffer first, which the SDK then had to render back into a CGImage —
-            // an extra resample plus a colour-space conversion on the only pixels that
-            // matter. `tiled` adds a second pass for plates too small at full-frame scale.
-            let frame = try await recognizer.recognizeImage(oriented, mode: mode, tiled: true)
+            // Wrap the upright CGImage in the SDK's input CVPixelBuffer (NV12 by
+            // default) and enter the buffer-only public API. The camera and video
+            // paths already cross the boundary as CVPixelBuffers, so all three
+            // sources now share one funnel. `tiled` adds a second pass for plates
+            // too small at full-frame scale.
+            let buffer = try PlatePixelBufferFactory.makeBuffer(from: oriented,
+                                                                format: recognizer.inputPixelFormat)
+            let frame = try await recognizer.recognize(in: buffer, orientation: .up,
+                                                       mode: mode, tiled: true)
             // Superseded by a newer selection: that task owns the UI state now.
             guard !Task.isCancelled else { return }
             results = frame.plates

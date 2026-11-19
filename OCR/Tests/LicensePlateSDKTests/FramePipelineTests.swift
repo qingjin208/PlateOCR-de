@@ -59,6 +59,46 @@ final class FramePipelineTests: XCTestCase {
             XCTAssertEqual(result.plates.count, 2)
         }
     }
+
+    // MARK: - CVPixelBuffer-only public boundary
+
+    /// Build a small upright CGImage to feed the buffer factory.
+    private func uprightCGImage(width: Int = 120, height: Int = 60) -> CGImage {
+        let cs = CGColorSpaceCreateDeviceRGB()
+        let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                            bytesPerRow: 0, space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        ctx.setFillColor(CGColor(colorSpace: cs, components: [1, 1, 1, 1])!)
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        return ctx.makeImage()!
+    }
+
+    func testFactoryDefaultsToNV12() throws {
+        let buffer = try PlatePixelBufferFactory.makeBuffer(from: uprightCGImage())
+        XCTAssertEqual(CVPixelBufferGetPixelFormatType(buffer),
+                       kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)
+    }
+
+    func testFactoryCanEmitBGRA() throws {
+        let buffer = try PlatePixelBufferFactory.makeBuffer(from: uprightCGImage(), format: .bgra)
+        XCTAssertEqual(CVPixelBufferGetPixelFormatType(buffer), kCVPixelFormatType_32BGRA)
+    }
+
+    func testRecognizeInBufferEntersSameFunnel() async throws {
+        let sdk = LicensePlateRecognizer(detector: MockDetector(), recognizer: MockOCR())
+        let nv12 = try PlatePixelBufferFactory.makeBuffer(from: uprightCGImage(width: 200, height: 100))
+        let result = try await sdk.recognize(in: nv12, orientation: .up, mode: .fast, tiled: false)
+        XCTAssertEqual(result.imageSize, CGSize(width: 200, height: 100))
+        XCTAssertEqual(result.plates.count, 2)
+    }
+
+    func testInputPixelFormatConfigPropagates() throws {
+        let sdk = LicensePlateRecognizer(detector: MockDetector(), recognizer: MockOCR())
+        XCTAssertEqual(sdk.inputPixelFormat.cvPixelFormatType,
+                       kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) // default NV12
+        sdk.inputPixelFormat = .bgra
+        let buffer = try sdk.makeInputBuffer(from: uprightCGImage())
+        XCTAssertEqual(CVPixelBufferGetPixelFormatType(buffer), kCVPixelFormatType_32BGRA)
+    }
     func testRejectOversizedFrame() async throws {
         let sdk = LicensePlateRecognizer(detector: MockDetector(), recognizer: MockOCR())
         do {

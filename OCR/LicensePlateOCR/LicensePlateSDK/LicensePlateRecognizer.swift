@@ -127,14 +127,21 @@ public struct PlateCandidate: Sendable, Identifiable {
 }
 
 /// The full recognition pipeline: detect -> crop -> recognize -> post-process.
+/// The App → SDK boundary is CVPixelBuffer-only. Every public recognition entry
+/// takes a buffer; CGImage / Data / URL never cross this line as an image payload.
 public protocol LicensePlateRecognizing: Sendable {
-    /// Accepts caller-owned BGRA/NV12 frames without creating a capture session.
+    /// Universal buffer entry. Accepts caller-owned NV12 (full or video range) or
+    /// BGRA frames without creating a capture session. This is the single funnel
+    /// for camera, still and video frames alike.
     func recognizeFrame(_ pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation,
                         mode: RecognitionMode, tiled: Bool,
                         onDetections: (@Sendable ([PlateDetection], CGSize) -> Void)?) async throws -> PlateFrameResult
-    /// Recognizes plates in a still image.
-    func recognize(in image: CGImage, mode: RecognitionMode) async throws -> [PlateResult]
-    /// Recognizes plates across a video, sampling frames over time.
+    /// Recognizes plates in a still image supplied as a CVPixelBuffer. Build the
+    /// buffer with `makeInputBuffer(from:)` (NV12 by default) or your own producer.
+    func recognize(in buffer: CVPixelBuffer, orientation: CGImagePropertyOrientation,
+                   mode: RecognitionMode, tiled: Bool) async throws -> PlateFrameResult
+    /// Video is a resource locator, not an image payload. Sampled frames are
+    /// converted to CVPixelBuffers internally before entering the buffer funnel.
     func recognizeVideo(at url: URL, mode: RecognitionMode, maxSamples: Int,
                         progress: (@Sendable (Double) -> Void)?) async throws -> [PlateResult]
 }
@@ -160,6 +167,9 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         /// (`true` = the PC/OpenCV layout). Default `true`.
         var flipY: Bool
         var enhancements: RecognitionEnhancements
+        /// Layout produced by `makeInputBuffer(from:)` for stills / video frames.
+        /// NV12 by default (camera-native); BGRA is the opt-in alternative.
+        var inputPixelFormat: PlateInputPixelFormat = .nv12
         /// OCR-level gate applied at the SDK exit. Detector confidence gates raw anchors;
         /// this one suppresses low-confidence alternative readings that would otherwise
         /// show up as separate plate rows in the UI.
@@ -255,6 +265,22 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
             return "\(name)(\(failing.failureDescription))"
         }
         return name
+    }
+
+    /// Pixel layout produced when the SDK wraps a decoded still / video frame in a
+    /// CVPixelBuffer. Defaults to `.nv12` (the camera's native layout); set to
+    /// `.bgra` for producers that cannot emit NV12. This does not affect the camera
+    /// path, which already delivers NV12 buffers directly.
+    public var inputPixelFormat: PlateInputPixelFormat {
+        get { runtimeState.withLock { $0.inputPixelFormat } }
+        set { runtimeState.withLock { $0.inputPixelFormat = newValue } }
+    }
+
+    /// Build the CVPixelBuffer the SDK expects from an already-upright CGImage.
+    /// Call this in the App for a still photo, then pass the result to
+    /// `recognize(in:)`. Uses `inputPixelFormat` (NV12 by default).
+    public func makeInputBuffer(from image: CGImage) throws -> CVPixelBuffer {
+        try PlatePixelBufferFactory.makeBuffer(from: image, format: inputPixelFormat)
     }
 
     /// Confidence gate on the raw model output (see `LicensePlateDetecting`).
@@ -356,22 +382,25 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     }
     #endif
 
-    public func recognize(in image: CGImage, mode: RecognitionMode = .fast) async throws -> [PlateResult] {
-        // Straight to the CGImage core: wrapping the still in a CVPixelBuffer first would
-        // add a render round-trip plus a colour-space conversion (see `recognizeImage`).
-        try await recognizeImage(image, mode: mode, tiled: true).plates
+    /// Public still-image entry: the caller supplies a CVPixelBuffer (NV12 by
+    /// default via `makeInputBuffer(from:)`, or a caller-owned BGRA/NV12 buffer).
+    /// The buffer is funnelled through `recognizeFrame`, the same core the camera
+    /// and video paths use, so there is exactly one set of thresholds and geometry.
+    public func recognize(in buffer: CVPixelBuffer,
+                          orientation: CGImagePropertyOrientation = .up,
+                          mode: RecognitionMode = .fast,
+                          tiled: Bool = true) async throws -> PlateFrameResult {
+        try await recognizeFrame(buffer, orientation: orientation, mode: mode,
+                                 tiled: tiled, onDetections: nil)
     }
 
-    /// Detection + OCR on an already-upright `CGImage`.
-    ///
-    /// Media paths (still photos, video frames) call this directly instead of going through
-    /// `recognizeFrame`'s `CVPixelBuffer`. The buffer route is only needed for camera
-    /// capture, and for media it costs an extra render **and** an extra conversion
-    /// (`CIImage` renders through a wide-gamut working space, so a BGRA buffer round-trip
-    /// can shift colours relative to the PC pipeline, which feeds the model the decoded
-    /// sRGB bytes unchanged). Keeping the pixel out of the loop removes one of the last
-    /// real differences from the PC reference.
-    public func recognizeImage(_ image: CGImage,
+    /// Internal CGImage core. Detection + OCR on an already-upright `CGImage`.
+    /// Not part of the public surface: callers hand in CVPixelBuffers, and every
+    /// public entry converts its buffer into the CGImage this core needs exactly
+    /// once (in `recognizeFrame`). Keeping media on the CGImage path *inside* the
+    /// SDK avoids the colour shift of an extra wide-gamut buffer round-trip while
+    /// still presenting a buffer-only boundary to the App.
+    func recognizeImage(_ image: CGImage,
                                mode: RecognitionMode = .fast,
                                tiled: Bool = false,
                                onDetections: (@Sendable ([PlateDetection], CGSize) -> Void)? = nil) async throws -> PlateFrameResult {
@@ -505,9 +534,11 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
                            votes: result.votes)
     }
 
-    /// Converts an upright still image to an external BGRA frame, scaling oversized images.
+    /// Converts an upright still image into a CVPixelBuffer in the SDK's configured
+    /// input layout (NV12 by default). Provided as a convenience for callers that
+    /// hold a CGImage and want to enter the buffer-only API.
     public func prepareFrame(from image: CGImage) throws -> CVPixelBuffer {
-        try makePixelBuffer(from: CIImage(cgImage: image))
+        try makeInputBuffer(from: image)
     }
 
     /// - Parameter tiled: run tiled detection (see `LicensePlateDetecting.detectTiled`).
@@ -556,23 +587,6 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         return context.createCGImage(ci, from: ci.extent) ?? image
     }
 
-    private func makePixelBuffer(from image: CIImage) throws -> CVPixelBuffer {
-        // Scale oversized photos down while preserving their aspect ratio.
-        let extent = image.extent
-        let scale = min(1, 3840 / max(extent.width, extent.height), 2160 / min(extent.width, extent.height))
-        let normalized = image.transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
-            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        var buffer: CVPixelBuffer?
-        let status = CVPixelBufferCreate(kCFAllocatorDefault, max(1, Int(normalized.extent.width)),
-            max(1, Int(normalized.extent.height)), kCVPixelFormatType_32BGRA,
-            [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &buffer)
-        guard status == kCVReturnSuccess, let buffer else {
-            throw LicensePlateError.invalidInput("Could not allocate a media frame.")
-        }
-        context.render(normalized, to: buffer)
-        return buffer
-    }
-
     public func recognizeVideo(at url: URL, mode: RecognitionMode = .fast,
                                maxSamples: Int = 60,
                                progress: (@Sendable (Double) -> Void)? = nil) async throws -> [PlateResult] {
@@ -613,8 +627,9 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
             let time = CMSampleBufferGetPresentationTimeStamp(sample).seconds
             guard time >= nextTime, let pixel = CMSampleBufferGetImageBuffer(sample) else { continue }
             // Apply the track's preferred transform so a sideways phone clip is upright,
-            // then hand the CGImage straight to the core — the old `makePixelBuffer`
-            // round-trip added a render plus a colour-space conversion per frame.
+            // wrap it as a CVPixelBuffer (NV12 by default), then enter the SAME buffer
+            // funnel as camera and stills. Every public recognition path now crosses
+            // the boundary as a CVPixelBuffer — CGImage is an internal detail only.
             let cgImage: CGImage? = autoreleasepool {
                 let ci = CIImage(cvPixelBuffer: pixel).transformed(by: transform)
                 return context.createCGImage(ci, from: ci.extent)
@@ -622,7 +637,8 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
             guard let cgImage else {
                 throw LicensePlateError.invalidInput("Could not render the input frame.")
             }
-            let frame = try await recognizeImage(cgImage, mode: mode)
+            let frameBuffer = try makeInputBuffer(from: cgImage)
+            let frame = try await recognizeFrame(frameBuffer, orientation: .up, mode: mode)
             samples.append(PlateVideoSample(id: seen, time: time, imageSize: frame.imageSize,
                                             detections: frame.detections, plates: frame.plates))
             seen += 1
