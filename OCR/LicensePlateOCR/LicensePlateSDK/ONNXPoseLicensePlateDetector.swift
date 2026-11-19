@@ -291,7 +291,7 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
             runOptions: nil
         )
         guard let outValue = outputs[outputName] else {
-            throw LicensePlateError.invalidModelOutput("ONNX 推理未返回输出 \(outputName)。")
+            throw LicensePlateError.invalidModelOutput("ONNX inference returned no output \(outputName).")
         }
 
         // Read the output using its REAL shape and element type. The ONNX export can
@@ -326,7 +326,7 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
         )
         func floats(_ name: String) throws -> [Float] {
             guard let value = outputs[name] else {
-                throw LicensePlateError.invalidModelOutput("ONNX 推理未返回输出 \(name)。")
+                throw LicensePlateError.invalidModelOutput("ONNX inference returned no output \(name).")
             }
             let data = try value.tensorData()
             let count = data.length / MemoryLayout<Float>.size
@@ -359,7 +359,7 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
         CVPixelBufferLockBaseAddress(buffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
         guard let base = CVPixelBufferGetBaseAddress(buffer) else {
-            throw LicensePlateError.invalidInput("无法读取 letterbox 缓冲。")
+            throw LicensePlateError.invalidInput("Could not read the letterbox buffer.")
         }
         let w = CVPixelBufferGetWidth(buffer), h = CVPixelBufferGetHeight(buffer)
         let bpr = CVPixelBufferGetBytesPerRow(buffer)
@@ -393,7 +393,7 @@ public final class ONNXPoseLicensePlateDetector: LicensePlateDetecting, @uncheck
         guard dims.count == 3, dims[0] == 1,
               (dims[1] == channels || dims[2] == channels) else {
             throw LicensePlateError.invalidModelOutput(
-                "意外的 ONNX 输出形状 \(dims)（期望 [1, \(channels), N] 或 [1, N, \(channels)]）。")
+                "Unexpected ONNX output shape \(dims) (expected [1, \(channels), N] or [1, N, \(channels)]).")
         }
         let rawData = try outValue.tensorData()
         let elementCount = dims.reduce(1, *)
@@ -459,19 +459,19 @@ extension CGImage {
         let padX = bottomRightPad ? 0 : floor((side - CGFloat(resizedWidth)) / 2)
         let padY = bottomRightPad ? 0 : floor((side - CGFloat(resizedHeight)) / 2)
         guard resizedWidth > 0, resizedHeight > 0 else {
-            throw LicensePlateError.invalidInput("源图像尺寸退化，无法 letterbox。")
+            throw LicensePlateError.invalidInput("Source image size degenerated; cannot letterbox.")
         }
         var pixel: CVPixelBuffer?
         let attributes = [kCVPixelBufferCGImageCompatibilityKey: true,
                           kCVPixelBufferCGBitmapContextCompatibilityKey: true] as CFDictionary
         guard CVPixelBufferCreate(kCFAllocatorDefault, size, size, kCVPixelFormatType_32BGRA, attributes, &pixel) == kCVReturnSuccess,
               let buffer = pixel else {
-            throw LicensePlateError.invalidInput("无法分配 letterbox 缓冲。")
+            throw LicensePlateError.invalidInput("Could not allocate the letterbox buffer.")
         }
         CVPixelBufferLockBaseAddress(buffer, [])
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
         guard let base = CVPixelBufferGetBaseAddress(buffer) else {
-            throw LicensePlateError.invalidInput("无法读取 letterbox 缓冲。")
+            throw LicensePlateError.invalidInput("Could not read the letterbox buffer.")
         }
         let bpr = CVPixelBufferGetBytesPerRow(buffer)
 
@@ -560,7 +560,7 @@ extension CGImage {
                           kCVPixelBufferCGBitmapContextCompatibilityKey: true] as CFDictionary
         guard CVPixelBufferCreate(kCFAllocatorDefault, size, size, kCVPixelFormatType_32BGRA, attributes, &pixel) == kCVReturnSuccess,
               let buffer = pixel else {
-            throw LicensePlateError.invalidInput("无法分配 letterbox 缓冲。")
+            throw LicensePlateError.invalidInput("Could not allocate the letterbox buffer.")
         }
         CVPixelBufferLockBaseAddress(buffer, [])
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
@@ -568,7 +568,7 @@ extension CGImage {
               let context = CGContext(data: base, width: size, height: size, bitsPerComponent: 8,
                   bytesPerRow: CVPixelBufferGetBytesPerRow(buffer), space: SDKGraphics.sRGB,
                   bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
-            throw LicensePlateError.invalidInput("无法渲染 letterbox 图像。")
+            throw LicensePlateError.invalidInput("Could not render the letterbox image.")
         }
         let gray = CGFloat(padValue) / 255.0
         context.setFillColor(red: gray, green: gray, blue: gray, alpha: 1)

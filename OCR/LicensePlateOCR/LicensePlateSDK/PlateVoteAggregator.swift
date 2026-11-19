@@ -286,7 +286,7 @@ public struct PlateVoteAggregator: Sendable {
         if let entryID = track.entryID,
            let index = entries.firstIndex(where: { $0.id == entryID }) {
             // Already listed and still voting the same text: refresh the counts in place so
-            // the row's "5/6 帧" keeps growing instead of freezing at the confirming frame.
+            // the row's "5/6 frames" keeps growing instead of freezing at the confirming frame.
             if entries[index].text == top.text {
                 entries[index].votes = max(entries[index].votes, top.votes)
                 entries[index].totalVotes = max(entries[index].totalVotes, track.totalVotes)
@@ -495,7 +495,7 @@ public struct PlateVoteAggregator: Sendable {
     ///   - singleFrameFallback: When every reading failed the bars above but the sampled
     ///     frames did contain OCR results, list the best readings with their (weak) vote
     ///     counts instead of returning an empty page. A blank result list after the model
-    ///     demonstrably read something is a debugging dead end — the UI shows "1/1 帧"
+    ///     demonstrably read something is a debugging dead end — the UI shows "1/1 frames"
     ///     so the weakness stays visible. Default `true`.
     public static func consolidate(_ frames: [[PlateResult]],
                                    minimumVotes: Int = 2,

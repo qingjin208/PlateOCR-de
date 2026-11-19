@@ -77,11 +77,11 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
 
         init(queueIndex: Int) throws {
             guard PaddleOCRResources.dictionaryURL != nil else {
-                throw LicensePlateError.paddleOCRUnavailable("缺少 ppocrv5_dict.txt")
+                throw LicensePlateError.paddleOCRUnavailable("missing ppocrv5_dict.txt")
             }
             let alphabet = try Self.loadAlphabet()
             guard let modelURL = PaddleOCRResources.modelURL else {
-                throw LicensePlateError.paddleOCRUnavailable("缺少 PP-OCRv5_rec_mobile_infer.onnx")
+                throw LicensePlateError.paddleOCRUnavailable("missing PP-OCRv5_rec_mobile_infer.onnx")
             }
 
             // Same ORT ObjC API shape as `ONNXPoseLicensePlateDetector` (verified
@@ -120,7 +120,7 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
 
         private static func loadAlphabet() throws -> [String] {
             guard let url = PaddleOCRResources.dictionaryURL else {
-                throw LicensePlateError.paddleOCRUnavailable("字典未打包")
+                throw LicensePlateError.paddleOCRUnavailable("dictionary not bundled")
             }
             let raw = try String(contentsOf: url, encoding: .utf8)
             var lines = raw.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
@@ -273,7 +273,7 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
         var twoRowJoined: (text: String, confidence: Float)?
         // Read-only note for the debug panel: which split was used, what each row
         // read, and why a detected two-row layout may still have been rejected.
-        var twoRowNote = "单行牌（未判定两行）"
+        var twoRowNote = "single-row plate (two-row not determined)"
         // Whether the whole-crop CTC pass must run. False on the common two-row
         // success path; flipped to true only for single-row plates or as a lazy
         // fallback after every two-row split failed.
@@ -319,11 +319,11 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
                 // TR/DL 81). 0.20 keeps genuinely unreadable rows out without throwing
                 // away a correct pair. assembleTwoRows still validates the whole plate.
                 guard rowConfidence >= 0.2 else {
-                    twoRowNote = "split\(split) 行置信度\(String(format: "%.2f", Double(rowConfidence)))<0.20 top=\(topText) bottom=\(bottomText)"
+                    twoRowNote = "split\(split) row confidence\(String(format: "%.2f", Double(rowConfidence)))<0.20 top=\(topText) bottom=\(bottomText)"
                     continue
                 }
                 guard let reading = Self.assembleTwoRows(region: rows[0], identification: rows[1]) else {
-                    twoRowNote = "split\(split) 结构校验失败 top=\(topText) bottom=\(bottomText)"
+                    twoRowNote = "split\(split) structure validation failed top=\(topText) bottom=\(bottomText)"
                     continue
                 }
                 // The two-row reading is recorded ALONE — no whole-crop text is in
@@ -333,13 +333,13 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
                 twoRowNote = "split\(split) top=\(topText) bottom=\(bottomText) → \(reading.text)"
                 break
             }
-            if !attempted { twoRowNote = "split\(primarySplit) 无法裁剪" }
+            if !attempted { twoRowNote = "split\(primarySplit) could not be cropped" }
 
             if twoRowJoined == nil {
                 // Every split failed on a plate we KNOW is two-row: fall back to the
                 // whole-crop reading now. This is the ONLY case where the interleaved
                 // reading is allowed into the pool — lazily, not unconditionally.
-                twoRowNote += " → 两行组装失败，回退整图 OCR"
+                twoRowNote += " → two-row assembly failed, falling back to full-image OCR"
                 needsWholeImage = true
             }
         } else {
@@ -514,7 +514,7 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
     private static func prepare(_ image: CGImage) throws -> PreparedInput {
         let imgH = Engine.imageHeight
         guard image.height > 0, image.width > 0 else {
-            throw LicensePlateError.invalidInput("矫正后的车牌图像尺寸退化。")
+            throw LicensePlateError.invalidInput("Rectified plate image size degenerated.")
         }
         let ratio = Double(image.width) / Double(image.height)
         let maxWHRatio = max(Double(Engine.baseWidth) / Double(imgH), ratio)
@@ -554,7 +554,7 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
             return true
         }
         guard rendered else {
-            throw LicensePlateError.invalidInput("无法渲染 PaddleOCR 输入缓冲。")
+            throw LicensePlateError.invalidInput("Could not render the PaddleOCR input buffer.")
         }
 
         // BGRA little-endian in memory == the BGR channel order cv2.imread produces.
@@ -607,7 +607,7 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
                         outputNames: Set([engine.outputName]), runOptions: nil)
                     guard let value = outputs[engine.outputName] else {
                         throw LicensePlateError.invalidModelOutput(
-                            "PaddleOCR 未返回输出 \(engine.outputName)。")
+                            "PaddleOCR returned no output \(engine.outputName).")
                     }
                     let output = try Self.decodeTensor(value, engine: engine)
                     if let log = output.log {
@@ -626,13 +626,13 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
     private static func decodeTensor(_ value: ORTValue, engine: Engine) throws -> DecoderOutput {
         let dims = try value.tensorTypeAndShapeInfo().shape.map { $0.intValue }
         guard dims.count >= 2 else {
-            throw LicensePlateError.invalidModelOutput("PaddleOCR 输出形状异常：\(dims)")
+            throw LicensePlateError.invalidModelOutput("Unexpected PaddleOCR output shape: \(dims)")
         }
         let classes = dims[dims.count - 1]
         let time = dims[dims.count - 2]
         guard classes == engine.alphabet.count, time > 0 else {
             throw LicensePlateError.invalidModelOutput(
-                "PaddleOCR 输出 \(dims) 与字典 \(engine.alphabet.count) 类不一致。")
+                "PaddleOCR output \(dims) is inconsistent with the dictionary's \(engine.alphabet.count) classes.")
         }
 
         let raw = try value.tensorData()
@@ -646,7 +646,7 @@ public final class PaddleOCRTextRecognizer: PlateTextRecognizing, @unchecked Sen
             read = { Float(Float16(bitPattern: pointer[$0])) }
         } else {
             throw LicensePlateError.invalidModelOutput(
-                "PaddleOCR 输出字节数 \(raw.length) 无法解释为 float32/float16 张量。")
+                "PaddleOCR output byte count \(raw.length) cannot be interpreted as a float32/float16 tensor.")
         }
 
         let allowed = engine.allowed

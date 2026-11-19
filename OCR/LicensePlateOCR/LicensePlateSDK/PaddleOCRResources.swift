@@ -110,11 +110,11 @@ public enum PaddleOCRResources {
     public static var statusDescription: String {
         let bundleName = resourceBundle.bundleURL.lastPathComponent
         guard modelURL != nil else {
-            return "PaddleOCR 识别模型未打包（\(recognitionModelName).onnx；bundle: \(bundleName)）"
+            return "PaddleOCR recognition model not bundled (\(recognitionModelName).onnx; bundle: \(bundleName))"
         }
         guard dictionaryURL != nil else {
-            return "PaddleOCR 字典未打包（\(characterDictName).txt；bundle: \(bundleName)）"
+            return "PaddleOCR dictionary not bundled (\(characterDictName).txt; bundle: \(bundleName))"
         }
-        return "PaddleOCR PP-OCRv5 mobile · ONNX Runtime · 车牌字符约束 CTC"
+        return "PaddleOCR PP-OCRv5 mobile · ONNX Runtime · plate-character-constrained CTC"
     }
 }

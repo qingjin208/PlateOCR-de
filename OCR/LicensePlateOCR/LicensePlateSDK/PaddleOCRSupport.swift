@@ -114,11 +114,11 @@ public enum PaddleOCRDiagnostics {
         func summary() -> String? {
             state.withLock { current -> String? in
                 guard let reading = current.readings.first, !reading.isEmpty else { return nil }
-                var line = "OCR 原始读数 \(reading)"
+                var line = "OCR raw reading \(reading)"
                 if let stray = current.strayCharacters {
-                    line += " · 异常字符 \(stray)（清洁未彻底？）"
+                    line += " · stray character \(stray) (cleanup incomplete?)"
                 }
-                if let twoRow = current.twoRow { line += " · 两行 \(twoRow)" }
+                if let twoRow = current.twoRow { line += " · two-row \(twoRow)" }
                 return line
             }
         }

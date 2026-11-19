@@ -30,9 +30,9 @@ import AVFoundation
 let appAccent = Color(red: 0.184, green: 0.420, blue: 1.0)
 
 enum MediaSource: String, CaseIterable, Hashable {
-    case camera = "拍照"
-    case image = "相册"
-    case video = "视频"
+    case camera = "Camera"
+    case image = "Photos"
+    case video = "Video"
 }
 
 struct ContentView: View {
@@ -62,7 +62,7 @@ struct ContentView: View {
         // crashing. `PaddleOCR.makeRecognizer()` returns the fail-loud stub here.
         rec = LicensePlateRecognizer(detector: LicensePlateDetectorUnavailable(error:
                 LicensePlateError.invalidInput(
-                    "未链接 onnxruntime：请先运行 pod install，然后用 LicensePlateOCR.xcworkspace 编译。")),
+                    "onnxruntime not linked: run pod install first, then build with LicensePlateOCR.xcworkspace.")),
                                      recognizer: PaddleOCR.makeRecognizer())
         rec.enhancements = enhancements
         #endif
@@ -193,7 +193,7 @@ struct ContentView: View {
     private var diagnosticsPanel: some View {
         if showDiagnostics, source != .camera {
             VStack(alignment: .leading, spacing: 6) {
-                Text("检测诊断 · conf \(String(format: "%.2f", confidenceThreshold)) · IoU \(String(format: "%.2f", nmsIoU)) · 原始框 \(rawDetections.count)")
+                Text("Detection diagnostics · conf \(String(format: "%.2f", confidenceThreshold)) · IoU \(String(format: "%.2f", nmsIoU)) · raw boxes \(rawDetections.count)")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                 // Which detector implementation actually ran, and the best raw anchor
@@ -203,7 +203,7 @@ struct ContentView: View {
                 // top score ≈ 0 → the model never saw a plate-like input (wrong
                 // preprocessing/orientation on device); top score ≥ 0.25 → the model
                 // sees the plate and the decode/validation side must be dropping it.
-                Text("检测器 \(detectorTriage)")
+                Text("Detector \(detectorTriage)")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.tertiary)
                 if let debugSnapshotImage {
@@ -213,7 +213,7 @@ struct ContentView: View {
                         .frame(height: 140)
                         .overlay(RoundedRectangle(cornerRadius: 6)
                             .stroke(Color.secondary, lineWidth: 0.5))
-                    Text("↑ 送入模型的 640 输入").font(.caption2).foregroundStyle(.tertiary)
+                    Text("↑ 640 input to the model").font(.caption2).foregroundStyle(.tertiary)
                 }
                 ForEach(Array(rawDetections.enumerated()), id: \.offset) { pair in
                     Text("#\(pair.offset + 1) conf \(String(format: "%.3f", pair.element.confidence))"
@@ -366,7 +366,7 @@ struct ContentView: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: 10) {
-            Text("车牌识别").font(.headline.bold())
+            Text("Plate Recognition").font(.headline.bold())
             SourceSegment(selection: $source)
                 .frame(width: 198)
             Spacer(minLength: 0)
@@ -425,7 +425,7 @@ struct ContentView: View {
                 .padding(.horizontal)
         } else {
             PhotosPicker(selection: $imageItem, matching: .images) {
-                uploadTile(title: "点击选择图片", subtitle: "从相册选取一张含车牌的照片")
+                uploadTile(title: "Tap to select an image", subtitle: "Choose a photo with a license plate from your library")
             }
             .buttonStyle(.plain)
             .padding(.horizontal)
@@ -441,7 +441,7 @@ struct ContentView: View {
                 .padding(.horizontal)
         } else {
             PhotosPicker(selection: $videoItem, matching: .videos) {
-                uploadTile(title: "点击选择视频", subtitle: "从相册选取一段含车牌的短片")
+                uploadTile(title: "Tap to select a video", subtitle: "Choose a short video with a license plate from your library")
             }
             .buttonStyle(.plain)
             .padding(.horizontal)
@@ -464,7 +464,7 @@ struct ContentView: View {
                     .frame(height: 340)
                     .clipShape(RoundedRectangle(cornerRadius: 16))
                     .overlay(alignment: .bottom) {
-                        Text("视频预览（彩色区域为采样帧识别到的车牌，结果见下方列表）")
+                        Text("Video preview (colored areas mark plates recognized in sampled frames; see the list below)")
                             .font(.caption2).foregroundStyle(.white)
                             .padding(6)
                             .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
@@ -529,12 +529,12 @@ struct ContentView: View {
         } else if !results.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
-                    Text("共识别到 \(results.count) 块车牌").font(.headline)
+                    Text("Recognized \(results.count) plates").font(.headline)
                     Spacer(minLength: 0)
                     // Padded + contentShape so the tap target is larger than the glyphs
                     // (plain text buttons are hard to hit; Apple recommends ≥44pt).
                     Button { clearResults() } label: {
-                        Text("重新选择")
+                        Text("Choose again")
                             .font(.subheadline)
                             .foregroundStyle(appAccent)
                             .padding(.vertical, 10)
@@ -553,8 +553,8 @@ struct ContentView: View {
             // Video recognition streams a progress callback (0...1); show it so a slow
             // sample pass does not look hung. Image recognition has no progress source.
             let label = source == .video
-                ? String(format: "视频识别中… %.0f%%", videoProgress * 100)
-                : "识别中…"
+                ? String(format: "Recognizing video… %.0f%%", videoProgress * 100)
+                : "Recognizing…"
             ProgressView(label)
                 .padding(.horizontal)
         } else if (source == .image && displayImage != nil) || (source == .video && videoURL != nil) {
@@ -567,10 +567,10 @@ struct ContentView: View {
             // plate-like input (preprocessing/orientation), not a threshold problem.
             VStack(alignment: .leading, spacing: 8) {
                 Text(lastDetectionCount > 0
-                     ? "未识别到车牌：模型检测到 \(lastDetectionCount) 个候选框，但 OCR 未确认（请尝试切换 OCR 引擎或识别模式）。"
-                     : "未检测到车牌。可尝试更换素材、切换识别模式或 OCR 引擎后重试。")
+                     ? "No plate recognized: the model found \(lastDetectionCount) candidate box(es), but OCR did not confirm them (try a different recognition mode)."
+                     : "No plate detected. Try different media or a different recognition mode.")
                     .font(.footnote).foregroundStyle(.secondary)
-                Text("检测器：\(detectorTriage)")
+                Text("Detector: \(detectorTriage)")
                     .font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
                 // The reselection button must be reachable here too: with no results the
                 // list above never renders, which previously left the loaded photo/video
@@ -578,7 +578,7 @@ struct ContentView: View {
                 // Padded + contentShape so the tap target is larger than the glyphs
                 // (plain text buttons are hard to hit; Apple recommends ≥44pt).
                 Button { clearResults() } label: {
-                    Text("重新选择")
+                    Text("Choose again")
                         .font(.subheadline)
                         .foregroundStyle(appAccent)
                         .padding(.vertical, 10)
@@ -598,7 +598,7 @@ struct ContentView: View {
         var text = recognizer.detectorInfo
         #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc) || canImport(onnxruntime_objc)
         if let score = recognizer.detectorTopScore {
-            text += String(format: " · 模型最高分 %.2f", score)
+            text += String(format: " · top score %.2f", score)
         }
         #endif
         text += " · OCR \(PaddleOCR.displayName)"
@@ -620,7 +620,7 @@ struct ContentView: View {
 
     private func clearResults() {
         // Stop a running pass first, otherwise it would repopulate `results` after the
-        // user cleared them (the "重新选择 did nothing" case).
+        // user cleared them (the "Choose again did nothing" case).
         loadTask?.cancel()
         loadTask = nil
         // Remove the temp copy the video import created so repeated selections don't
@@ -674,7 +674,7 @@ struct ContentView: View {
             guard let data = try await item.loadTransferable(type: Data.self) else {
                 guard !Task.isCancelled else { return }
                 isBusy = false
-                errorMessage = "无法读取图片"
+                errorMessage = "Could not read the image"
                 return
             }
             // Decode once with ImageIO: it applies the EXIF orientation and downscales to the
@@ -685,7 +685,7 @@ struct ContentView: View {
             guard let oriented = Self.uprightCGImage(from: data) else {
                 guard !Task.isCancelled else { return }
                 isBusy = false
-                errorMessage = "无法读取图片"
+                errorMessage = "Could not read the image"
                 return
             }
             guard !Task.isCancelled else { return }
@@ -743,7 +743,7 @@ struct ContentView: View {
             guard let movie = try await item.loadTransferable(type: ImportedMovie.self) else {
                 guard !Task.isCancelled else { return }
                 isBusy = false
-                errorMessage = "无法读取视频"
+                errorMessage = "Could not read the video"
                 return
             }
             guard !Task.isCancelled else {
@@ -792,7 +792,7 @@ private struct SourceSegment: View {
 
     private let order: [MediaSource] = [.camera, .image, .video]
     private let labels: [MediaSource: String] = [
-        .camera: "拍照", .image: "相册", .video: "视频"
+        .camera: "Camera", .image: "Photos", .video: "Video"
     ]
     private let icons: [MediaSource: String] = [
         .camera: "camera", .image: "photo.on.rectangle", .video: "video.fill"
@@ -864,9 +864,9 @@ private struct SettingsSheet: View {
             Capsule().fill(Color(.systemGray4))
                 .frame(width: 38, height: 5)
                 .padding(.top, 8)
-            Text("高级设置").font(.headline)
+            Text("Advanced Settings").font(.headline)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Text("常用参数已前置，其余为进阶选项（默认即可）")
+            Text("Common parameters are up front; the rest are advanced (defaults are fine)")
                 .font(.caption).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -876,17 +876,17 @@ private struct SettingsSheet: View {
             // absorbs the overflow and keeps the button pinned at the bottom.
             ScrollView {
                 VStack(spacing: 12) {
-                    settingRow(title: "识别模式", subtitle: "极速：单次推理；精准：多裁剪 + 更宽 CTC 候选搜索（默认极速）") {
-                        Picker("识别模式", selection: $mode) {
-                            Text("极速").tag(RecognitionMode.fast)
-                            Text("精准").tag(RecognitionMode.accurate)
+                    settingRow(title: "Recognition Mode", subtitle: "Fast: single inference; Accurate: multi-crop + wider CTC candidate search (Fast by default)") {
+                        Picker("Recognition Mode", selection: $mode) {
+                            Text("Fast").tag(RecognitionMode.fast)
+                            Text("Accurate").tag(RecognitionMode.accurate)
                         }
                         .pickerStyle(.segmented)
                         .frame(width: 180)
                         .tint(appAccent)
                     }
 
-                    settingRow(title: "检测置信度", subtitle: "PC 参考默认值 0.25；调低可召回更多，调高更保守") {
+                    settingRow(title: "Detection Confidence", subtitle: "PC reference default 0.25; lower recalls more, higher is stricter") {
                         VStack(alignment: .trailing, spacing: 0) {
                             Text(String(format: "%.2f", confidenceThreshold)).font(.caption.monospacedDigit())
                             Slider(value: $confidenceThreshold, in: 0.05...0.9, step: 0.05)
@@ -895,7 +895,7 @@ private struct SettingsSheet: View {
                         }
                     }
 
-                    settingRow(title: "NMS IoU", subtitle: "PC 参考值 0.7；过低会把相邻车牌合并成一块") {
+                    settingRow(title: "NMS IoU", subtitle: "PC reference value 0.7; too low merges neighboring plates into one") {
                         VStack(alignment: .trailing, spacing: 0) {
                             Text(String(format: "%.2f", nmsIoU)).font(.caption.monospacedDigit())
                             Slider(value: $nmsIoU, in: 0.1...0.9, step: 0.05)
@@ -904,9 +904,9 @@ private struct SettingsSheet: View {
                         }
                     }
 
-                    DisclosureGroup("调试选项", isExpanded: $showDebug) {
+                    DisclosureGroup("Debug Options", isExpanded: $showDebug) {
                         VStack(spacing: 12) {
-                            settingRow(title: "视频采样帧数", subtitle: "PC 逐帧处理；移动端默认 60 帧，可按视频长度调整") {
+                            settingRow(title: "Video Sample Frames", subtitle: "PC processes every frame; mobile defaults to 60 frames; adjust by video length") {
                                 VStack(alignment: .trailing, spacing: 0) {
                                     Text("\(Int(videoSampleLimit))").font(.caption.monospacedDigit())
                                     Slider(value: $videoSampleLimit, in: 10...180, step: 10)
@@ -914,14 +914,14 @@ private struct SettingsSheet: View {
                                         .tint(appAccent)
                                 }
                             }
-                            settingRow(title: "检测诊断", subtitle: "显示送入模型的 640 输入图与原始检测框/置信度") {
+                            settingRow(title: "Detection Diagnostics", subtitle: "Show the 640 input image fed to the model and raw boxes/confidence") {
                                 Toggle("", isOn: $showDiagnostics)
                             }
-                            settingRow(title: "输入通道顺序",
+                            settingRow(title: "Input Channel Order",
                                        subtitle: channelOrderConfigurable
-                                           ? "默认 RGB（与 PC 参考一致）；仅当检测明显错乱时切 BGR"
-                                           : "当前模型固定 BGR（LibreYOLO 导出 / Core ML），此开关不生效") {
-                                Picker("输入通道", selection: $useRGB) {
+                                           ? "RGB by default (matches the PC reference); switch to BGR only if detection is clearly wrong"
+                                           : "The current model is fixed to BGR (LibreYOLO export / Core ML); this switch has no effect") {
+                                Picker("Input Channel", selection: $useRGB) {
                                     Text("RGB").tag(true)
                                     Text("BGR").tag(false)
                                 }
@@ -931,17 +931,17 @@ private struct SettingsSheet: View {
                                 .disabled(!channelOrderConfigurable)
                                 .opacity(channelOrderConfigurable ? 1 : 0.45)
                             }
-                            settingRow(title: "Letterbox 缓冲朝向",
-                                       subtitle: "正向(PC 同款，默认)/反向；框上下镜像时切到反向对照") {
-                                Picker("Letterbox 朝向", selection: $flipLetterbox) {
-                                    Text("正向").tag(true)
-                                    Text("反向").tag(false)
+                            settingRow(title: "Letterbox Buffer Orientation",
+                                       subtitle: "Forward (same as PC, default) / Reverse; switch to Reverse if boxes are mirrored vertically") {
+                                Picker("Letterbox Orientation", selection: $flipLetterbox) {
+                                    Text("Forward").tag(true)
+                                    Text("Reverse").tag(false)
                                 }
                                 .pickerStyle(.segmented)
                                 .frame(width: 130)
                                 .tint(appAccent)
                             }
-                            settingRow(title: "诊断回显", subtitle: "预览角落显示送入检测的原始帧+框，用于排查定位/旋转问题") {
+                            settingRow(title: "Diagnostic Echo", subtitle: "Show the raw frame + boxes fed to detection in a preview corner, for troubleshooting alignment/rotation") {
                                 Toggle("", isOn: Binding(
                                     get: { controller.debugEchoEnabled },
                                     set: { controller.debugEchoEnabled = $0 }))
@@ -957,22 +957,22 @@ private struct SettingsSheet: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Toggle(isOn: $enhancements.isEnabled) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("强化识别（SDK Enhanced Mode）")
-                                Text("折叠感知排序 · 数字段严格校验 · 关键点四边形叠层 · 图像清理")
+                                Text("Enhanced Recognition (SDK Enhanced Mode)")
+                                Text("Fold-aware ranking · Strict numeric-part validation · Keypoint quad overlay · Image cleanup")
                                     .font(.caption2).foregroundStyle(.secondary)
                             }
                         }
                         if enhancements.isEnabled {
                             VStack(alignment: .leading, spacing: 6) {
-                                Toggle("折叠感知排序（修正 3 位 / E·H 误读）",
+                                Toggle("Fold-aware ranking (fix 3-digit / E·H misreads)",
                                        isOn: $enhancements.foldAwareScoring)
-                                Toggle("数字段严格校验（拒绝前导 0）",
+                                Toggle("Strict numeric-part validation (reject leading zeros)",
                                        isOn: $enhancements.strictNumericPart)
-                                Toggle("关键点四边形叠层（用 pose 角点）",
+                                Toggle("Keypoint quad overlay (use pose corners)",
                                        isOn: $enhancements.keypointQuads)
                                 // Was missing from the sheet, so the one stage that changes
                                 // the pixels fed to OCR could not be isolated on device.
-                                Toggle("图像清理（遮 EU 蓝条 / 年检圆章）",
+                                Toggle("Image cleanup (mask EU blue strip / inspection sticker)",
                                        isOn: $enhancements.plateImageCleaning)
                             }
                             .font(.footnote)
@@ -986,14 +986,14 @@ private struct SettingsSheet: View {
             }
             .scrollBounceBehavior(.basedOnSize)
 
-            // Styling lives INSIDE the label: `Button("完成"){...}.frame(...)` keeps the
+            // Styling lives INSIDE the label: `Button("Done"){...}.frame(...)` keeps the
             // tappable area at the text itself, so taps on the padded/background part of
             // the wide button did nothing. With the modifiers on the label (plus an
             // explicit contentShape covering the padded rect) the whole pill is tappable.
             Button {
                 onDone()
             } label: {
-                Text("完成")
+                Text("Done")
                     .font(.headline.bold())
                     .frame(maxWidth: .infinity)
                     .padding(14)
@@ -1106,13 +1106,13 @@ private struct OCRInputCompareView: View {
             VStack(spacing: 2) {
                 CorrectedPlateView(cgImage: corrected, text: text)
                     .frame(maxWidth: .infinity)
-                Text("矫正原图(肉眼)").font(.caption2).foregroundStyle(.secondary)
+                Text("Rectified image (raw)").font(.caption2).foregroundStyle(.secondary)
             }
             if ocrInput != nil {
                 VStack(spacing: 2) {
                     CorrectedPlateView(cgImage: ocrInput, text: text)
                         .frame(maxWidth: .infinity)
-                    Text("送入OCR的图").font(.caption2).foregroundStyle(.secondary)
+                    Text("Image fed to OCR").font(.caption2).foregroundStyle(.secondary)
                 }
             }
         }
@@ -1166,13 +1166,13 @@ private struct PlateCardView: View {
                     Text("#\(index)").font(.caption).foregroundStyle(.secondary)
                     if result.votes > 1 {
                         // Sampled video frames that agreed on this reading.
-                        Text("\(result.votes) 帧").font(.caption2).foregroundStyle(.tertiary)
+                        Text("\(result.votes) frames").font(.caption2).foregroundStyle(.tertiary)
                     }
                     Text("\(Int(result.confidence * 100))%").font(.caption).foregroundStyle(.secondary)
                 }
                 ConfidenceBar(value: result.confidence)
                 if result.candidates.count > 1 {
-                    Text("候选: " + result.candidates.prefix(3).map(\.text).joined(separator: " / "))
+                    Text("Candidates: " + result.candidates.prefix(3).map(\.text).joined(separator: " / "))
                         .font(.caption2).foregroundStyle(.tertiary)
                 }
             }
@@ -1210,14 +1210,14 @@ struct CameraResultsView: View {
         } else {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
-                    Text("识别历史（\(history.count)）").font(.headline)
+                    Text("Recognition History (\(history.count))").font(.headline)
                     Spacer(minLength: 0)
                     // The header count is the aggregator's real total; only `displayLimit`
-                    // rows are rendered, so say so instead of letting "识别历史（180）" sit
+                    // rows are rendered, so say so instead of letting "Recognition History (180)" sit
                     // above a 50-row list that silently ends.
                     Text(history.count > Self.displayLimit
-                         ? "仅显示最新 \(Self.displayLimit) 条"
-                         : "最新在上")
+                         ? "Showing the latest \(Self.displayLimit) only"
+                         : "Newest first")
                         .font(.caption).foregroundStyle(.tertiary)
                 }
                 .padding(.horizontal)
@@ -1269,7 +1269,7 @@ private struct HistoryCardView: View {
                             .font(.caption).foregroundStyle(.secondary)
                         // Agreeing frames / all frames that saw this plate: the reading is
                         // the majority vote, so `5/6` means one frame disagreed.
-                        Text("\(entry.votes)/\(entry.totalVotes) 帧")
+                        Text("\(entry.votes)/\(entry.totalVotes) frames")
                             .font(.caption2).foregroundStyle(.tertiary)
                     }
                     Text("\(Int(entry.result.confidence * 100))%")

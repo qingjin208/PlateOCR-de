@@ -346,7 +346,7 @@ public enum PlateCleanerDiagnostics {
             state.withLock { s -> String? in
                 guard s.probeHeight > 0 else { return nil }
                 let accepted = s.candidates.filter(\.accepted).count
-                var line = "徽章 \(accepted)/\(s.candidates.count) 遮罩 @\(s.probeWidth)×\(s.probeHeight)"
+                var line = "Seal \(accepted)/\(s.candidates.count) masked @\(s.probeWidth)×\(s.probeHeight)"
                 for (i, c) in s.candidates.prefix(4).enumerated() {
                     let verdict = c.accepted ? "✓" : c.failedGates.map(\.rawValue).joined(separator: "+")
                     line += String(format: " · #%d %@ %@ a%.2f f%.2f",

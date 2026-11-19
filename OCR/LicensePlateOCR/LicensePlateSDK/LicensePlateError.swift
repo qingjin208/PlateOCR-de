@@ -26,15 +26,15 @@ public enum LicensePlateError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .modelNotFound(let name):
-            return "找不到车牌检测模型「\(name)」。请确认 LicensePlateOCR/LicensePlateSDK/Resources/ 下的 ONNX 模型已随 App 打包（Xcode 16 同步文件夹会自动拷贝）。"
+            return "Plate detection model \(name) not found. Make sure the ONNX model under LicensePlateOCR/LicensePlateSDK/Resources/ is bundled with the app (Xcode 16 synchronized folders copy it automatically)."
         case .invalidModelOutput(let detail):
-            return "模型输出格式无法解析：\(detail)"
+            return "Could not parse model output: \(detail)"
         case .recognitionFailed(let detail):
-            return "文本识别失败：\(detail)"
+            return "Text recognition failed: \(detail)"
         case .paddleOCRUnavailable(let detail):
-            return "PaddleOCR 引擎不可用：\(detail)。请确认 PP-OCRv5_rec_mobile_infer.onnx 与 ppocrv5_dict.txt 已随 App 打包。"
+            return "PaddleOCR engine unavailable: \(detail). Make sure PP-OCRv5_rec_mobile_infer.onnx and ppocrv5_dict.txt are bundled with the app."
         case .invalidInput(let detail):
-            return "无效的输入媒体：\(detail)"
+            return "Invalid input media: \(detail)"
         }
     }
 }

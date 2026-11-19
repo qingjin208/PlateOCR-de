@@ -139,7 +139,7 @@ final class CameraController: NSObject {
     /// `liveEnabled`, which fully stops the live feature and clears everything.
     ///
     /// `isAnalyzing` is cleared here rather than in the view: it drives the status pill and
-    /// the scan beam, and a paused pipeline must not keep claiming "实时检测中" just because
+    /// the scan beam, and a paused pipeline must not keep claiming "Live Detection" just because
     /// the button that flipped the flag happened to also reset it (any other caller — a
     /// scene-phase handler, a future auto-pause — would have left it stuck true).
     var paused = false {
@@ -371,7 +371,7 @@ final class CameraController: NSObject {
         // generation token, so without this bump a pass that started before the tap would
         // re-list its plates (and re-draw the labels) a few hundred ms later.
         generation += 1
-        // Reset everything the list was derived from, so "清空" is a real reset and not a
+        // Reset everything the list was derived from, so "Clear History" is a real reset and not a
         // one-second-later reappearance:
         //  • the overlay tracker held boxes whose `hits` were accumulated for the old
         //    session — dropping them means the next frame re-confirms from scratch;
@@ -391,7 +391,7 @@ final class CameraController: NSObject {
         self.mode = mode
         // Triage: record which detector is actually in the pipeline from the start. The
         // old code only learned the name after a *successful* pass (see `performAnalysis`),
-        // so until then `detectorName` stayed "" and the "检测器未走 ONNX" badge fired with
+        // so until then `detectorName` stayed "" and the "Detector not using ONNX" badge fired with
         // an empty reason text — a false alarm while the ONNX detector was still fine.
         self.detectorName = (recognizer as? LicensePlateRecognizer)?.detectorInfo ?? ""
         super.init()
@@ -426,7 +426,7 @@ final class CameraController: NSObject {
                 didSetup = ok
                 configurationTask = nil
             }
-            if !ok { errorMessage = "相机初始化失败"; return false }
+            if !ok { errorMessage = "Camera initialization failed"; return false }
         }
         guard active, generation == activationGeneration, !Task.isCancelled else { return false }
         previewView?.ensurePortraitOrientation()
@@ -471,7 +471,7 @@ final class CameraController: NSObject {
         active = false
         generation += 1
         // A frame caught mid-analysis will never publish (its completion guards on
-        // `generation == token`), so reset the "分析中" indicator here — the same reason
+        // `generation == token`), so reset the "analyzing" indicator here — the same reason
         // `liveEnabled` and `paused` reset it in their didSet blocks.
         isAnalyzing = false
         refreshAnalysisGate()
@@ -569,7 +569,7 @@ final class CameraController: NSObject {
                 // Refresh the detector triage even on a failed pass: with the
                 // unavailable-stub every pass throws before finishing, so the
                 // success-only refresh left `detectorName` empty forever and the
-                // "检测器未走 ONNX" badge could never show *why* it fired.
+                // "Detector not using ONNX" badge could never show *why* it fired.
                 if let plateRecognizer = recognizer as? LicensePlateRecognizer {
                     self.detectorName = plateRecognizer.detectorInfo
                 }

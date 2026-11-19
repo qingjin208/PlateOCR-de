@@ -570,7 +570,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
                                       progress: (@Sendable (Double) -> Void)? = nil) async throws -> [PlateVideoSample] {
         let asset = AVURLAsset(url: url)
         let duration = try await asset.load(.duration).seconds
-        guard duration.isFinite, duration > 0 else { throw LicensePlateError.invalidInput("视频时长无效") }
+        guard duration.isFinite, duration > 0 else { throw LicensePlateError.invalidInput("invalid video duration") }
 
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
             throw LicensePlateError.invalidInput("No video track.")
@@ -627,7 +627,7 @@ public final class LicensePlateDetectorUnavailable: LicensePlateDetecting, @unch
     public init(error: Error) { self.error = error }
     /// Human-readable cause for the UI triage line (see `detectorInfo`).
     /// `localizedDescription` (not `String(describing:)`) so `LicensePlateError`'s
-    /// Chinese `errorDescription` — or an ORT NSError's message — is what shows up.
+    /// localized `errorDescription` — or an ORT NSError's message — is what shows up.
     public var failureDescription: String { error.localizedDescription }
     public func detect(in image: CGImage) async throws -> [PlateDetection] {
         throw error

@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 
 /// Camera tab, redesigned to match the HTML mockup's live-detection flow:
-///   • idle (detection off): a clean live feed with a "开始实时识别" button placed BELOW
+///   • idle (detection off): a clean live feed with a "Start Live Detection" button placed BELOW
 ///     the preview (not overlaid on the video).
 ///   • active (detection on): the feed carries only lightweight telemetry pills in its two
 ///     corners — status + plate count top-left, latency top-right — plus the detection
@@ -27,8 +27,8 @@ struct CameraView: View {
                     .overlay(alignment: .topTrailing) { latencyPill }
                     .frame(maxHeight: .infinity)
             } else {
-                ContentUnavailableView("相机不可用", systemImage: "camera",
-                    description: Text(controller.setupFailed ? "相机初始化失败，请检查设备。" : "请允许相机访问权限。"))
+                ContentUnavailableView("Camera Unavailable", systemImage: "camera",
+                    description: Text(controller.setupFailed ? "Camera initialization failed. Check the device." : "Please allow camera access."))
             }
 
             // Controls (开始 / 暂停 / 停止 / 清空) live in `CameraControls`, rendered by the
@@ -57,21 +57,21 @@ struct CameraView: View {
                 Circle()
                     .fill(controller.paused ? Color.gray : Color.green)
                     .frame(width: 6, height: 6)
-                Text(controller.paused ? "已暂停" : "实时检测中")
+                Text(controller.paused ? "Paused" : "Live Detection")
                     .fontWeight(.semibold)
-                // "峰值" = the model's best raw anchor score before the confidence
-                // threshold. When 框 stays 0 it answers "why" at a glance: score ≈ 0.0-0.1
+                // "peak" = the model's best raw anchor score before the confidence
+                // threshold. When the box count stays 0 it answers "why" at a glance: score ≈ 0.0-0.1
                 // → the model never saw a plate-like input; ≥0.25 → it does see the plate
                 // and the decode/validation side is dropping it.
                 Text(controller.lastTopScore.map {
-                        "框 \(controller.liveDetections.count) · 牌 \(controller.liveResults.count) · 峰值 \(String(format: "%.2f", $0))"
+                        "boxes \(controller.liveDetections.count) · plates \(controller.liveResults.count) · peak \(String(format: "%.2f", $0))"
                      }
-                     ?? "框 \(controller.liveDetections.count) · 牌 \(controller.liveResults.count)")
+                     ?? "boxes \(controller.liveDetections.count) · plates \(controller.liveResults.count)")
                     .foregroundStyle(.white.opacity(0.72))
                 // Frames the gate accepted. 0 after tapping 开始 = the capture pipeline is
                 // not feeding frames; rising while latency stays 0 ms = every analysis
                 // throws before finishing (see `frameCount`).
-                Text("帧 \(controller.frameCount)")
+                Text("frames \(controller.frameCount)")
                     .foregroundStyle(.white.opacity(0.55))
             }
             .font(.system(size: 11, design: .monospaced))
@@ -96,7 +96,7 @@ struct CameraView: View {
                     // (The stub's name, e.g. LicensePlateDetectorUnavailable(原因), does
                     // not contain "ONNX", so the warning fires exactly when needed.)
                     if !controller.detectorName.hasPrefix("ONNXPoseLicensePlateDetector") {
-                        Text("检测器未走 ONNX")
+                        Text("Detector not using ONNX")
                             .foregroundStyle(.yellow)
                     }
                 }
@@ -131,8 +131,8 @@ struct CameraView: View {
 /// Camera transport + history controls.
 ///
 /// Rendered by the parent *below* the preview, on the app's normal background (never on the
-/// black preview surface), so the video area carries no black bar and the "清空检测历史"
-/// button can share the same row as 暂停 / 停止.
+/// black preview surface), so the video area carries no black bar and the "Clear History"
+/// button can share the same row as Pause / Stop.
 struct CameraControls: View {
     let controller: CameraController
 
@@ -163,7 +163,7 @@ struct CameraControls: View {
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "camera.fill")
-                Text("开始实时识别").font(.headline)
+                Text("Start Live Detection").font(.headline)
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 22)
@@ -179,7 +179,7 @@ struct CameraControls: View {
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "camera.fill")
-                Text("开始实时识别").font(.headline)
+                Text("Start Live Detection").font(.headline)
             }
             .foregroundStyle(.white)
             .frame(maxWidth: .infinity)
@@ -198,7 +198,7 @@ struct CameraControls: View {
             HStack(spacing: 5) {
                 Image(systemName: controller.paused ? "play.fill" : "pause.fill")
                     .font(.system(size: 11, weight: .bold))
-                Text(controller.paused ? "继续" : "暂停")
+                Text(controller.paused ? "Resume" : "Pause")
                     .font(.system(size: 13, weight: .semibold))
             }
             // Controls sit on the app background (light in light mode), so the previous
@@ -218,7 +218,7 @@ struct CameraControls: View {
             HStack(spacing: 5) {
                 Image(systemName: "stop.fill")
                     .font(.system(size: 10, weight: .bold))
-                Text("停止")
+                Text("Stop")
                     .font(.system(size: 13, weight: .semibold))
             }
             .foregroundStyle(.white)
@@ -235,7 +235,7 @@ struct CameraControls: View {
             HStack(spacing: 5) {
                 Image(systemName: "trash")
                     .font(.system(size: 13, weight: .semibold))
-                Text("清空检测历史")
+                Text("Clear History")
                     .font(.system(size: 13, weight: .semibold))
             }
             .foregroundStyle(.secondary)
