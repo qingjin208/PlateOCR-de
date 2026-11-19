@@ -380,7 +380,6 @@ struct ContentView: View {
                 }
             }
             SourceSegment(selection: $source)
-                .frame(width: 198)
                 .frame(maxWidth: .infinity)
         }
         .padding(.horizontal)
@@ -820,7 +819,7 @@ private struct SourceSegment: View {
                         } label: {
                             HStack(spacing: 6) {
                                 Image(systemName: icons[src] ?? "")
-                                Text(labels[src] ?? "")
+                                Text(labels[src] ?? "").lineLimit(1)
                             }
                             .font(.system(size: 13.5, weight: .semibold))
                             .foregroundStyle(selection == src ? appAccent : .secondary)
