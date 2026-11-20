@@ -757,10 +757,12 @@ struct ContentView: View {
             }
             guard !Task.isCancelled else { return }
             videoSamples = samples
-            // Majority vote across sampled frames (not just a text-level de-duplication):
-            // a reading that only one frame produced is absorbed into the reading the
-            // other frames agree on, so a one-glyph misread never gets its own row.
-            results = PlateVoteAggregator.consolidate(samples.map(\.plates))
+            // Link the same physical car across sampled frames by box position BEFORE
+            // voting. Text-level consolidation split one car into several rows when its
+            // reading changed at the frame edges (enter / middle / exit), and listed
+            // moving-background misreads as separate plates. Spatial tracks produce one
+            // row (and one cropped image) per car with a majority-voted spelling.
+            results = PlateVoteAggregator.consolidateVideo(samples)
             lastDetectionCount = samples.reduce(0) { $0 + $1.detections.count }
             isBusy = false
         } catch is CancellationError {

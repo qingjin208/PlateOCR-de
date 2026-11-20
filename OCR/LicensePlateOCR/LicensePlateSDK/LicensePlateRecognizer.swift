@@ -550,7 +550,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
                                progress: (@Sendable (Double) -> Void)? = nil) async throws -> [PlateResult] {
         let samples = try await recognizeVideoSamples(at: url, mode: mode,
                                                       maxSamples: maxSamples, progress: progress)
-        return PlateVoteAggregator.consolidate(samples.map(\.plates))
+        return PlateVoteAggregator.consolidateVideo(samples)
     }
 
     /// Same sampling pass as `recognizeVideo`, but keeps every sampled frame's detections,

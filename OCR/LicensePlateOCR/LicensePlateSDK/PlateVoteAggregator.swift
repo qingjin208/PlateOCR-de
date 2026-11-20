@@ -568,4 +568,113 @@ public struct PlateVoteAggregator: Sendable {
             return $0.confidence > $1.confidence
         }
     }
+
+    // MARK: - Video spatial-track consolidation
+
+    /// De-duplicates video readings by *space* instead of by text.
+    ///
+    /// `consolidate(_:)` counts votes per text, which cannot unify the different readings
+    /// one physical car produces as it enters, crosses and leaves the frame (`MAB1234`,
+    /// `MAB123A`, `MAB12B4`). `isSamePlate` only merges a single confusable glyph at a
+    /// 4:1 majority, so a car with three plausible readings ends up as three rows and
+    /// three cropped images in the list.
+    ///
+    /// Sampled frames are dense enough for spatial linking when boxes are normalised:
+    /// the same car's boxes overlap far more than two different cars' boxes do. This
+    /// method links readings across samples into one track (best IoU first, one-to-one,
+    /// never two plates from the same sample), majority-votes the text *inside* that
+    /// track, and emits one representative per track. The thresholds mirror
+    /// `VideoPlatePreview.rebuildFrozenReadings` so the list and the on-screen label
+    /// resolve the same car to the same spelling.
+    ///
+    /// A single-frame track is normally a moving-background misread; it is kept only
+    /// when its OCR confidence clears `provisionalConfidence`, and is dropped entirely
+    /// when a longer track holds a confusable variant of it (i.e. it is the same car
+    /// read once, badly, at the edge of the frame).
+    public static func consolidateVideo(
+        _ samples: [PlateVideoSample],
+        associationIoU: CGFloat = 0.12,
+        minimumFrames: Int = 2,
+        provisionalConfidence: Float = 0.85
+    ) -> [PlateResult] {
+        let ordered = samples.sorted { $0.time < $1.time }
+
+        struct Observation {
+            let sample: Int
+            let result: PlateResult
+        }
+        var flat: [Observation] = []
+        for (si, sample) in ordered.enumerated() {
+            for result in sample.plates {
+                flat.append(Observation(sample: si, result: result))
+            }
+        }
+        guard !flat.isEmpty else { return [] }
+
+        // Link to an *earlier* sample only: two cars in the same frame must never merge.
+        var trackResults: [[PlateResult]] = []
+        var trackLastBox: [CGRect] = []
+        var trackLastSample: [Int] = []
+
+        for obs in flat {
+            var bestTrack: Int?
+            var bestScore = associationIoU
+            for ti in trackResults.indices where trackLastSample[ti] < obs.sample {
+                let score = iou(trackLastBox[ti], obs.result.boundingBox)
+                if score > bestScore { bestScore = score; bestTrack = ti }
+            }
+            if let ti = bestTrack {
+                trackResults[ti].append(obs.result)
+                trackLastBox[ti] = obs.result.boundingBox
+                trackLastSample[ti] = obs.sample
+            } else {
+                trackResults.append([obs.result])
+                trackLastBox.append(obs.result.boundingBox)
+                trackLastSample.append(obs.sample)
+            }
+        }
+
+        var output: [PlateResult] = []
+        for observations in trackResults {
+            var votes: [String: Int] = [:]
+            var confidence: [String: Float] = [:]
+            for result in observations {
+                votes[result.text, default: 0] += 1
+                confidence[result.text] = max(confidence[result.text] ?? 0, result.confidence)
+            }
+            guard let winner = votes.max(by: {
+                if $0.value != $1.value { return $0.value < $1.value }
+                return (confidence[$0.key] ?? 0) < (confidence[$1.key] ?? 0)
+            })?.key else { continue }
+
+            let frameCount = observations.count
+            let winnerConfidence = confidence[winner] ?? 0
+            guard frameCount >= minimumFrames || winnerConfidence >= provisionalConfidence else { continue }
+
+            // The representative must be a frame that actually read `winner`, otherwise
+            // the cropped image shown in the list would depict a different spelling.
+            guard let representative = observations.filter({ $0.text == winner })
+                                                   .max(by: { $0.confidence < $1.confidence }) else { continue }
+            output.append(PlateResult(text: winner,
+                                      confidence: representative.confidence,
+                                      boundingBox: representative.boundingBox,
+                                      imageSize: representative.imageSize,
+                                      candidates: representative.candidates,
+                                      correctedPlateImage: representative.correctedPlateImage,
+                                      corners: representative.corners,
+                                      votes: frameCount))
+        }
+
+        // A lone edge-of-frame sighting whose text is a confusable variant of a car that
+        // was read properly across several samples is that same car, not a second one.
+        let stableTexts = output.filter { $0.votes >= minimumFrames }.map { $0.text }
+        output.removeAll { result in
+            result.votes < minimumFrames && stableTexts.contains(where: { isSamePlate($0, result.text) })
+        }
+
+        return output.sorted {
+            if $0.votes != $1.votes { return $0.votes > $1.votes }
+            return $0.confidence > $1.confidence
+        }
+    }
 }
