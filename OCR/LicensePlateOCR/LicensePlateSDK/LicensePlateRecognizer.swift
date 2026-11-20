@@ -348,7 +348,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     /// and video paths use, so there is exactly one set of thresholds and geometry.
     public func recognize(in buffer: CVPixelBuffer,
                           orientation: CGImagePropertyOrientation = .up,
-                          mode: RecognitionMode = .fast,
+                          mode: RecognitionMode = .accurate,
                           tiled: Bool = true) async throws -> PlateFrameResult {
         try await recognizeFrame(buffer, orientation: orientation, mode: mode,
                                  tiled: tiled, onDetections: nil)
@@ -361,7 +361,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     /// SDK avoids the colour shift of an extra wide-gamut buffer round-trip while
     /// still presenting a buffer-only boundary to the App.
     func recognizeImage(_ image: CGImage,
-                               mode: RecognitionMode = .fast,
+                               mode: RecognitionMode = .accurate,
                                tiled: Bool = false,
                                onDetections: (@Sendable ([PlateDetection], CGSize) -> Void)? = nil) async throws -> PlateFrameResult {
         try Task.checkCancellation()
@@ -507,7 +507,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     ///   latency matters more than the last few tiny plates.
     public func recognizeFrame(_ pixelBuffer: CVPixelBuffer,
                                orientation: CGImagePropertyOrientation = .up,
-                               mode: RecognitionMode = .fast,
+                               mode: RecognitionMode = .accurate,
                                tiled: Bool = false,
                                onDetections: (@Sendable ([PlateDetection], CGSize) -> Void)? = nil) async throws -> PlateFrameResult {
         let width = CVPixelBufferGetWidth(pixelBuffer), height = CVPixelBufferGetHeight(pixelBuffer)
@@ -545,7 +545,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
         return context.createCGImage(ci, from: ci.extent) ?? image
     }
 
-    public func recognizeVideo(at url: URL, mode: RecognitionMode = .fast,
+    public func recognizeVideo(at url: URL, mode: RecognitionMode = .accurate,
                                maxSamples: Int = 60,
                                progress: (@Sendable (Double) -> Void)? = nil) async throws -> [PlateResult] {
         let samples = try await recognizeVideoSamples(at: url, mode: mode,
@@ -556,7 +556,7 @@ public final class LicensePlateRecognizer: LicensePlateRecognizing {
     /// Same sampling pass as `recognizeVideo`, but keeps every sampled frame's detections,
     /// plates and size. A player overlay needs this: the aggregate result list spans many
     /// frames, so drawing it onto one frame would place boxes in the wrong coordinate space.
-    public func recognizeVideoSamples(at url: URL, mode: RecognitionMode = .fast,
+    public func recognizeVideoSamples(at url: URL, mode: RecognitionMode = .accurate,
                                       maxSamples: Int = 60,
                                       progress: (@Sendable (Double) -> Void)? = nil) async throws -> [PlateVideoSample] {
         let asset = AVURLAsset(url: url)

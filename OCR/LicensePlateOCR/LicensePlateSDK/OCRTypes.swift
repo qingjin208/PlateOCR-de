@@ -29,7 +29,7 @@ public protocol PlateTextRecognizing: Sendable {
     func recognize(in image: CGImage, mode: RecognitionMode) async throws -> [PlateObservation]
 }
 
-/// The recognition quality the user can choose. Defaults to `.fast`.
+/// The recognition quality the user can choose. Defaults to `.accurate`.
 ///
 /// PaddleOCR implements both levels itself (no engine switch):
 /// - `.fast`: one inference, beam width 8.

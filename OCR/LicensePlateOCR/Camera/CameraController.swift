@@ -112,7 +112,7 @@ final class CameraController: NSObject {
     /// (session/permission/source problem), while a rising counter with 0 ms latency means
     /// every analysis threw before finishing (detector init/run failure).
     var frameCount = 0
-    var mode: RecognitionMode = .fast
+    var mode: RecognitionMode = .accurate
     var liveEnabled = true {
         didSet {
             generation += 1
@@ -507,7 +507,7 @@ final class CameraController: NSObject {
         previewView?.clearOverlay()
     }
 
-    init(recognizer: LicensePlateRecognizing, mode: RecognitionMode = .fast) {
+    init(recognizer: LicensePlateRecognizing, mode: RecognitionMode = .accurate) {
         self.recognizer = recognizer
         self.mode = mode
         // Triage: record which detector is actually in the pipeline from the start. The

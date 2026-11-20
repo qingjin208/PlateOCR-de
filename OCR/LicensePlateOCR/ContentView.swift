@@ -80,7 +80,7 @@ struct ContentView: View {
     @State private var displayImage: UIImage?
     @State private var videoURL: URL?
 
-    @State private var mode: RecognitionMode = .fast   // default = fast
+    @State private var mode: RecognitionMode = .accurate   // default = accurate
     /// Letterbox buffer orientation for the detector (top-row-first = PC layout). Debug
     /// switch: with the wrong value the boxes land vertically mirrored and OCR reads nothing.
     @State private var flipLetterbox: Bool = true
