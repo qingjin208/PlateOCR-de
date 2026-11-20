@@ -64,6 +64,7 @@ final class VideoPlateView: UIView {
         didSet {
             guard !Self.sameSamples(oldValue, samples) else { return }
             sortedSamples = samples.sorted { $0.time < $1.time }
+            rebuildFrozenReadings()
             if samples.isEmpty { clearLayers() }
             render(at: playerLayer.player?.currentTime().seconds ?? 0)
             refreshSoon()
@@ -71,14 +72,27 @@ final class VideoPlateView: UIView {
     }
 
     /// Majority-voted readings (`PlateVoteAggregator.consolidate`). Only text and
-    /// confidence are borrowed; geometry stays with the interpolated samples.
+    /// confidence are borrowed; geometry still comes from the interpolated samples.
     /// Equality-gated for the same reason as `samples`.
     var results: [PlateResult] = [] {
         didSet {
             guard !Self.sameReadings(oldValue, results) else { return }
+            rebuildFrozenReadings()
             render(at: playerLayer.player?.currentTime().seconds ?? 0)
         }
     }
+
+    /// One resolved reading for a sampled plate. The text is decided once (from a
+    /// cross-sample track's majority vote) and frozen; playback only looks it up. Without
+    /// this, `drawItems` re-derives text from each frame's box on every tick, and as the
+    /// head crosses a sample boundary the same car flips between the voted spelling and
+    /// that frame's raw OCR reading (`MAB1234` / `MAB123A`).
+    private struct FrozenReading {
+        let text: String
+        let confidence: Float
+    }
+    /// Indexed by `sortedSamples` position, then plate position within that sample.
+    private var frozenReadings: [[Int: FrozenReading]] = []
 
     private static func sameReadings(_ a: [PlateResult], _ b: [PlateResult]) -> Bool {
         guard a.count == b.count else { return false }
@@ -183,20 +197,28 @@ final class VideoPlateView: UIView {
     /// only one bracket sample fades in/out so it never blinks on/off at a sample boundary.
     private func drawItems(at seconds: Double) -> [VideoDrawItem] {
         guard !sortedSamples.isEmpty, seconds.isFinite else { return [] }
+        let indexA: Int
         let a: PlateVideoSample
+        let indexB: Int?
         let b: PlateVideoSample?
         var alpha: CGFloat = 0
 
         if seconds <= sortedSamples.first!.time {
+            indexA = 0
             a = sortedSamples[0]
+            indexB = sortedSamples.count > 1 ? 1 : nil
             b = sortedSamples.count > 1 ? sortedSamples[1] : nil
         } else if seconds >= sortedSamples.last!.time {
-            a = sortedSamples[sortedSamples.count - 1]
+            indexA = sortedSamples.count - 1
+            a = sortedSamples[indexA]
+            indexB = nil
             b = nil
         } else {
             var i = 0
             while i + 1 < sortedSamples.count, sortedSamples[i + 1].time < seconds { i += 1 }
+            indexA = i
             a = sortedSamples[i]
+            indexB = i + 1
             let next = sortedSamples[i + 1]
             b = next
             let span = next.time - a.time
@@ -206,7 +228,7 @@ final class VideoPlateView: UIView {
         var items: [VideoDrawItem] = []
         var usedB = Set<Int>()
 
-        for plateA in a.plates {
+        for (ia, plateA) in a.plates.enumerated() {
             var bestB: Int?
             var bestIoU: CGFloat = Self.pairIoU
             if let b {
@@ -222,7 +244,7 @@ final class VideoPlateView: UIView {
                 let quadA = Self.quad(for: plateA)
                 let quadB = Self.quad(for: plateB)
                 let quad = Self.lerpQuad(quadA, quadB, alpha)
-                let reading = stableReading(for: plateA)
+                let reading = frozenReading(sampleIndex: indexA, plateIndex: ia, fallback: plateA)
                 items.append(VideoDrawItem(quad: quad, box: box,
                                            text: reading.text, confidence: reading.confidence,
                                            recognized: true, alpha: 1))
@@ -230,7 +252,7 @@ final class VideoPlateView: UIView {
                 // Present only in A: fade out as the head advances toward B.
                 let fade = 1 - alpha
                 if fade > Self.minAlpha {
-                    let reading = stableReading(for: plateA)
+                    let reading = frozenReading(sampleIndex: indexA, plateIndex: ia, fallback: plateA)
                     items.append(VideoDrawItem(quad: Self.quad(for: plateA),
                                                box: plateA.boundingBox,
                                                text: reading.text, confidence: reading.confidence,
@@ -242,7 +264,8 @@ final class VideoPlateView: UIView {
             for (jb, plateB) in b.plates.enumerated() where !usedB.contains(jb) {
                 // Present only in B: fade in.
                 if alpha > Self.minAlpha {
-                    let reading = stableReading(for: plateB)
+                    let reading = frozenReading(sampleIndex: indexB ?? 0,
+                                                plateIndex: jb, fallback: plateB)
                     items.append(VideoDrawItem(quad: Self.quad(for: plateB),
                                                box: plateB.boundingBox,
                                                text: reading.text, confidence: reading.confidence,
@@ -371,25 +394,124 @@ final class VideoPlateView: UIView {
         CATransaction.commit()
     }
 
-    /// Majority-voted text/confidence for one per-frame reading. OCR on neighbouring
-    /// sampled frames can flip a single glyph (`MAB1234` / `MAB123A`); borrowing the voted
-    /// reading keeps the label still while the box still follows the visible frame.
-    private func stableReading(for plate: PlateResult) -> (text: String, confidence: Float) {
-        guard !results.isEmpty else { return (plate.text, plate.confidence) }
-        let box = plate.boundingBox
-        var bestIoU: CGFloat = 0.2
-        var best: PlateResult?
-        for candidate in results {
-            let other = candidate.boundingBox
-            let inter = box.intersection(other)
-            guard !inter.isEmpty, inter.width > 0, inter.height > 0 else { continue }
-            let area = inter.width * inter.height
-            let union = box.width * box.height + other.width * other.height - area
-            guard union > 0 else { continue }
-            let score = area / union
-            if score > bestIoU { bestIoU = score; best = candidate }
+    /// IoU used to link the same physical plate across sample frames into one track.
+    /// Deliberately looser than the interpolation pairing: samples are far apart in time,
+    /// so a moving car's boxes overlap far less than two adjacent video frames would.
+    private static let trackIoU: CGFloat = 0.12
+
+    /// Resolves one stable text per sampled plate and caches it. Called only when the
+    /// recognition output changes — never during playback.
+    ///
+    /// The same car is linked across sample frames by box IoU into a track (one-to-one,
+    /// best match first, and never linking two plates from the *same* frame). Each track's
+    /// readings are then majority-voted; ties go to the highest-confidence observation.
+    /// Playback looks up the frozen text by (sample, plate) instead of re-deriving it from
+    /// the current box, so crossing a sample boundary can no longer flip a label between
+    /// a voted spelling and one frame's raw OCR reading.
+    private func rebuildFrozenReadings() {
+        struct Observation {
+            let text: String
+            let confidence: Float
+            let box: CGRect
         }
-        guard let best else { return (plate.text, plate.confidence) }
-        return (best.text, best.confidence)
+
+        // Flatten to time order so a track can only ever consume *earlier* samples.
+        var flat: [(sample: Int, plate: Int, obs: Observation)] = []
+        for (si, sample) in sortedSamples.enumerated() {
+            for (pi, plate) in sample.plates.enumerated() {
+                flat.append((si, pi, Observation(text: plate.text,
+                                                 confidence: plate.confidence,
+                                                 box: plate.boundingBox)))
+            }
+        }
+
+        var trackOfFlat = [Int](repeating: -1, count: flat.count)
+        var trackObservations: [[Observation]] = []
+        var trackLatestBox: [CGRect] = []
+        var trackLastSample: [Int] = []
+
+        for (fi, entry) in flat.enumerated() {
+            var bestTrack: Int?
+            var bestIoU = Self.trackIoU
+            // Only tracks last seen in an *earlier* sample are eligible. Without this,
+            // two cars present in the same frame would merge into a single track.
+            for ti in trackObservations.indices where trackLastSample[ti] < entry.sample {
+                let score = Self.iou(trackLatestBox[ti], entry.obs.box)
+                if score > bestIoU { bestIoU = score; bestTrack = ti }
+            }
+            if let ti = bestTrack {
+                trackOfFlat[fi] = ti
+                trackObservations[ti].append(entry.obs)
+                trackLatestBox[ti] = entry.obs.box
+                trackLastSample[ti] = entry.sample
+            } else {
+                trackOfFlat[fi] = trackObservations.count
+                trackObservations.append([entry.obs])
+                trackLatestBox.append(entry.obs.box)
+                trackLastSample.append(entry.sample)
+            }
+        }
+
+        var trackText: [String] = []
+        var trackConfidence: [Float] = []
+        for observations in trackObservations {
+            var votes: [String: Int] = [:]
+            var confidence: [String: Float] = [:]
+            // The highest-confidence sighting is this track's representative box: it is
+            // the frame the model read most clearly, so it is the best anchor for matching
+            // the globally consolidated reading.
+            var representative: Observation = observations[0]
+            for obs in observations {
+                votes[obs.text, default: 0] += 1
+                confidence[obs.text] = max(confidence[obs.text] ?? 0, obs.confidence)
+                if obs.confidence > representative.confidence { representative = obs }
+            }
+            let winner = votes.max {
+                if $0.value != $1.value { return $0.value < $1.value }
+                return (confidence[$0.key] ?? 0) < (confidence[$1.key] ?? 0)
+            }?.key ?? ""
+
+            // Align with the result list's authoritative spelling. This lookup is done
+            // ONCE here (not per playback frame): match the track's representative box
+            // against the consolidated results and borrow that text/confidence. Without
+            // the freeze this same lookup ran every tick with each frame's box, which is
+            // what made a crossing plate flip between two spellings.
+            var finalText = winner
+            var finalConfidence = confidence[winner] ?? 0
+            if !results.isEmpty {
+                var bestIoU: CGFloat = 0.15
+                var best: PlateResult?
+                for candidate in results {
+                    let score = Self.iou(representative.box, candidate.boundingBox)
+                    if score > bestIoU { bestIoU = score; best = candidate }
+                }
+                if let best {
+                    finalText = best.text
+                    finalConfidence = max(finalConfidence, best.confidence)
+                }
+            }
+            trackText.append(finalText)
+            trackConfidence.append(finalConfidence)
+        }
+
+        var table = [[Int: FrozenReading]](repeating: [:], count: sortedSamples.count)
+        for (fi, entry) in flat.enumerated() {
+            let ti = trackOfFlat[fi]
+            guard trackObservations.indices.contains(ti) else { continue }
+            table[entry.sample][entry.plate] = FrozenReading(text: trackText[ti],
+                                                             confidence: trackConfidence[ti])
+        }
+        frozenReadings = table
+    }
+
+    /// Looks up the frozen reading for one sampled plate. Falls back to that plate's own
+    /// OCR output only when no table entry exists (e.g. samples changed mid-render).
+    private func frozenReading(sampleIndex: Int, plateIndex: Int,
+                               fallback plate: PlateResult) -> (text: String, confidence: Float) {
+        guard frozenReadings.indices.contains(sampleIndex),
+              let reading = frozenReadings[sampleIndex][plateIndex] else {
+            return (plate.text, plate.confidence)
+        }
+        return (reading.text, reading.confidence)
     }
 }
