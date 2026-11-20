@@ -255,15 +255,27 @@ final class CameraController: NSObject {
     /// A track is retired after this many unmatched analysis cycles. Counting cycles
     /// instead of seconds keeps confirmation working on slow devices (a 1 s/frame phone
     /// still confirms on its second frame).
-    private static let maxMissedCycles = 3
+    ///
+    /// Kept short on purpose: while the phone is moving, a retired plate's frozen box
+    /// would otherwise sit at an old screen position for several seconds (the box has no
+    /// motion of its own — only the next detection can move it). Two cycles still bridges
+    /// a single missed detection so a transient occlusion does not blink the box off.
+    private static let maxMissedCycles = 2
     /// Minimum IoU to associate an incoming detection with an existing track.
     private static let associationIoU: CGFloat = 0.3
-    /// Weight of the *new* observation when smoothing track geometry (0...1).
+    /// Weight of the *new* observation when smoothing track geometry (0...1) while the
+    /// camera is steady. Heavy smoothing kills single-frame keypoint jitter.
     private static let smoothing: CGFloat = 0.5
+    /// Weight used while the phone is moving (large box displacement): follow quickly so
+    /// the outline does not trail the plate across the screen.
+    private static let movingSmoothing: CGFloat = 0.85
+    /// Normalized centre displacement above which a track is considered to be moving.
+    /// A plate jumping more than ~4% of the frame between cycles cannot be sensor jitter.
+    private static let movingThreshold: CGFloat = 0.04
     /// Cycles a reading may be missing before its label is removed. At the camera's
-    /// 0.2 s gate that is roughly 0.6 s: long enough to bridge a blurry frame, short
-    /// enough that a departing car does not leave a stale chip on screen.
-    private static let resultMissedCycles = 3
+    /// 0.2 s gate that is roughly 0.4 s: long enough to bridge a blurry frame, short
+    /// enough that a departing car does not leave a stale chip at an old screen spot.
+    private static let resultMissedCycles = 2
     /// A rival text must be read this many consecutive cycles — or beat the listed
     /// reading by this much raw confidence — before it replaces the label.
     private static let resultSwitchHits = 2
@@ -281,6 +293,10 @@ final class CameraController: NSObject {
 
     private nonisolated static func lerp(_ a: CGPoint, _ b: CGPoint, _ t: CGFloat) -> CGPoint {
         CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t)
+    }
+
+    private nonisolated static func distance(_ a: CGPoint, _ b: CGPoint) -> CGFloat {
+        hypot(a.x - b.x, a.y - b.y)
     }
 
     private nonisolated static func lerp(_ a: CGRect, _ b: CGRect, _ t: CGFloat) -> CGRect {
@@ -311,7 +327,12 @@ final class CameraController: NSObject {
             if bestIndex >= 0 {
                 matchedIndices.insert(bestIndex)
                 var track = trackedPlates[bestIndex]
-                let t = Self.smoothing
+                let centreShift = Self.distance(CGPoint(x: detection.rect.midX, y: detection.rect.midY),
+                                                CGPoint(x: track.rect.midX, y: track.rect.midY))
+                // Phone moving → follow the new position almost immediately; steady →
+                // heavy smoothing to kill keypoint jitter. This removes the "box lags
+                // behind, then catches up" feel while walking around a car.
+                let t = centreShift > Self.movingThreshold ? Self.movingSmoothing : Self.smoothing
                 track.rect = Self.lerp(track.rect, detection.rect, t)
                 // Pose corners have a fixed order, so point-wise smoothing is safe.
                 if track.quad.count == incomingQuad.count {
@@ -367,10 +388,13 @@ final class CameraController: NSObject {
             if bestIndex >= 0 {
                 matchedIndices.insert(bestIndex)
                 var track = resultTracks[bestIndex]
-                track.rect = Self.lerp(track.rect, reading.boundingBox, Self.smoothing)
+                let centreShift = Self.distance(CGPoint(x: reading.boundingBox.midX, y: reading.boundingBox.midY),
+                                                CGPoint(x: track.rect.midX, y: track.rect.midY))
+                let t: CGFloat = centreShift > Self.movingThreshold ? Self.movingSmoothing : Self.smoothing
+                track.rect = Self.lerp(track.rect, reading.boundingBox, t)
                 if let oldCorners = track.corners, let newCorners = reading.corners,
                    oldCorners.count == newCorners.count {
-                    track.corners = zip(oldCorners, newCorners).map { Self.lerp($0, $1, Self.smoothing) }
+                    track.corners = zip(oldCorners, newCorners).map { Self.lerp($0, $1, t) }
                 } else {
                     track.corners = reading.corners
                 }
@@ -640,6 +664,9 @@ final class CameraController: NSObject {
                     // Draw the stabilized readings from the previous cycle. `liveResults`
                     // is raw per-frame OCR output and may be empty or garbled; using it
                     // here used to tear every chip off at the start of each cycle.
+                    // Geometry comes from the detection track (see PreviewView: it no
+                    // longer lets a result's corners override the detection quad), so
+                    // both draws of a cycle share one geometry and only the label updates.
                     self.publishLiveOverlay(detections: detections, frameIdentifier: frameIdentifier,
                                             results: self.stableResults)
                 }

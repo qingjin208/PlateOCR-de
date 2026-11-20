@@ -144,10 +144,11 @@ final class PreviewView: UIView {
         }
         signature += "|"
         for result in results {
-            signature += result.text + String(format: ":%d:", Int(result.confidence * 100))
-                        + rect(result.boundingBox)
-            for corner in result.plateQuad { signature += point(corner) }
-            signature += ";"
+            // Only what actually paints matters: text (label + colour key) and the integer
+            // percent shown on the chip. Result corners/boundingBox are NOT drawn any more
+            // (geometry comes from detections), so including their jitter here would defeat
+            // the idempotent skip and repaint every frame for no visible change.
+            signature += result.text + String(format: ":%d;", Int(result.confidence * 100))
         }
         return signature
     }
@@ -215,10 +216,13 @@ final class PreviewView: UIView {
             if let matched { usedResultIndices.insert(matched) }
             let result = matched.map { results[$0] }
             let key = PlateOverlayPalette.key(text: result?.text, box: detection.rect)
-            var quad = detection.plateQuad
-            if let result, let corners = result.corners, corners.count == 4 {
-                quad = corners
-            }
+            // Geometry ALWAYS comes from the detection track. A result's corners come from
+            // the OCR pass of one specific (possibly older) frame; mixing them into a
+            // detection from another cycle made the box jump between two geometries within
+            // a single cycle ("wrong place, then flashes to the right one") and let a stale
+            // result's corners hold a box at an old spot while the phone moved. The box is
+            // the detection tracker's job; results only supply the label text/colour.
+            let quad = detection.plateQuad
             guard let path = quadPath(quad) else { continue }
             paints.append(Paint(path: path, key: key, recognized: result != nil,
                                 result: result, number: index + 1, quad: quad))
