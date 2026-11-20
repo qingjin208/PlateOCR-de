@@ -429,6 +429,7 @@ struct ContentView: View {
         if let currentPlayer = player {
             VideoPlayerCard(player: currentPlayer,
                             samples: videoSamples,
+                            results: results,
                             isPlaying: $isPlaying)
                 .padding(.horizontal)
         } else {
@@ -448,11 +449,14 @@ struct ContentView: View {
     private struct VideoPlayerCard: View {
         let player: AVPlayer
         let samples: [PlateVideoSample]
+        /// Majority-voted readings, passed to the overlay so labels stay stable across
+        /// neighbouring sampled frames (the aggregate result list is not drawn directly).
+        let results: [PlateResult]
         @Binding var isPlaying: Bool
 
         var body: some View {
             ZStack(alignment: .topTrailing) {
-                VideoPlatePreview(player: player, samples: samples)
+                VideoPlatePreview(player: player, samples: samples, results: results)
                     .frame(height: 340)
                     .clipShape(RoundedRectangle(cornerRadius: 16))
                 Button(action: togglePlayback) {

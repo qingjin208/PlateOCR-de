@@ -125,6 +125,9 @@ final class CameraController: NSObject {
                 liveDetections = []
                 isAnalyzing = false
                 trackedPlates.removeAll()
+                resultTracks.removeAll()
+                stableResults = []
+                resultCycle = 0
                 analysisCycle = 0
                 foldedFrameIdentifier = -1
                 previewView?.clearOverlay()
@@ -210,6 +213,31 @@ final class CameraController: NSObject {
     @ObservationIgnored private var trackedPlates: [TrackedPlate] = []
     /// Monotonic counter incremented once per tracker fold (see `stabilizeDetections`).
     @ObservationIgnored private var analysisCycle = 0
+
+    /// OCR is run independently on every frame, so a single blurry/garbled pass used to
+    /// replace the label text with a different reading — or with nothing at all. These
+    /// tracks stabilise *what the chip says*, mirroring what `trackedPlates` does for the
+    /// box geometry. Kept separate because detection and OCR can disagree in a frame.
+    private struct TrackedResult {
+        var rect: CGRect
+        var corners: [CGPoint]?
+        /// The original reading: text, candidates and rectified image. Its confidence is
+        /// the raw one, used for text-switch decisions; display uses `displayConfidence`.
+        var reading: PlateResult
+        /// Consecutive cycles a *different* text was read while this one stayed listed.
+        var dissent: Int
+        var lastSeenCycle: Int
+        /// Exponentially smoothed confidence shown on the chip.
+        var displayConfidence: Float
+    }
+
+    @ObservationIgnored private var resultTracks: [TrackedResult] = []
+    /// Published, stabilized readings consumed by BOTH overlay draws of a cycle.
+    @ObservationIgnored private var stableResults: [PlateResult] = []
+    /// Result tracking advances on its own final-publish cadence. It must NOT piggyback
+    /// on `analysisCycle` (driven by the intermediate detections callback): if that
+    /// callback is skipped, expiry would stall and stale labels would never retire.
+    @ObservationIgnored private var resultCycle = 0
     /// Identifier of the analysis frame whose detections were already folded into the
     /// tracker by the intermediate detection callback (so the final publish of the same
     /// frame reuses the tracks instead of double-counting `hits`).
@@ -232,6 +260,16 @@ final class CameraController: NSObject {
     private static let associationIoU: CGFloat = 0.3
     /// Weight of the *new* observation when smoothing track geometry (0...1).
     private static let smoothing: CGFloat = 0.5
+    /// Cycles a reading may be missing before its label is removed. At the camera's
+    /// 0.2 s gate that is roughly 0.6 s: long enough to bridge a blurry frame, short
+    /// enough that a departing car does not leave a stale chip on screen.
+    private static let resultMissedCycles = 3
+    /// A rival text must be read this many consecutive cycles — or beat the listed
+    /// reading by this much raw confidence — before it replaces the label.
+    private static let resultSwitchHits = 2
+    private static let resultSwitchConfidenceGap: Float = 0.12
+    /// Weight of the new confidence in the displayed EMA.
+    private static let resultConfidenceSmoothing: Float = 0.35
 
     private nonisolated static func iou(_ a: CGRect, _ b: CGRect) -> CGFloat {
         let inter = a.intersection(b)
@@ -308,11 +346,91 @@ final class CameraController: NSObject {
                                   keypoints: $0.quad, keypointConfidences: nil) }
     }
 
+    /// Folds one frame's OCR readings into the result tracks. Geometry and confidence
+    /// are smoothed; the text changes only on repeated or clearly stronger evidence, and
+    /// a track survives a few unread cycles so one failed OCR pass cannot blink the chip
+    /// off. Advances its own cycle counter so a skipped detections callback cannot stall
+    /// expiry.
+    private func stabilizeResults(_ incoming: [PlateResult]) {
+        resultCycle += 1
+        let cycle = resultCycle
+        resultTracks.removeAll { cycle - $0.lastSeenCycle > Self.resultMissedCycles }
+        var matchedIndices = Set<Int>()
+        var nextTracks: [TrackedResult] = []
+        for reading in incoming {
+            var bestIndex = -1
+            var bestIoU = Self.associationIoU
+            for (index, track) in resultTracks.enumerated() where !matchedIndices.contains(index) {
+                let score = Self.iou(reading.boundingBox, track.rect)
+                if score > bestIoU { bestIoU = score; bestIndex = index }
+            }
+            if bestIndex >= 0 {
+                matchedIndices.insert(bestIndex)
+                var track = resultTracks[bestIndex]
+                track.rect = Self.lerp(track.rect, reading.boundingBox, Self.smoothing)
+                if let oldCorners = track.corners, let newCorners = reading.corners,
+                   oldCorners.count == newCorners.count {
+                    track.corners = zip(oldCorners, newCorners).map { Self.lerp($0, $1, Self.smoothing) }
+                } else {
+                    track.corners = reading.corners
+                }
+                track.lastSeenCycle = cycle
+                let weight = Self.resultConfidenceSmoothing
+                track.displayConfidence = track.displayConfidence * (1 - weight)
+                                          + reading.confidence * weight
+                if reading.text == track.reading.text {
+                    track.dissent = 0
+                    if reading.confidence > track.reading.confidence { track.reading = reading }
+                } else if reading.confidence >= track.reading.confidence + Self.resultSwitchConfidenceGap {
+                    // A clearly stronger rival (e.g. the correct reading after a one-frame
+                    // misread) wins immediately.
+                    track.reading = reading
+                    track.dissent = 0
+                } else {
+                    // A one-glyph OCR wobble must not flip the chip; only a run of dissent.
+                    track.dissent += 1
+                    if track.dissent >= Self.resultSwitchHits {
+                        track.reading = reading
+                        track.dissent = 0
+                    }
+                }
+                nextTracks.append(track)
+            } else {
+                nextTracks.append(TrackedResult(rect: reading.boundingBox,
+                                                corners: reading.corners,
+                                                reading: reading,
+                                                dissent: 0,
+                                                lastSeenCycle: cycle,
+                                                displayConfidence: reading.confidence))
+            }
+        }
+        // Unread tracks keep their last stable reading (frozen) and age out after
+        // `resultMissedCycles` — that is what bridges a single bad OCR frame.
+        for (index, track) in resultTracks.enumerated() where !matchedIndices.contains(index) {
+            nextTracks.append(track)
+        }
+        resultTracks = nextTracks
+        stableResults = resultTracks.map { displayResult(for: $0) }
+    }
+
+    /// Rebuilds a result with smoothed geometry/confidence while keeping the winning
+    /// reading's text, candidates and rectified image intact.
+    private func displayResult(for track: TrackedResult) -> PlateResult {
+        PlateResult(text: track.reading.text,
+                    confidence: track.displayConfidence,
+                    boundingBox: track.rect,
+                    imageSize: track.reading.imageSize,
+                    candidates: track.reading.candidates,
+                    correctedPlateImage: track.reading.correctedPlateImage,
+                    corners: track.corners,
+                    votes: track.reading.votes)
+    }
+
     /// Single publish path for the live overlay. `updateTracks` is true only for the
     /// intermediate detection callback (the one place per analysis cycle that folds raw
-    /// detections into the tracker); the final publish of the same frame reuses those
-    /// tracks. Results pass through untouched — a newly recognized plate keeps its label
-    /// even on the confirming frame, and OCR'd plates are already validated downstream.
+    /// detections into the box tracker); the final publish of the same frame reuses those
+    /// tracks. `results` is the already-stabilized set from `stabilizeResults`, so both
+    /// draws of a cycle show the same text and confidence.
     private func publishLiveOverlay(detections: [PlateDetection], frameIdentifier: Int,
                                     results: [PlateResult]) {
         let updateTracks = foldedFrameIdentifier != frameIdentifier
@@ -378,6 +496,9 @@ final class CameraController: NSObject {
         //  • the on-screen result cards/labels are part of the same accumulated state.
         // The capture session itself keeps running (this is not 停止).
         trackedPlates.removeAll()
+        resultTracks.removeAll()
+        stableResults = []
+        resultCycle = 0
         analysisCycle = 0
         foldedFrameIdentifier = -1
         liveResults = []
@@ -479,6 +600,9 @@ final class CameraController: NSObject {
         // analysis (and therefore no track expiry) will run until the camera returns.
         publishHistory(voteAggregator.finish())
         trackedPlates.removeAll()
+        resultTracks.removeAll()
+        stableResults = []
+        resultCycle = 0
         analysisCycle = 0
         foldedFrameIdentifier = -1
         previewView?.clearOverlay()
@@ -513,13 +637,11 @@ final class CameraController: NSObject {
                 Task { @MainActor in
                     guard let self, self.active, self.liveEnabled, !self.paused,
                           self.generation == token, self.analysisIdentifier == frameIdentifier else { return }
-                    // Keep the previous cycle's readings instead of publishing an empty
-                    // result set: the labels/tints are derived from `results`, so passing
-                    // `[]` here (the old behaviour) tore every chip off the preview at the
-                    // start of each analysis cycle and only put it back when OCR finished —
-                    // the text visibly blinked off for most of every ~0.4 s cycle.
+                    // Draw the stabilized readings from the previous cycle. `liveResults`
+                    // is raw per-frame OCR output and may be empty or garbled; using it
+                    // here used to tear every chip off at the start of each cycle.
                     self.publishLiveOverlay(detections: detections, frameIdentifier: frameIdentifier,
-                                            results: self.liveResults)
+                                            results: self.stableResults)
                 }
             }
             let latency = Int(Date().timeIntervalSince(started) * 1000)
@@ -534,9 +656,12 @@ final class CameraController: NSObject {
                 #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc) || canImport(onnxruntime_objc)
                 self.lastTopScore = (recognizer as? LicensePlateRecognizer)?.detectorTopScore
                 #endif
+                // Keep the raw output for diagnostics, but draw the cross-frame stabilized
+                // set: neither the text nor its displayed confidence jumps between frames.
                 self.liveResults = result.plates
+                self.stabilizeResults(result.plates)
                 self.publishLiveOverlay(detections: result.detections, frameIdentifier: frameIdentifier,
-                                        results: result.plates)
+                                        results: self.stableResults)
                 self.errorMessage = nil
                 // Diagnostic echo: the analysed (upright) buffer + the same boxes, so the
                 // preview-vs-buffer alignment question can be answered on device.
@@ -577,6 +702,9 @@ final class CameraController: NSObject {
                 self.liveResults = []
                 self.liveDetections = []
                 self.trackedPlates.removeAll()
+                self.resultTracks.removeAll()
+                self.stableResults = []
+                self.resultCycle = 0
                 self.analysisCycle = 0
                 self.foldedFrameIdentifier = -1
                 self.previewView?.clearOverlay()

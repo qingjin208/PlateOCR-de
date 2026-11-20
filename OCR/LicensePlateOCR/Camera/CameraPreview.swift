@@ -9,6 +9,7 @@
 
 import AVFoundation
 import SwiftUI
+import Foundation
 
 struct CameraPreview: UIViewRepresentable {
     let controller: CameraController
@@ -44,6 +45,10 @@ final class PreviewView: UIView {
     /// Overlay layer used to draw the detection boxes; one path, many rects.
     private let overlayLayer = CAShapeLayer()
     private let plateContainerLayer = CALayer()
+    /// Each analysis cycle draws twice (detections callback, then final results). When
+    /// the stabilised inputs did not change, rebuilding every CALayer is pure flicker —
+    /// skip the repaint instead. Cleared by `clearOverlay` so a reset always repaints.
+    private var lastRenderSignature: String?
 
     override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
 
@@ -116,7 +121,34 @@ final class PreviewView: UIView {
         return videoPreviewLayer.layerPointConverted(fromCaptureDevicePoint: native)
     }
 
+    /// Quantised to what is actually visible: geometry at 0.01 (~2-4 px on screen) and
+    /// confidence at the integer percent printed on the chip. Finer quantisation made the
+    /// smoothed values change the signature on every frame, defeating the skip entirely.
+    private func renderSignature() -> String {
+        func point(_ p: CGPoint) -> String { String(format: "%.2f,%.2f", p.x, p.y) }
+        func rect(_ r: CGRect) -> String {
+            String(format: "%.2f,%.2f,%.2f,%.2f", r.minX, r.minY, r.width, r.height)
+        }
+        var signature = String(format: "%.1f,%.1f|", bounds.width, bounds.height)
+        for detection in detections {
+            signature += rect(detection.rect)
+            for corner in detection.plateQuad { signature += point(corner) }
+            signature += ";"
+        }
+        signature += "|"
+        for result in results {
+            signature += result.text + String(format: ":%d:", Int(result.confidence * 100))
+                        + rect(result.boundingBox)
+            for corner in result.plateQuad { signature += point(corner) }
+            signature += ";"
+        }
+        return signature
+    }
+
     private func renderOverlay() {
+        let signature = renderSignature()
+        guard signature != lastRenderSignature else { return }
+        lastRenderSignature = signature
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         labels.forEach { $0.removeFromSuperlayer() }
@@ -267,6 +299,7 @@ final class PreviewView: UIView {
     }
 
     func clearOverlay() {
+        lastRenderSignature = nil
         detections = []
         results = []
         labels.forEach { $0.removeFromSuperlayer() }
