@@ -163,7 +163,7 @@ struct CameraControls: View {
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "camera.fill")
-                Text("Start Live Detection").font(.headline)
+                Text("Start Live Detection").font(.subheadline.weight(.semibold))
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 22)
@@ -179,7 +179,7 @@ struct CameraControls: View {
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "camera.fill")
-                Text("Start Live Detection").font(.headline)
+                Text("Start Live Detection").font(.subheadline.weight(.semibold))
             }
             .foregroundStyle(.white)
             .frame(maxWidth: .infinity)

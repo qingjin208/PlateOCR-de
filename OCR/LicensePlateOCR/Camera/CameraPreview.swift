@@ -137,18 +137,15 @@ final class PreviewView: UIView {
             String(format: "%.2f,%.2f,%.2f,%.2f", r.minX, r.minY, r.width, r.height)
         }
         var signature = String(format: "%.1f,%.1f|", bounds.width, bounds.height)
-        for detection in detections {
-            signature += rect(detection.rect)
-            for corner in detection.plateQuad { signature += point(corner) }
-            signature += ";"
-        }
-        signature += "|"
+        // Every outline and chip is drawn FROM A RESULT (see renderOverlay): each result
+        // carries its own cross-frame-smoothed box, corners and text. Raw detections no
+        // longer paint anything (a false positive without an OCR result must stay hidden),
+        // so changes in detection geometry must not trigger a repaint.
         for result in results {
-            // Only what actually paints matters: text (label + colour key) and the integer
-            // percent shown on the chip. Result corners/boundingBox are NOT drawn any more
-            // (geometry comes from detections), so including their jitter here would defeat
-            // the idempotent skip and repaint every frame for no visible change.
-            signature += result.text + String(format: ":%d;", Int(result.confidence * 100))
+            signature += result.text + String(format: ":%d:", Int(result.confidence * 100))
+                        + rect(result.boundingBox)
+            for corner in result.plateQuad { signature += point(corner) }
+            signature += ";"
         }
         return signature
     }
@@ -192,48 +189,29 @@ final class PreviewView: UIView {
             layer.isHidden = false
         }
 
-        var usedResultIndices = Set<Int>()
-        // Collect paints first, then resize the reused pools once and fill in place.
-        // Never remove-and-recreate layers here: that was the original "flash" — every
-        // analysis cycle tore the whole overlay down and rebuilt it several times/second.
         struct Paint {
             let path: CGPath
             let key: String
-            let recognized: Bool
-            let result: PlateResult?
+            let result: PlateResult
             let number: Int
             let quad: [CGPoint]
         }
         var paints: [Paint] = []
-        for (index, detection) in detections.enumerated() {
-            detectionPath.addRect(toLayerRect(detection.rect))
-            // Prefer the OCR result that belongs to this detection so the colour is keyed
-            // on the plate text (stable across frames); otherwise key on the position.
-            let matched = results.indices.first { i in
-                !usedResultIndices.contains(i) && (detection.rect.contains(results[i].boundingBox)
-                    || detection.rect.intersects(results[i].boundingBox))
-            }
-            if let matched { usedResultIndices.insert(matched) }
-            let result = matched.map { results[$0] }
-            let key = PlateOverlayPalette.key(text: result?.text, box: detection.rect)
-            // Geometry ALWAYS comes from the detection track. A result's corners come from
-            // the OCR pass of one specific (possibly older) frame; mixing them into a
-            // detection from another cycle made the box jump between two geometries within
-            // a single cycle ("wrong place, then flashes to the right one") and let a stale
-            // result's corners hold a box at an old spot while the phone moved. The box is
-            // the detection tracker's job; results only supply the label text/colour.
-            let quad = detection.plateQuad
-            guard let path = quadPath(quad) else { continue }
-            paints.append(Paint(path: path, key: key, recognized: result != nil,
-                                result: result, number: index + 1, quad: quad))
-        }
-        // Results whose box was carved out of a shared crop (no dedicated detection).
-        for (index, result) in results.enumerated() where !usedResultIndices.contains(index) {
-            guard let path = quadPath(result.plateQuad) else { continue }
+        // Draw one outline + one label PER OCR RESULT, using that result's own box and
+        // corners. A raw detection with no surviving OCR result is a model false positive
+        // (bumper/reflection) — it must NOT be drawn, otherwise it borrows a neighbouring
+        // real plate's text and shows a misplaced chip ("boxes 2, plates 1" but two FRIMM993
+        // labels). Results are already cross-frame smoothed by the controller, so their
+        // geometry is stable and carries the text that actually belongs to it.
+        for (index, result) in results.enumerated() {
+            let quad = result.plateQuad
+            guard quad.count == 4, let path = quadPath(quad) else { continue }
+            // The thin rectangle layer also follows results only — drawing raw detection
+            // rects here would leave a stray outline at the false-positive location.
+            detectionPath.addRect(toLayerRect(result.boundingBox))
             paints.append(Paint(path: path,
                                 key: PlateOverlayPalette.key(text: result.text, box: result.boundingBox),
-                                recognized: true, result: result, number: index + 1,
-                                quad: result.plateQuad))
+                                result: result, number: index + 1, quad: quad))
         }
 
         CATransaction.begin()
@@ -261,13 +239,9 @@ final class PreviewView: UIView {
         }
         for (index, paint) in paints.enumerated() {
             let color = PlateOverlayPalette.color(for: paint.key)
-            plateLayer(path: paint.path, key: paint.key, recognized: paint.recognized, at: index)
-            if let result = paint.result {
-                addLabel(for: result, number: paint.number, color: color,
-                         quad: paint.quad, at: index)
-            } else {
-                labels[index].isHidden = true
-            }
+            plateLayer(path: paint.path, key: paint.key, recognized: true, at: index)
+            addLabel(for: paint.result, number: paint.number, color: color,
+                     quad: paint.quad, at: index)
         }
         overlayLayer.path = detectionPath
         CATransaction.commit()

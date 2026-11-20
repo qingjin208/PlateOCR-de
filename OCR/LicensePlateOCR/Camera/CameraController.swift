@@ -453,10 +453,11 @@ final class CameraController: NSObject {
     /// Single publish path for the live overlay. `updateTracks` is true only for the
     /// intermediate detection callback (the one place per analysis cycle that folds raw
     /// detections into the box tracker); the final publish of the same frame reuses those
-    /// tracks. `results` is the already-stabilized set from `stabilizeResults`, so both
-    /// draws of a cycle show the same text and confidence.
+    /// tracks. `results` is the already-stabilized set from `stabilizeResults`.
+    /// `draw` is false for the intermediate callback: it folds the tracker but defers the
+    /// single paint to the final callback, so a cycle never paints two different states.
     private func publishLiveOverlay(detections: [PlateDetection], frameIdentifier: Int,
-                                    results: [PlateResult]) {
+                                    results: [PlateResult], draw: Bool = true) {
         let updateTracks = foldedFrameIdentifier != frameIdentifier
         let stabilized: [PlateDetection]
         if updateTracks {
@@ -466,6 +467,7 @@ final class CameraController: NSObject {
             stabilized = confirmedTracks()
         }
         liveDetections = stabilized
+        guard draw else { return }
         previewView?.draw(detections: stabilized, results: results)
     }
 
@@ -661,14 +663,14 @@ final class CameraController: NSObject {
                 Task { @MainActor in
                     guard let self, self.active, self.liveEnabled, !self.paused,
                           self.generation == token, self.analysisIdentifier == frameIdentifier else { return }
-                    // Draw the stabilized readings from the previous cycle. `liveResults`
-                    // is raw per-frame OCR output and may be empty or garbled; using it
-                    // here used to tear every chip off at the start of each cycle.
-                    // Geometry comes from the detection track (see PreviewView: it no
-                    // longer lets a result's corners override the detection quad), so
-                    // both draws of a cycle share one geometry and only the label updates.
+                    // Fold this frame's detections into the tracker, but do NOT paint yet.
+                    // Painting here used to draw provisional geometry with the *previous*
+                    // cycle's label, then the final callback repainted with this cycle's
+                    // data. That double draw is the "wrong box, then flashes to the right
+                    // place" symptom. One paint per cycle (the final callback below) keeps
+                    // box and label sourced from the same frame.
                     self.publishLiveOverlay(detections: detections, frameIdentifier: frameIdentifier,
-                                            results: self.stableResults)
+                                            results: self.stableResults, draw: false)
                 }
             }
             let latency = Int(Date().timeIntervalSince(started) * 1000)
