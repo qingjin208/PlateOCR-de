@@ -3,9 +3,10 @@
 
  Abstract:
  Plays the selected clip and paints the plates found in each *sampled* frame on top of
- the video. Every sampled frame carries its own normalized coordinates, so the overlay
- switches as playback reaches that sample — drawing the aggregate result list instead
- would place boxes in the wrong coordinate space.
+ the video. The SDK only recognizes a handful of frames (default 50), so the overlay
+ interpolates geometry between the two samples bracketing the playback head. A plate
+ therefore glides with the car instead of jumping from one stale sample to the next —
+ the persistent "flicker" reported on moving footage.
 
  The overlay geometry is anchored to `AVPlayerLayer.videoRect`, which already accounts
  for the layer bounds, `videoGravity` and the track's preferred transform, so normalized
@@ -20,7 +21,7 @@ struct VideoPlatePreview: UIViewRepresentable {
     let player: AVPlayer
     let samples: [PlateVideoSample]
     /// Cross-frame majority-voted readings. Only the *text/confidence* is borrowed from
-    /// these; geometry still comes from the sample currently on screen.
+    /// these; geometry still comes from the interpolated samples.
     let results: [PlateResult]
 
     func makeUIView(context: Context) -> VideoPlateView {
@@ -42,34 +43,40 @@ struct VideoPlatePreview: UIViewRepresentable {
     }
 }
 
+/// One plate to draw at the current playback time, with geometry already interpolated
+/// between the two bracketing samples.
+private struct VideoDrawItem {
+    var quad: [CGPoint]
+    var box: CGRect
+    var text: String
+    var confidence: Float
+    var recognized: Bool
+    /// Fade factor at a track's birth/death (a plate present in only one bracket sample).
+    var alpha: CGFloat
+}
+
 final class VideoPlateView: UIView {
-    /// Sampled frames plus the id currently drawn. A fresh recognition pass resets the
-    /// selection so it repaints immediately; an unrelated SwiftUI re-render (play/pause,
-    /// progress, settings) leaves the selection alone. Previously every `updateUIView`
-    /// re-assignment cleared `currentSampleID` and rebuilt every layer — a visible flash.
+    /// Sampled frames. A fresh recognition pass resets the cached sample order so the
+    /// next render recomputes interpolation; an unrelated SwiftUI re-render (play/pause,
+    /// progress, settings) leaves it alone. Previously every `updateUIView` re-assignment
+    /// cleared the selection and rebuilt every layer — a visible flash.
     var samples: [PlateVideoSample] = [] {
         didSet {
             guard !Self.sameSamples(oldValue, samples) else { return }
-            currentSampleID = nil
-            // `renderOverlay` now bails out before clearing when videoRect is not ready,
-            // so an empty sample set must explicitly drop the previous pass's layers.
-            if samples.isEmpty {
-                clearLayers()
-                return
-            }
-            updateOverlay(for: playerLayer.player?.currentTime().seconds ?? 0)
+            sortedSamples = samples.sorted { $0.time < $1.time }
+            if samples.isEmpty { clearLayers() }
+            render(at: playerLayer.player?.currentTime().seconds ?? 0)
             refreshSoon()
         }
     }
 
     /// Majority-voted readings (`PlateVoteAggregator.consolidate`). Only text and
-    /// confidence are borrowed from these; geometry stays with the visible sample.
-    /// Equality-gated for the same reason as `samples`: SwiftUI re-assigns on every body
-    /// evaluation, and an unconditional repaint would flash the overlay for no reason.
+    /// confidence are borrowed; geometry stays with the interpolated samples.
+    /// Equality-gated for the same reason as `samples`.
     var results: [PlateResult] = [] {
         didSet {
             guard !Self.sameReadings(oldValue, results) else { return }
-            renderOverlay()
+            render(at: playerLayer.player?.currentTime().seconds ?? 0)
         }
     }
 
@@ -78,23 +85,22 @@ final class VideoPlateView: UIView {
         return zip(a, b).allSatisfy { $0.text == $1.text && $0.confidence == $1.confidence }
     }
 
-    /// Identity of a recognition pass: ids and timestamps are enough to tell a new pass
-    /// from a re-assignment of the same array. Payload changes always come with new ids.
     private static func sameSamples(_ a: [PlateVideoSample], _ b: [PlateVideoSample]) -> Bool {
         guard a.count == b.count else { return false }
         return zip(a, b).allSatisfy { $0.id == $1.id && $0.time == $1.time }
     }
 
-    private var currentSampleID: Int?
+    private var sortedSamples: [PlateVideoSample] = []
     private var timeObserver: Any?
     private weak var observedPlayer: AVPlayer?
-    /// Four independent callers can request a repaint (time observer, delayed refresh,
-    /// results update, layout). Without this guard each one tears down and rebuilds every
-    /// CALayer, which reads as a flash even when the visible content did not change.
-    private var lastRenderSignature: String?
 
     private let plateContainerLayer = CALayer()
+    /// Labels in their own container always paint above the plate fills, regardless of
+    /// the order in which the reused shape/label pools grow or shrink.
+    private let labelContainerLayer = CALayer()
     private let detectionLayer = CAShapeLayer()
+    /// Layers are reused across renders: only their path/frame/string is updated. Tearing
+    /// them down and rebuilding each tick is itself a flash even when geometry is smooth.
     private var plateLayers: [CAShapeLayer] = []
     private var labels: [CATextLayer] = []
 
@@ -112,6 +118,7 @@ final class VideoPlateView: UIView {
         detectionLayer.lineWidth = PlateOverlayPalette.detectionStrokeWidth
         layer.addSublayer(detectionLayer)
         layer.addSublayer(plateContainerLayer)
+        layer.addSublayer(labelContainerLayer)
     }
 
     required init?(coder: NSCoder) {
@@ -128,7 +135,8 @@ final class VideoPlateView: UIView {
         super.layoutSubviews()
         detectionLayer.frame = bounds
         plateContainerLayer.frame = bounds
-        renderOverlay()
+        labelContainerLayer.frame = bounds
+        render(at: playerLayer.player?.currentTime().seconds ?? 0)
     }
 
     // MARK: - Player
@@ -137,31 +145,26 @@ final class VideoPlateView: UIView {
         guard playerLayer.player !== player else { return }
         detach()
         playerLayer.player = player
-        // Follow playback so the overlay matches the frame currently on screen.
-        // Hop to the main actor explicitly: `updateOverlay` touches CALayers, and a
-        // directly-captured call is a concurrency violation under strict checking.
         timeObserver = player.addPeriodicTimeObserver(
-            forInterval: CMTime(value: 1, timescale: 20), queue: .main
+            forInterval: CMTime(value: 1, timescale: 30), queue: .main
         ) { [weak self] time in
             let seconds = time.seconds
-            Task { @MainActor in self?.updateOverlay(for: seconds) }
+            Task { @MainActor in self?.render(at: seconds) }
         }
         observedPlayer = player
-        currentSampleID = nil
         if samples.isEmpty { clearLayers() }
-        updateOverlay(for: player.currentTime().seconds)
+        render(at: player.currentTime().seconds)
         refreshSoon()
     }
 
-    /// `AVPlayerLayer.videoRect` is empty until the item is ready and the layer has been
-    /// laid out. A couple of delayed repaints make sure the overlay appears even when the
-    /// player is paused at t=0 (the periodic observer only ticks during playback).
+    /// `AVPlayerLayer.videoRect` is empty until the item is ready and laid out. Delayed
+    /// repaints make sure the overlay appears even when the player is paused at t=0.
     private func refreshSoon() {
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 200_000_000)
-            self?.renderOverlay()
+            self?.render(at: self?.playerLayer.player?.currentTime().seconds ?? 0)
             try? await Task.sleep(nanoseconds: 400_000_000)
-            self?.renderOverlay()
+            self?.render(at: self?.playerLayer.player?.currentTime().seconds ?? 0)
         }
     }
 
@@ -173,106 +176,122 @@ final class VideoPlateView: UIView {
         observedPlayer = nil
     }
 
+    // MARK: - Interpolation
+
+    /// Builds the plates to draw at `seconds` by interpolating between the two samples
+    /// that bracket the playback head. Same plate is paired by box IoU; a plate seen in
+    /// only one bracket sample fades in/out so it never blinks on/off at a sample boundary.
+    private func drawItems(at seconds: Double) -> [VideoDrawItem] {
+        guard !sortedSamples.isEmpty, seconds.isFinite else { return [] }
+        let a: PlateVideoSample
+        let b: PlateVideoSample?
+        var alpha: CGFloat = 0
+
+        if seconds <= sortedSamples.first!.time {
+            a = sortedSamples[0]
+            b = sortedSamples.count > 1 ? sortedSamples[1] : nil
+        } else if seconds >= sortedSamples.last!.time {
+            a = sortedSamples[sortedSamples.count - 1]
+            b = nil
+        } else {
+            var i = 0
+            while i + 1 < sortedSamples.count, sortedSamples[i + 1].time < seconds { i += 1 }
+            a = sortedSamples[i]
+            b = sortedSamples[i + 1]
+            let span = b.time - a.time
+            alpha = span > 0 ? CGFloat(max(0, min(1, (seconds - a.time) / span))) : 0
+        }
+
+        var items: [VideoDrawItem] = []
+        var usedB = Set<Int>()
+
+        for plateA in a.plates {
+            var bestB: Int?
+            var bestIoU: CGFloat = Self.pairIoU
+            if let b {
+                for (jb, plateB) in b.plates.enumerated() where !usedB.contains(jb) {
+                    let score = Self.iou(plateA.boundingBox, plateB.boundingBox)
+                    if score > bestIoU { bestIoU = score; bestB = jb }
+                }
+            }
+            if let jb = bestB, let b {
+                usedB.insert(jb)
+                let plateB = b.plates[jb]
+                let box = Self.lerp(plateA.boundingBox, plateB.boundingBox, alpha)
+                let quadA = Self.quad(for: plateA)
+                let quadB = Self.quad(for: plateB)
+                let quad = Self.lerpQuad(quadA, quadB, alpha)
+                let reading = stableReading(for: plateA)
+                items.append(VideoDrawItem(quad: quad, box: box,
+                                           text: reading.text, confidence: reading.confidence,
+                                           recognized: true, alpha: 1))
+            } else {
+                // Present only in A: fade out as the head advances toward B.
+                let fade = 1 - alpha
+                if fade > Self.minAlpha {
+                    let reading = stableReading(for: plateA)
+                    items.append(VideoDrawItem(quad: Self.quad(for: plateA),
+                                               box: plateA.boundingBox,
+                                               text: reading.text, confidence: reading.confidence,
+                                               recognized: true, alpha: fade))
+                }
+            }
+        }
+        if let b {
+            for (jb, plateB) in b.plates.enumerated() where !usedB.contains(jb) {
+                // Present only in B: fade in.
+                if alpha > Self.minAlpha {
+                    let reading = stableReading(for: plateB)
+                    items.append(VideoDrawItem(quad: Self.quad(for: plateB),
+                                               box: plateB.boundingBox,
+                                               text: reading.text, confidence: reading.confidence,
+                                               recognized: true, alpha: alpha))
+                }
+            }
+        }
+        return items
+    }
+
+    private static let pairIoU: CGFloat = 0.15
+    private static let minAlpha: CGFloat = 0.08
+
+    private static func quad(for plate: PlateResult) -> [CGPoint] {
+        if let corners = plate.corners, corners.count == 4 { return corners }
+        let r = plate.boundingBox
+        return [CGPoint(x: r.minX, y: r.minY), CGPoint(x: r.maxX, y: r.minY),
+                CGPoint(x: r.maxX, y: r.maxY), CGPoint(x: r.minX, y: r.maxY)]
+    }
+
+    private static func lerp(_ a: CGRect, _ b: CGRect, _ t: CGFloat) -> CGRect {
+        CGRect(x: a.minX + (b.minX - a.minX) * t,
+               y: a.minY + (b.minY - a.minY) * t,
+               width: a.width + (b.width - a.width) * t,
+               height: a.height + (b.height - a.height) * t)
+    }
+
+    private static func lerpQuad(_ a: [CGPoint], _ b: [CGPoint], _ t: CGFloat) -> [CGPoint] {
+        guard a.count == b.count else { return t < 0.5 ? a : b }
+        return zip(a, b).map { CGPoint(x: $0.x + ($1.x - $0.x) * t,
+                                       y: $0.y + ($1.y - $0.y) * t) }
+    }
+
+    private static func iou(_ a: CGRect, _ b: CGRect) -> CGFloat {
+        let inter = a.intersection(b)
+        guard !inter.isEmpty else { return 0 }
+        let area = inter.width * inter.height
+        let union = a.width * a.height + b.width * b.height - area
+        return union > 0 ? area / union : 0
+    }
+
     // MARK: - Overlay
 
-    /// Picks the sampled frame nearest to the playback position. Switching has a
-    /// hysteresis band: the current sample is kept until a rival is clearly nearer, so a
-    /// playback head hovering around a midpoint cannot flip between two samples on
-    /// consecutive 20 Hz ticks (every flip tore down and rebuilt all overlay layers).
-    private func updateOverlay(for seconds: Double) {
-        guard !samples.isEmpty, seconds.isFinite else {
-            if currentSampleID != nil {
-                currentSampleID = nil
-                clearLayers()
-            }
-            return
-        }
-        guard let nearest = samples.min(by: { abs($0.time - seconds) < abs($1.time - seconds) }) else {
-            return
-        }
-        if let currentID = currentSampleID,
-           let current = samples.first(where: { $0.id == currentID }),
-           current.id != nearest.id {
-            // 25% of the local sample spacing, capped at 0.25 s: wide enough to absorb
-            // observer jitter, short enough that a real seek still switches promptly.
-            let hold = min(0.25, spacing(around: current.time) * 0.25)
-            if abs(nearest.time - seconds) + hold >= abs(current.time - seconds) {
-                return
-            }
-        }
-        guard nearest.id != currentSampleID else { return }
-        currentSampleID = nearest.id
-        renderOverlay()
-    }
-
-    /// Gap between the two samples surrounding `time` (1 s when only one sample exists).
-    private func spacing(around time: Double) -> Double {
-        guard samples.count > 1 else { return 1 }
-        var bestDistance = Double.infinity
-        var gap = 1.0
-        for i in 0..<(samples.count - 1) {
-            let a = samples[i].time, b = samples[i + 1].time
-            let distance = abs((a + b) / 2 - time)
-            if distance < bestDistance {
-                bestDistance = distance
-                gap = b - a
-            }
-        }
-        return gap > 0 ? gap : 1
-    }
-
-    /// Tears down every overlay layer. Called only when a repaint can immediately follow,
-    /// or when the sample set became empty — never on a not-yet-ready `videoRect`, which
-    /// used to leave a blank preview between the clear and the delayed repaint.
-    private func clearLayers() {
-        lastRenderSignature = nil
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        labels.forEach { $0.removeFromSuperlayer() }
-        labels = []
-        plateLayers.forEach { $0.removeFromSuperlayer() }
-        plateLayers = []
-        detectionLayer.path = nil
-        CATransaction.commit()
-    }
-
-    /// Quantised to what is visible, so repeated repaint requests from the observer,
-    /// delayed refresh and layout are no-ops instead of layer teardowns.
-    private func renderSignature() -> String {
-        guard let id = currentSampleID,
-              let sample = samples.first(where: { $0.id == id }) else { return "empty" }
-        let videoRect = playerLayer.videoRect
-        guard !videoRect.isEmpty, videoRect.width > 0, videoRect.height > 0 else { return "novideo" }
-        func rect(_ r: CGRect) -> String {
-            String(format: "%.2f,%.2f,%.2f,%.2f", r.minX, r.minY, r.width, r.height)
-        }
-        var signature = "\(id)|" + String(format: "%.1f,%.1f", bounds.width, bounds.height)
-                        + "|" + rect(videoRect)
-        for detection in sample.detections {
-            signature += rect(detection.rect)
-            for corner in detection.plateQuad {
-                signature += String(format: "%.2f,%.2f,", corner.x, corner.y)
-            }
-            signature += ";"
-        }
-        signature += "|"
-        for plate in sample.plates {
-            let reading = stableReading(for: plate)
-            signature += reading.text + String(format: ":%d;", Int(reading.confidence * 100))
-        }
-        return signature
-    }
-
-    private func renderOverlay() {
-        let signature = renderSignature()
-        guard signature != lastRenderSignature else { return }
-        guard let id = currentSampleID,
-              let sample = samples.first(where: { $0.id == id }) else { return }
+    /// Reuses existing layers and only mutates their geometry/style. `videoRect` must be
+    /// valid before touching layers: clearing on a not-yet-ready rect used to blank the
+    /// preview between the clear and the delayed repaint.
+    private func render(at seconds: Double) {
         let videoRect = playerLayer.videoRect
         guard !videoRect.isEmpty, videoRect.width > 0, videoRect.height > 0 else { return }
-        clearLayers()
-        // Set after clearLayers(), which invalidates the signature.
-        lastRenderSignature = signature
+        let items = drawItems(at: seconds)
 
         func toLayer(_ point: CGPoint) -> CGPoint {
             CGPoint(x: videoRect.minX + point.x * videoRect.width,
@@ -284,72 +303,71 @@ final class VideoPlateView: UIView {
                    width: rect.width * videoRect.width,
                    height: rect.height * videoRect.height)
         }
-        func quadPath(_ quad: [CGPoint]) -> CGPath? {
-            guard quad.count == 4 else { return nil }
-            let path = CGMutablePath()
-            path.addLines(between: quad.map(toLayer))
-            path.closeSubpath()
-            return path
-        }
-
-        // Keep the plain detection rectangle, then tint the plate area on top of it.
-        let detectionPath = CGMutablePath()
-        for detection in sample.detections {
-            detectionPath.addRect(toLayer(detection.rect))
-        }
-
-        var usedResultIndices = Set<Int>()
-        for detection in sample.detections {
-            let matched = sample.plates.indices.first { i in
-                !usedResultIndices.contains(i) && (detection.rect.contains(sample.plates[i].boundingBox)
-                    || detection.rect.intersects(sample.plates[i].boundingBox))
-            }
-            if let matched { usedResultIndices.insert(matched) }
-            let result = matched.map { sample.plates[$0] }
-            let key = PlateOverlayPalette.key(text: result?.text, box: detection.rect)
-            // Resolve the quad without nested-optional chaining (`result?.corners` is an
-            // optional-of-optional property access, which makes `??` ambiguous).
-            var quad = detection.plateQuad
-            if let result, let corners = result.corners, corners.count == 4 {
-                quad = corners
-            }
-            guard let path = quadPath(quad) else { continue }
-            let color = PlateOverlayPalette.color(for: key)
-            addPlateLayer(path: path, color: color, recognized: result != nil)
-            if let result {
-                let reading = stableReading(for: result)
-                addLabel(for: result, color: color, quad: quad,
-                         text: reading.text, confidence: reading.confidence)
-            }
-        }
-        // Plates carved out of a merged crop have no dedicated detection rectangle.
-        for (index, plate) in sample.plates.enumerated() where !usedResultIndices.contains(index) {
-            guard let path = quadPath(plate.plateQuad) else { continue }
-            let color = PlateOverlayPalette.color(
-                for: PlateOverlayPalette.key(text: plate.text, box: plate.boundingBox))
-            addPlateLayer(path: path, color: color, recognized: true)
-            let reading = stableReading(for: plate)
-            addLabel(for: plate, color: color, quad: plate.plateQuad,
-                     text: reading.text, confidence: reading.confidence)
-        }
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+
+        // Resize the reused layer pools to match the current item count.
+        while plateLayers.count < items.count {
+            let shape = CAShapeLayer()
+            shape.lineJoin = .round
+            plateContainerLayer.addSublayer(shape)
+            plateLayers.append(shape)
+            let text = CATextLayer()
+            text.fontSize = 13
+            text.contentsScale = traitCollection.displayScale
+            text.foregroundColor = UIColor.white.cgColor
+            text.alignmentMode = .left
+            labelContainerLayer.addSublayer(text)
+            labels.append(text)
+        }
+        while plateLayers.count > items.count {
+            plateLayers.removeLast().removeFromSuperlayer()
+            labels.removeLast().removeFromSuperlayer()
+        }
+
+        let detectionPath = CGMutablePath()
+        for (index, item) in items.enumerated() {
+            guard item.quad.count == 4 else { continue }
+            let points = item.quad.map(toLayer)
+            let path = CGMutablePath()
+            path.addLines(between: points)
+            path.closeSubpath()
+
+            let color = PlateOverlayPalette.color(for: item.text)
+            let shape = plateLayers[index]
+            shape.path = path
+            shape.fillColor = color.cgColor(alpha: PlateOverlayPalette.fillAlpha * item.alpha)
+            shape.strokeColor = color.cgColor(alpha: item.alpha)
+            shape.lineWidth = PlateOverlayPalette.strokeWidth
+            shape.opacity = 1
+
+            detectionPath.addRect(toLayer(item.box))
+
+            let label = labels[index]
+            let minX = points.map(\.x).min() ?? 0
+            let minY = points.map(\.y).min() ?? 0
+            let maxX = points.map(\.x).max() ?? 0
+            let width = min(bounds.width, max(140, maxX - minX))
+            label.string = "\(item.text)  \(Int(item.confidence * 100))%"
+            label.backgroundColor = color.cgColor(alpha: 0.95 * item.alpha)
+            label.frame = CGRect(x: max(0, min(bounds.width - width, minX)),
+                                 y: max(0, minY - 21), width: width, height: 21)
+            label.opacity = Float(item.alpha)
+        }
         detectionLayer.path = detectionPath
         CATransaction.commit()
     }
 
-    private func addPlateLayer(path: CGPath, color: PlateOverlayColor, recognized: Bool) {
-        let plate = CAShapeLayer()
-        plate.path = path
-        plate.fillColor = color.cgColor(alpha: recognized ? PlateOverlayPalette.fillAlpha
-                                                         : PlateOverlayPalette.fillAlpha * 0.4)
-        plate.strokeColor = color.cgColor
-        plate.lineWidth = recognized ? PlateOverlayPalette.strokeWidth
-                                     : PlateOverlayPalette.strokeWidth * 0.6
-        plate.lineJoin = .round
-        plateContainerLayer.addSublayer(plate)
-        plateLayers.append(plate)
+    private func clearLayers() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        plateLayers.forEach { $0.removeFromSuperlayer() }
+        plateLayers = []
+        labels.forEach { $0.removeFromSuperlayer() }
+        labels = []
+        detectionLayer.path = nil
+        CATransaction.commit()
     }
 
     /// Majority-voted text/confidence for one per-frame reading. OCR on neighbouring
@@ -368,33 +386,9 @@ final class VideoPlateView: UIView {
             let union = box.width * box.height + other.width * other.height - area
             guard union > 0 else { continue }
             let score = area / union
-            if score > bestIoU {
-                bestIoU = score
-                best = candidate
-            }
+            if score > bestIoU { bestIoU = score; best = candidate }
         }
         guard let best else { return (plate.text, plate.confidence) }
         return (best.text, best.confidence)
-    }
-
-    private func addLabel(for plate: PlateResult, color: PlateOverlayColor, quad: [CGPoint],
-                          text: String, confidence: Float) {
-        let videoRect = playerLayer.videoRect
-        let points = quad.map { CGPoint(x: videoRect.minX + $0.x * videoRect.width,
-                                        y: videoRect.minY + $0.y * videoRect.height) }
-        let minX = points.map(\.x).min() ?? 0
-        let minY = points.map(\.y).min() ?? 0
-        let maxX = points.map(\.x).max() ?? 0
-        let width = min(bounds.width, max(140, maxX - minX))
-        let label = CATextLayer()
-        label.string = "\(text)  \(Int(confidence * 100))%"
-        label.fontSize = 13
-        label.contentsScale = traitCollection.displayScale
-        label.foregroundColor = UIColor.white.cgColor
-        label.backgroundColor = color.cgColor(alpha: 0.95)
-        label.frame = CGRect(x: max(0, min(bounds.width - width, minX)),
-                             y: max(0, minY - 21), width: width, height: 21)
-        plateContainerLayer.addSublayer(label)
-        labels.append(label)
     }
 }

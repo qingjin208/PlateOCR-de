@@ -45,6 +45,9 @@ final class PreviewView: UIView {
     /// Overlay layer used to draw the detection boxes; one path, many rects.
     private let overlayLayer = CAShapeLayer()
     private let plateContainerLayer = CALayer()
+    /// Labels live in their own container so they always paint above the plate fills,
+    /// regardless of the order in which the reused shape/label pools grow or shrink.
+    private let labelContainerLayer = CALayer()
     /// Each analysis cycle draws twice (detections callback, then final results). When
     /// the stabilised inputs did not change, rebuilding every CALayer is pure flicker —
     /// skip the repaint instead. Cleared by `clearOverlay` so a reset always repaints.
@@ -65,6 +68,7 @@ final class PreviewView: UIView {
         overlayLayer.lineWidth = PlateOverlayPalette.detectionStrokeWidth
         videoPreviewLayer.addSublayer(overlayLayer)
         videoPreviewLayer.addSublayer(plateContainerLayer)
+        videoPreviewLayer.addSublayer(labelContainerLayer)
     }
 
     required init?(coder: NSCoder) {
@@ -76,6 +80,7 @@ final class PreviewView: UIView {
         ensurePortraitOrientation()
         overlayLayer.frame = bounds
         plateContainerLayer.frame = bounds
+        labelContainerLayer.frame = bounds
         renderOverlay()
     }
 
@@ -124,6 +129,8 @@ final class PreviewView: UIView {
     /// Quantised to what is actually visible: geometry at 0.01 (~2-4 px on screen) and
     /// confidence at the integer percent printed on the chip. Finer quantisation made the
     /// smoothed values change the signature on every frame, defeating the skip entirely.
+    /// Layers are also reused (see `renderOverlay`), so even a genuine change updates
+    /// paths/strings in place instead of tearing the whole overlay down and rebuilding.
     private func renderSignature() -> String {
         func point(_ p: CGPoint) -> String { String(format: "%.2f,%.2f", p.x, p.y) }
         func rect(_ r: CGRect) -> String {
@@ -149,13 +156,6 @@ final class PreviewView: UIView {
         let signature = renderSignature()
         guard signature != lastRenderSignature else { return }
         lastRenderSignature = signature
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        labels.forEach { $0.removeFromSuperlayer() }
-        labels = []
-        plateLayers.forEach { $0.removeFromSuperlayer() }
-        plateLayers = []
-        CATransaction.commit()
         let detectionPath = CGMutablePath()
         // Detection points are normalized (top-left, 0..1) in the upright portrait frame
         // the SDK analyzes. `toLayer` sends them through `layerPointConverted`, which
@@ -178,9 +178,9 @@ final class PreviewView: UIView {
             path.closeSubpath()
             return path
         }
-        func plateLayer(path: CGPath, key: String, recognized: Bool) -> PlateOverlayColor {
+        func plateLayer(path: CGPath, key: String, recognized: Bool, at index: Int) {
             let color = PlateOverlayPalette.color(for: key)
-            let layer = CAShapeLayer()
+            let layer = plateLayers[index]
             layer.path = path
             layer.fillColor = color.cgColor(alpha: recognized ? PlateOverlayPalette.fillAlpha
                                                               : PlateOverlayPalette.fillAlpha * 0.4)
@@ -188,12 +188,22 @@ final class PreviewView: UIView {
             layer.lineWidth = recognized ? PlateOverlayPalette.strokeWidth
                                          : PlateOverlayPalette.strokeWidth * 0.6
             layer.lineJoin = .round
-            plateContainerLayer.addSublayer(layer)
-            plateLayers.append(layer)
-            return color
+            layer.isHidden = false
         }
 
         var usedResultIndices = Set<Int>()
+        // Collect paints first, then resize the reused pools once and fill in place.
+        // Never remove-and-recreate layers here: that was the original "flash" — every
+        // analysis cycle tore the whole overlay down and rebuilt it several times/second.
+        struct Paint {
+            let path: CGPath
+            let key: String
+            let recognized: Bool
+            let result: PlateResult?
+            let number: Int
+            let quad: [CGPoint]
+        }
+        var paints: [Paint] = []
         for (index, detection) in detections.enumerated() {
             detectionPath.addRect(toLayerRect(detection.rect))
             // Prefer the OCR result that belongs to this detection so the colour is keyed
@@ -205,50 +215,74 @@ final class PreviewView: UIView {
             if let matched { usedResultIndices.insert(matched) }
             let result = matched.map { results[$0] }
             let key = PlateOverlayPalette.key(text: result?.text, box: detection.rect)
-            // Resolve the quad without nested-optional chaining (`result?.corners` is an
-            // optional-of-optional property access, which makes `??` ambiguous).
             var quad = detection.plateQuad
             if let result, let corners = result.corners, corners.count == 4 {
                 quad = corners
             }
             guard let path = quadPath(quad) else { continue }
-            let color = plateLayer(path: path, key: key, recognized: result != nil)
-            if let result {
-                addLabel(for: result, number: index + 1, color: color, quad: quad)
-            }
+            paints.append(Paint(path: path, key: key, recognized: result != nil,
+                                result: result, number: index + 1, quad: quad))
         }
         // Results whose box was carved out of a shared crop (no dedicated detection).
         for (index, result) in results.enumerated() where !usedResultIndices.contains(index) {
             guard let path = quadPath(result.plateQuad) else { continue }
-            let color = plateLayer(path: path,
-                                   key: PlateOverlayPalette.key(text: result.text, box: result.boundingBox),
-                                   recognized: true)
-            addLabel(for: result, number: index + 1, color: color, quad: result.plateQuad)
+            paints.append(Paint(path: path,
+                                key: PlateOverlayPalette.key(text: result.text, box: result.boundingBox),
+                                recognized: true, result: result, number: index + 1,
+                                quad: result.plateQuad))
         }
+
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        while plateLayers.count < paints.count {
+            let layer = CAShapeLayer()
+            layer.lineJoin = .round
+            plateContainerLayer.addSublayer(layer)
+            plateLayers.append(layer)
+        }
+        while plateLayers.count > paints.count {
+            plateLayers.removeLast().removeFromSuperlayer()
+        }
+        while labels.count < paints.count {
+            let label = CATextLayer()
+            label.fontSize = 14
+            label.contentsScale = traitCollection.displayScale
+            label.foregroundColor = UIColor.white.cgColor
+            label.alignmentMode = .left
+            labelContainerLayer.addSublayer(label)
+            labels.append(label)
+        }
+        while labels.count > paints.count {
+            labels.removeLast().removeFromSuperlayer()
+        }
+        for (index, paint) in paints.enumerated() {
+            let color = PlateOverlayPalette.color(for: paint.key)
+            plateLayer(path: paint.path, key: paint.key, recognized: paint.recognized, at: index)
+            if let result = paint.result {
+                addLabel(for: result, number: paint.number, color: color,
+                         quad: paint.quad, at: index)
+            } else {
+                labels[index].isHidden = true
+            }
+        }
         overlayLayer.path = detectionPath
         CATransaction.commit()
     }
 
     /// Text chip anchored to the top edge of the plate quad, tinted with the plate colour.
-    private func addLabel(for result: PlateResult, number: Int, color: PlateOverlayColor, quad: [CGPoint]) {
+    private func addLabel(for result: PlateResult, number: Int, color: PlateOverlayColor,
+                          quad: [CGPoint], at index: Int) {
         let points = quad.map { toLayer($0) }
-        let minX = points.map { $0.x }.min() ?? 0
-        let minY = points.map { $0.y }.min() ?? 0
-        let maxX = points.map { $0.x }.max() ?? 0
+        let minX = points.map(\.x).min() ?? 0
+        let minY = points.map(\.y).min() ?? 0
+        let maxX = points.map(\.x).max() ?? 0
         let width = min(bounds.width, max(140, maxX - minX))
-        let label = CATextLayer()
+        let label = labels[index]
+        label.isHidden = false
         label.string = "#\(number) \(result.text)  \(Int(result.confidence * 100))%"
-        label.fontSize = 14
-        label.contentsScale = traitCollection.displayScale
-        label.foregroundColor = UIColor.white.cgColor
         label.backgroundColor = color.cgColor(alpha: 0.95)
-        label.alignmentMode = .left
         label.frame = CGRect(x: max(0, min(bounds.width - width, minX)),
                              y: max(0, minY - 23), width: width, height: 23)
-        plateContainerLayer.addSublayer(label)
-        labels.append(label)
     }
 
     /// Diagnostic echo layer (analyzed frame thumbnail + boxes), when enabled.
