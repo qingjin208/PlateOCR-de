@@ -161,13 +161,15 @@ struct CameraControls: View {
             controller.liveEnabled = true
             controller.paused = false
         } label: {
-            HStack(spacing: 8) {
+            HStack(spacing: 5) {
                 Image(systemName: "camera.fill")
-                Text("Start Live Detection").font(.subheadline.weight(.semibold))
+                    .font(.system(size: 11, weight: .bold))
+                Text("Start Live Detection")
+                    .font(.system(size: 13, weight: .semibold))
             }
             .foregroundStyle(.white)
-            .padding(.horizontal, 22)
-            .frame(height: 50)
+            .padding(.horizontal, 18)
+            .frame(height: 34)
             .background(appAccent, in: RoundedRectangle(cornerRadius: 14))
         }
     }
@@ -177,13 +179,15 @@ struct CameraControls: View {
             controller.liveEnabled = true
             controller.paused = false
         } label: {
-            HStack(spacing: 8) {
+            HStack(spacing: 5) {
                 Image(systemName: "camera.fill")
-                Text("Start Live Detection").font(.subheadline.weight(.semibold))
+                    .font(.system(size: 11, weight: .bold))
+                Text("Start Live Detection")
+                    .font(.system(size: 13, weight: .semibold))
             }
             .foregroundStyle(.white)
             .frame(maxWidth: .infinity)
-            .frame(height: 50)
+            .frame(height: 34)
             .background(appAccent, in: RoundedRectangle(cornerRadius: 14))
         }
     }
