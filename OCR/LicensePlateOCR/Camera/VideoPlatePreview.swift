@@ -197,8 +197,9 @@ final class VideoPlateView: UIView {
             var i = 0
             while i + 1 < sortedSamples.count, sortedSamples[i + 1].time < seconds { i += 1 }
             a = sortedSamples[i]
-            b = sortedSamples[i + 1]
-            let span = b.time - a.time
+            let next = sortedSamples[i + 1]
+            b = next
+            let span = next.time - a.time
             alpha = span > 0 ? CGFloat(max(0, min(1, (seconds - a.time) / span))) : 0
         }
 
