@@ -226,6 +226,10 @@ final class CameraController: NSObject {
         var reading: PlateResult
         /// Consecutive cycles a *different* text was read while this one stayed listed.
         var dissent: Int
+        /// Consecutive cycles this reading was actually matched. A brand-new reading
+        /// starts at 1 and is withheld from the overlay until it repeats (or is strong
+        /// enough on its own) — the same bar the history vote applies.
+        var hits: Int
         var lastSeenCycle: Int
         /// Exponentially smoothed confidence shown on the chip.
         var displayConfidence: Float
@@ -282,6 +286,13 @@ final class CameraController: NSObject {
     private static let resultSwitchConfidenceGap: Float = 0.12
     /// Weight of the new confidence in the displayed EMA.
     private static let resultConfidenceSmoothing: Float = 0.35
+    /// A reading must be confirmed this many cycles — OR be this confident in a single
+    /// pass — before the overlay draws it. Mirrors `PlateVoteSettings.minimumVotes` /
+    /// `provisionalConfidence`, so the live overlay and the history list apply the same
+    /// admission bar. Without this, a one-frame misread from a shaky hand (e.g. `CS83`
+    /// read off a bumper at 63%) is drawn immediately while the history correctly drops it.
+    private static let resultConfirmationHits = 2
+    private static let resultProvisionalConfidence: Float = 0.85
 
     private nonisolated static func iou(_ a: CGRect, _ b: CGRect) -> CGFloat {
         let inter = a.intersection(b)
@@ -289,6 +300,28 @@ final class CameraController: NSObject {
         let interArea = inter.width * inter.height
         let unionArea = a.width * a.height + b.width * b.height - interArea
         return unionArea > 0 ? interArea / unionArea : 0
+    }
+
+    /// Association score for the detection and result trackers. Plain IoU breaks when the
+    /// phone is shaken: a plate can move by more than its own width between two
+    /// accurate-mode frames (~1.9 s apart), so `IoU < associationIoU` and the same plate
+    /// spawns several tracks — the "boxes 3, plates 1" / three labels for two cars case.
+    /// When direct IoU is too low, retry on boxes dilated by half their own size, but only
+    /// if the two boxes have comparable dimensions: that bridges shake-induced motion while
+    /// keeping two genuinely different plates (different size/distance) apart. Returns 0
+    /// when the pair does not associate, so callers can keep a single `bestScore` threshold.
+    private nonisolated static func associationScore(_ a: CGRect, _ b: CGRect) -> CGFloat {
+        let direct = iou(a, b)
+        if direct >= associationIoU { return direct }
+        let wRatio = max(a.width, b.width) / max(min(a.width, b.width), 1e-6)
+        let hRatio = max(a.height, b.height) / max(min(a.height, b.height), 1e-6)
+        guard wRatio <= 1.8, hRatio <= 1.8 else { return 0 }
+        let da = a.insetBy(dx: -a.width * 0.5, dy: -a.height * 0.5)
+        let db = b.insetBy(dx: -b.width * 0.5, dy: -b.height * 0.5)
+        let expanded = iou(da, db)
+        // Slightly discount the fallback so a directly-overlapping candidate always wins
+        // the best-match contest; still clear `associationIoU` so it can be selected.
+        return expanded >= associationIoU ? expanded * 0.9 : 0
     }
 
     private nonisolated static func lerp(_ a: CGPoint, _ b: CGPoint, _ t: CGFloat) -> CGPoint {
@@ -318,10 +351,10 @@ final class CameraController: NSObject {
         var nextTracks: [TrackedPlate] = []
         for detection in incoming {
             var bestIndex = -1
-            var bestIoU = Self.associationIoU
+            var bestScore: CGFloat = 0
             for (index, track) in trackedPlates.enumerated() where !matchedIndices.contains(index) {
-                let score = Self.iou(detection.rect, track.rect)
-                if score > bestIoU { bestIoU = score; bestIndex = index }
+                let score = Self.associationScore(detection.rect, track.rect)
+                if score > bestScore { bestScore = score; bestIndex = index }
             }
             let incomingQuad = detection.plateQuad
             if bestIndex >= 0 {
@@ -380,10 +413,10 @@ final class CameraController: NSObject {
         var nextTracks: [TrackedResult] = []
         for reading in incoming {
             var bestIndex = -1
-            var bestIoU = Self.associationIoU
+            var bestScore: CGFloat = 0
             for (index, track) in resultTracks.enumerated() where !matchedIndices.contains(index) {
-                let score = Self.iou(reading.boundingBox, track.rect)
-                if score > bestIoU { bestIoU = score; bestIndex = index }
+                let score = Self.associationScore(reading.boundingBox, track.rect)
+                if score > bestScore { bestScore = score; bestIndex = index }
             }
             if bestIndex >= 0 {
                 matchedIndices.insert(bestIndex)
@@ -399,6 +432,7 @@ final class CameraController: NSObject {
                     track.corners = reading.corners
                 }
                 track.lastSeenCycle = cycle
+                track.hits += 1
                 let weight = Self.resultConfidenceSmoothing
                 track.displayConfidence = track.displayConfidence * (1 - weight)
                                           + reading.confidence * weight
@@ -424,6 +458,7 @@ final class CameraController: NSObject {
                                                 corners: reading.corners,
                                                 reading: reading,
                                                 dissent: 0,
+                                                hits: 1,
                                                 lastSeenCycle: cycle,
                                                 displayConfidence: reading.confidence))
             }
@@ -434,7 +469,16 @@ final class CameraController: NSObject {
             nextTracks.append(track)
         }
         resultTracks = nextTracks
-        stableResults = resultTracks.map { displayResult(for: $0) }
+        // Only confirmed tracks reach the overlay. A reading seen once at modest
+        // confidence is kept in `resultTracks` (so a repeat on the next cycle can confirm
+        // it) but is withheld here — otherwise a shake-induced one-frame misread is drawn
+        // immediately even though the history vote correctly refuses to list it. This is
+        // the same two-bar admission rule: repeats `resultConfirmationHits` times, OR a
+        // single pass at `resultProvisionalConfidence`+.
+        stableResults = resultTracks
+            .filter { $0.hits >= Self.resultConfirmationHits
+                      || $0.reading.confidence >= Self.resultProvisionalConfidence }
+            .map { displayResult(for: $0) }
     }
 
     /// Rebuilds a result with smoothed geometry/confidence while keeping the winning
