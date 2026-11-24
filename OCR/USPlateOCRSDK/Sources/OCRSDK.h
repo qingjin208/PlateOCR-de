@@ -31,6 +31,14 @@ NS_ASSUME_NONNULL_BEGIN
                 completion:(void (^)(NSArray<OCRPlateResult *> *results,
                                      NSError * _Nullable error))completion;
 
+/// Same as above, with explicit control over the legacy demo's center-plate
+/// crop. Camera frames should pass YES; still images and extracted video frames
+/// (already upright and free of the preview's frame) should pass NO.
+- (void)processPixelBuffer:(CVPixelBufferRef)pixelBuffer
+            useCenterCrop:(BOOL)useCenterCrop
+                completion:(void (^)(NSArray<OCRPlateResult *> *results,
+                                     NSError * _Nullable error))completion;
+
 /// Legacy entry: SDK-owned camera UI (kept for the existing demo).
 - (instancetype)initWithPreview:(UIViewController *)viewController;
 - (void)startRecognize:(void (^)(NSMutableArray<NSString *> *resultArray, UIImage *processedImage))completion;

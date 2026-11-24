@@ -58,7 +58,9 @@ struct USPlateReading: Sendable {
 /// Minimal contract the app needs from the US SDK. Kept separate from the SDK type so
 /// the rest of the app compiles with or without the rebuilt framework.
 protocol USPlateSDKBridging: Sendable {
-    func recognize(_ buffer: CVPixelBuffer) async throws -> [USPlateReading]
+    /// Camera frames need the SDK's center-plate crop; stills and extracted
+    /// video frames are already full-frame and must not be cropped.
+    func recognize(_ buffer: CVPixelBuffer, useCenterCrop: Bool) async throws -> [USPlateReading]
 }
 
 /// Resumes an SDK callback exactly once even if cancellation and the callback race.
@@ -102,7 +104,7 @@ import OCRSDK
 final class USPlateSDKBridge: USPlateSDKBridging, @unchecked Sendable {
     private let sdk = OCRSDK()
 
-    func recognize(_ buffer: CVPixelBuffer) async throws -> [USPlateReading] {
+    func recognize(_ buffer: CVPixelBuffer, useCenterCrop: Bool) async throws -> [USPlateReading] {
         let box = OneShotContinuation<[USPlateReading]>()
         // Last-resort watchdog: even if a future SDK revision forgets to call back,
         // the UI must not stay on "Recognizing…" indefinitely.
@@ -117,7 +119,7 @@ final class USPlateSDKBridge: USPlateSDKBridging, @unchecked Sendable {
                 box.install(continuation)
                 // SDK calls back on its private serial queue; `box` makes the
                 // callback/cancellation race safe and resumes exactly once.
-                self.sdk.processPixelBuffer(buffer) { results, error in
+                self.sdk.processPixelBuffer(buffer, useCenterCrop: useCenterCrop) { results, error in
                     if let error {
                         box.finish(.failure(error))
                         return
@@ -138,7 +140,7 @@ final class USPlateSDKBridge: USPlateSDKBridging, @unchecked Sendable {
 #else
 /// Build-time fallback so adding the region switch never breaks the German build.
 final class USPlateSDKUnavailableBridge: USPlateSDKBridging {
-    func recognize(_ buffer: CVPixelBuffer) async throws -> [USPlateReading] {
+    func recognize(_ buffer: CVPixelBuffer, useCenterCrop: Bool) async throws -> [USPlateReading] {
         throw LicensePlateError.invalidInput(
             "US OCRSDK is not linked. Run `pod install` in the OCR directory to build "
             + "the local OCRSDK pod (init + processPixelBuffer:completion:).")
@@ -258,7 +260,11 @@ final class USPlateRecognitionService: LicensePlateRecognizing, @unchecked Senda
                         tiled: Bool,
                         onDetections: (@Sendable ([PlateDetection], CGSize) -> Void)?) async throws -> PlateFrameResult {
         let buffer = try USFrameUprighter.upright(pixelBuffer, orientation: orientation, context: context)
-        let readings = try await bridge.recognize(buffer)
+        // Camera frames arrive in portrait orientation; the original US demo's
+        // purple crop box only exists on the live camera preview. Stills and
+        // video frames are already full-frame images, so leave them uncropped.
+        let readings = try await bridge.recognize(buffer,
+                                                  useCenterCrop: orientation == .right)
         let width = CGFloat(CVPixelBufferGetWidth(buffer))
         let height = CGFloat(CVPixelBufferGetHeight(buffer))
         guard width > 0, height > 0 else {

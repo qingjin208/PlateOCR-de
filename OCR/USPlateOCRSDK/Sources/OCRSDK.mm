@@ -70,9 +70,14 @@ YoloPredictor *yoloPredictor;
     NSString *clsPath = [bundle pathForResource:@"ch_ppocr_mobile_v2.0_cls_slim_opt" ofType:@"nb"];
     NSString *dictPath = [bundle pathForResource:@"ppocr_keys_v1" ofType:@"txt"];
     NSString *configPath = [bundle pathForResource:@"config" ofType:@"txt"];
+    NSString *yoloPath = [bundle pathForResource:@"yolo" ofType:@"nb"];
 
-    NSAssert(detPath && recPath && clsPath && dictPath && configPath,
+    NSAssert(detPath && recPath && clsPath && dictPath && configPath && yoloPath,
              @"OCRSDK model resources are missing");
+
+    // The original US demo gates OCR with a plate detector on a center crop.
+    // Without this gate the OCR reads arbitrary text from the whole frame.
+    yoloPredictor = new YoloPredictor([yoloPath UTF8String], "LITE_POWER_HIGH", 1);
 
     pipe_ = new Pipeline(
         [detPath UTF8String],
@@ -187,7 +192,26 @@ YoloPredictor *yoloPredictor;
     return NO;
 }
 
+/// Mirrors the original demo's center strip: ~74% of the frame width, 2:1
+/// plate aspect ratio, centered. Camera frames need this because the demo's
+/// purple crop box was applied before OCR; stills/videos do not.
+static cv::Rect USCenterPlateCrop(const cv::Mat &image) {
+    int cropW = (int)(image.cols * 0.74);
+    int cropH = cropW / 2;
+    if (cropW < 32 || cropH < 16) return cv::Rect(0, 0, image.cols, image.rows);
+    cropW = std::min(cropW, image.cols);
+    cropH = std::min(cropH, image.rows);
+    return cv::Rect((image.cols - cropW) / 2, (image.rows - cropH) / 2, cropW, cropH);
+}
+
 - (void)processPixelBuffer:(CVPixelBufferRef)pixelBuffer
+                completion:(void (^)(NSArray<OCRPlateResult *> *results,
+                                     NSError * _Nullable error))completion {
+    [self processPixelBuffer:pixelBuffer useCenterCrop:YES completion:completion];
+}
+
+- (void)processPixelBuffer:(CVPixelBufferRef)pixelBuffer
+            useCenterCrop:(BOOL)useCenterCrop
                 completion:(void (^)(NSArray<OCRPlateResult *> *results,
                                      NSError * _Nullable error))completion {
     if (!pixelBuffer) {
@@ -222,8 +246,39 @@ YoloPredictor *yoloPredictor;
         BOOL converted = [self makeRGBMatFromPixelBuffer:retainedBuffer
                                                      mat:rgbImage
                                                    error:&processingError];
-        if (converted && !rgbImage.empty() && pipe_) {
-            std::vector<PlateRecognition> recognitions = pipe_->ProcessAll(rgbImage);
+        cv::Rect cropRect = useCenterCrop
+            ? USCenterPlateCrop(rgbImage)
+            : cv::Rect(0, 0, rgbImage.cols, rgbImage.rows);
+        if (cropRect.width <= 0 || cropRect.height <= 0) {
+            cropRect = cv::Rect(0, 0, rgbImage.cols, rgbImage.rows);
+        }
+        cv::Mat inferenceImage = rgbImage(cropRect).clone();
+
+        // The original demo only ran OCR when YOLO saw a complete plate inside
+        // the crop. Keep the gate for camera frames; if the detector itself
+        // fails, fall through to OCR rather than losing the frame silently.
+        BOOL allowOCR = YES;
+        if (useCenterCrop && yoloPredictor && !inferenceImage.empty()) {
+            BOOL wholePlate = NO;
+            try {
+                std::vector<YoloResult> yoloResults = yoloPredictor->Predict(inferenceImage, 640, 640);
+                const int margin = 5;
+                for (const auto &object : yoloResults) {
+                    if (object.x >= margin && object.y >= margin
+                        && object.x + object.w + margin <= inferenceImage.cols
+                        && object.y + object.h + margin <= inferenceImage.rows) {
+                        wholePlate = YES;
+                        break;
+                    }
+                }
+            } catch (...) {
+                wholePlate = YES;
+            }
+            allowOCR = wholePlate;
+        }
+
+        if (allowOCR && converted && !inferenceImage.empty() && pipe_) {
+            std::vector<PlateRecognition> recognitions = pipe_->ProcessAll(inferenceImage);
             for (const PlateRecognition &recognition : recognitions) {
                 OCRPlateResult *result = [OCRPlateResult new];
                 result.text = [NSString stringWithUTF8String:recognition.text.c_str()] ?: @"";
@@ -240,9 +295,12 @@ YoloPredictor *yoloPredictor;
                     maxX = MAX(maxX, point[0]);
                     maxY = MAX(maxY, point[1]);
                 }
+                // Boxes come back in crop coordinates; translate to full frame
+                // so the app's overlays stay aligned with the camera preview.
                 result.boundingBox = (minX == CGFLOAT_MAX)
                     ? CGRectZero
-                    : CGRectMake(minX, minY, maxX - minX, maxY - minY);
+                    : CGRectMake(minX + cropRect.x, minY + cropRect.y,
+                                 maxX - minX, maxY - minY);
                 [output addObject:result];
             }
         }
