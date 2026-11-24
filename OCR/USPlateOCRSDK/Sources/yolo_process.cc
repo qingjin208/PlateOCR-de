@@ -134,7 +134,10 @@ void YoloPredictor::Preprocess(const cv::Mat &img_in, int inputWidth, int inputH
 
 
 std::vector<YoloResult> YoloPredictor::Postprocess() {
-    float scoreThreshold = 0.8f;
+    // Keep the iOS release-line threshold. The old 0.8 here stacked on top of
+    // the caller's gate and silently dropped plates whose score sat in 0.5-0.8,
+    // which then fell back to an unlocalized crop and made OCR read scenery.
+    float scoreThreshold = 0.5f;
     std::vector<YoloResult> results;
     
     auto outputTensor = predictor->GetOutput(0);

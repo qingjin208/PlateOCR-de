@@ -186,6 +186,13 @@ YoloPredictor *yoloPredictor;
                            userInfo:@{NSLocalizedDescriptionKey: message}];
 }
 
+/// Build the 3-channel cv::Mat fed to the US models. The iOS release-line SDK
+/// reads a BGRA camera frame but converts it with COLOR_RGBA2RGB — which simply
+/// drops the alpha byte and keeps B,G,R in that order (i.e. a BGR-layout Mat).
+/// Every downstream model (YOLO + PaddleOCR det/rec, ImageNet mean/std) was
+/// trained against exactly that byte order. The previous BGRA2RGB produced a
+/// true-RGB Mat, swapping R/B: state classification (white plate) tolerated it,
+/// but box detection and text OCR degraded. Match the original byte-for-byte.
 - (BOOL)makeRGBMatFromPixelBuffer:(CVPixelBufferRef)pixelBuffer
                                mat:(cv::Mat &)rgbMat
                              error:(NSError **)error {
@@ -206,7 +213,9 @@ YoloPredictor *yoloPredictor;
         }
         cv::Mat bgra((int)height, (int)width, CV_8UC4, baseAddress,
                      CVPixelBufferGetBytesPerRow(pixelBuffer));
-        cv::cvtColor(bgra, rgbMat, cv::COLOR_BGRA2RGB);
+        // Equivalent to the original's COLOR_RGBA2RGB on a BGRA frame: both
+        // keep bytes 0,1,2 verbatim => B,G,R channel order.
+        cv::cvtColor(bgra, rgbMat, cv::COLOR_BGRA2BGR);
         return YES;
     }
 
@@ -222,7 +231,8 @@ YoloPredictor *yoloPredictor;
                   CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0));
         cv::Mat uv((int)height / 2, (int)width / 2, CV_8UC2, uvAddress,
                    CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1));
-        cv::cvtColorTwoPlane(y, uv, rgbMat, cv::COLOR_YUV2RGB_NV12);
+        // BGR output to match the BGRA branch's channel order (see above).
+        cv::cvtColorTwoPlane(y, uv, rgbMat, cv::COLOR_YUV2BGR_NV12);
         return YES;
     }
 
