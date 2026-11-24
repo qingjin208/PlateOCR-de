@@ -12,7 +12,10 @@ target 'LicensePlateOCR' do
   # app target; every subsequent "Run" recompiles it like any other source.
   # It is arm64-device only (arm_neon.h + arm64-only static libs); the Swift
   # adapter's #if canImport(OCRSDK) keeps the app building without it.
-  pod 'OCRSDK', :path => 'USPlateOCRSDK'
+  # `modular_headers` makes CocoaPods emit a clang module for this static pod,
+  # otherwise Swift's #if canImport(OCRSDK) stays false and the app builds the
+  # stub bridge (runtime error: "US OCRSDK is not linked").
+  pod 'OCRSDK', :path => 'USPlateOCRSDK', :modular_headers => true
 end
 
 post_install do |installer|
