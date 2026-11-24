@@ -27,6 +27,24 @@
 using namespace paddle::lite_api;
 using namespace cv;
 
+// CocoaPods may copy pod resources flat into the app bundle, or preserve the
+// pod's `Resources/models` and `Resources/labels` subfolders. `-pathForResource:
+// ofType:` only looks at the bundle root, so a matched set that lives in those
+// subfolders silently resolves to nil and the NSAssert below fires with no clue
+// about which file is actually missing. Probe every layout we have shipped.
+static NSString *OCRSDKResourcePath(NSBundle *bundle, NSString *name, NSString *ext) {
+    static NSArray<NSString *> *directories = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        directories = @[@"", @"models", @"labels", @"Resources/models", @"Resources/labels"];
+    });
+    for (NSString *directory in directories) {
+        NSString *path = [bundle pathForResource:name ofType:ext inDirectory:directory];
+        if (path.length > 0) return path;
+    }
+    return nil;
+}
+
 Pipeline *pipe_;
 Timer tic;
 YoloPredictor *yoloPredictor;
@@ -70,18 +88,31 @@ YoloPredictor *yoloPredictor;
     // a matched set: YOLO plate box + 51-class state classifier + PaddleOCR
     // det/cls/rec. The rec model `rec-en.nb` must be paired with `rec-en.txt`;
     // mixing it with the German `ppocr_keys_v1` dict produces garbage text.
-    NSString *detPath = [bundle pathForResource:@"det" ofType:@"nb"];
-    NSString *clsPath = [bundle pathForResource:@"cls" ofType:@"nb"];
-    NSString *recPath = [bundle pathForResource:@"rec-en" ofType:@"nb"];
-    NSString *classPath = [bundle pathForResource:@"License_plate_classification_arm" ofType:@"nb"];
-    NSString *labelPath = [bundle pathForResource:@"label" ofType:@"txt"];
-    NSString *dictPath = [bundle pathForResource:@"rec-en" ofType:@"txt"];
-    NSString *configPath = [bundle pathForResource:@"config" ofType:@"txt"];
-    NSString *yoloPath = [bundle pathForResource:@"yolo" ofType:@"nb"];
+    NSString *detPath   = OCRSDKResourcePath(bundle, @"det", @"nb");
+    NSString *clsPath   = OCRSDKResourcePath(bundle, @"cls", @"nb");
+    NSString *recPath   = OCRSDKResourcePath(bundle, @"rec-en", @"nb");
+    NSString *classPath = OCRSDKResourcePath(bundle, @"License_plate_classification_arm", @"nb");
+    NSString *labelPath = OCRSDKResourcePath(bundle, @"label", @"txt");
+    NSString *dictPath  = OCRSDKResourcePath(bundle, @"rec-en", @"txt");
+    NSString *configPath= OCRSDKResourcePath(bundle, @"config", @"txt");
+    NSString *yoloPath  = OCRSDKResourcePath(bundle, @"yolo", @"nb");
 
+    if (!(detPath && clsPath && recPath && classPath && labelPath && dictPath
+          && configPath && yoloPath)) {
+        NSLog(@"[OCRSDK] bundle=%@", bundle.bundlePath);
+        NSLog(@"[OCRSDK] .nb in root=%@ models=%@",
+              [bundle pathsForResourcesOfType:@"nb" inDirectory:nil],
+              [bundle pathsForResourcesOfType:@"nb" inDirectory:@"models"]);
+        NSLog(@"[OCRSDK] .txt in root=%@ labels=%@",
+              [bundle pathsForResourcesOfType:@"txt" inDirectory:nil],
+              [bundle pathsForResourcesOfType:@"txt" inDirectory:@"labels"]);
+    }
     NSAssert(detPath && clsPath && recPath && classPath && labelPath && dictPath
              && configPath && yoloPath,
-             @"OCRSDK model resources are missing (iOS US model set)");
+             @"OCRSDK model resources are missing (iOS US model set): det=%@ cls=%@ rec=%@ class=%@ label=%@ dict=%@ config=%@ yolo=%@",
+             detPath ?: @"MISSING", clsPath ?: @"MISSING", recPath ?: @"MISSING",
+             classPath ?: @"MISSING", labelPath ?: @"MISSING", dictPath ?: @"MISSING",
+             configPath ?: @"MISSING", yoloPath ?: @"MISSING");
 
     yoloPredictor = new YoloPredictor([yoloPath UTF8String], "LITE_POWER_HIGH", 1);
 
