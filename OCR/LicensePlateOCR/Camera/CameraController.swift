@@ -595,6 +595,11 @@ final class CameraController: NSObject {
         recognizer = newRecognizer
         detectorName = (newRecognizer as? LicensePlateRecognizer)?.detectorInfo ?? ""
         lastTopScore = nil
+        // An in-flight pass belongs to the old engine. Invalidate it so its late
+        // completion cannot publish into the new region, and clear the status pill
+        // immediately (the pass may never return if the old SDK drops its frame).
+        generation += 1
+        isAnalyzing = false
         clearRecognitionHistory()
     }
 

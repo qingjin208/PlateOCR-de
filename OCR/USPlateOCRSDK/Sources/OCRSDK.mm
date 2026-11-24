@@ -34,6 +34,7 @@ YoloPredictor *yoloPredictor;
 @property(nonatomic, strong) CvVideoCamera *videoCamera;
 @property(nonatomic, strong) dispatch_queue_t processingQueue;
 @property(nonatomic, assign) BOOL processingFrame;
+@property(nonatomic, assign) NSUInteger pendingFrames;
 @property(nonatomic) std::string dict_path;
 @property(nonatomic) std::string config_path;
 @property(nonatomic) cv::Mat cvimg;
@@ -195,12 +196,20 @@ YoloPredictor *yoloPredictor;
     }
 
     @synchronized (self) {
-        if (self.processingFrame) {
-            // Drop frames while the serial inference queue is busy. Without this the
-            // latency of a live stream grows without bound.
+        // One frame in flight plus at most one queued. Live frames beyond that are
+        // rejected WITH a callback so a Swift `await` can never hang forever; a
+        // one-shot image/video frame always gets a slot even if a camera pass is
+        // still running.
+        if (self.pendingFrames >= 2) {
+            if (completion) {
+                completion(@[], [NSError errorWithDomain:@"OCRSDK"
+                                                   code:2
+                                               userInfo:@{NSLocalizedDescriptionKey:
+                                                              @"US OCRSDK is busy; frame dropped."}]);
+            }
             return;
         }
-        self.processingFrame = YES;
+        self.pendingFrames += 1;
     }
 
     CVPixelBufferRef retainedBuffer = (CVPixelBufferRef)CFRetain(pixelBuffer);
@@ -241,7 +250,7 @@ YoloPredictor *yoloPredictor;
         CFRelease(retainedBuffer);
 
         @synchronized (self) {
-            self.processingFrame = NO;
+            if (self.pendingFrames > 0) self.pendingFrames -= 1;
         }
         if (completion) completion(output, processingError);
     });

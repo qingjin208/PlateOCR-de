@@ -61,6 +61,39 @@ protocol USPlateSDKBridging: Sendable {
     func recognize(_ buffer: CVPixelBuffer) async throws -> [USPlateReading]
 }
 
+/// Resumes an SDK callback exactly once even if cancellation and the callback race.
+/// Without this, an SDK frame that never calls back would strand `Recognizing…`.
+private final class OneShotContinuation<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Value, Error>?
+    private var finished = false
+
+    func install(_ continuation: CheckedContinuation<Value, Error>) {
+        lock.lock()
+        if finished {
+            lock.unlock()
+            continuation.resume(throwing: CancellationError())
+            return
+        }
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    func finish(_ result: Result<Value, Error>) {
+        lock.lock()
+        guard !finished else { lock.unlock(); return }
+        finished = true
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        guard let continuation else { return }
+        switch result {
+        case .success(let value): continuation.resume(returning: value)
+        case .failure(let error): continuation.resume(throwing: error)
+        }
+    }
+}
+
 #if canImport(OCRSDK)
 import OCRSDK
 
@@ -70,21 +103,35 @@ final class USPlateSDKBridge: USPlateSDKBridging, @unchecked Sendable {
     private let sdk = OCRSDK()
 
     func recognize(_ buffer: CVPixelBuffer) async throws -> [USPlateReading] {
-        try await withCheckedThrowingContinuation { continuation in
-            // The SDK calls back on its own serial queue; continuation.resume is
-            // thread-safe, and the SDK retains the buffer for the duration of the call.
-            self.sdk.processPixelBuffer(buffer) { results, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                    return
+        let box = OneShotContinuation<[USPlateReading]>()
+        // Last-resort watchdog: even if a future SDK revision forgets to call back,
+        // the UI must not stay on "Recognizing…" indefinitely.
+        let watchdog = Task.detached(priority: .utility) {
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            box.finish(.failure(LicensePlateError.invalidInput("US recognition timed out")))
+        }
+        defer { watchdog.cancel() }
+
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                box.install(continuation)
+                // SDK calls back on its private serial queue; `box` makes the
+                // callback/cancellation race safe and resumes exactly once.
+                self.sdk.processPixelBuffer(buffer) { results, error in
+                    if let error {
+                        box.finish(.failure(error))
+                        return
+                    }
+                    let readings = (results ?? []).map {
+                        USPlateReading(text: $0.text ?? "",
+                                       confidence: $0.confidence,
+                                       boundingBox: $0.boundingBox)
+                    }
+                    box.finish(.success(readings))
                 }
-                let readings = (results ?? []).map {
-                    USPlateReading(text: $0.text ?? "",
-                                   confidence: $0.confidence,
-                                   boundingBox: $0.boundingBox)
-                }
-                continuation.resume(returning: readings)
             }
+        } onCancel: {
+            box.finish(.failure(CancellationError()))
         }
     }
 }
