@@ -242,6 +242,9 @@ enum USVideoFrameSampler {
 /// the image/video passes already use. All US results are converted to `PlateResult`,
 /// whose bounding box is normalized so the existing overlays keep working unchanged.
 final class USPlateRecognitionService: LicensePlateRecognizing, @unchecked Sendable {
+    /// Shown in the same diagnostic slot as the German detector identity.
+    static let detectorInfo = "US OCRSDK · PaddleLite det/cls/rec"
+
     private let bridge: any USPlateSDKBridging
     private let context = CIContext(options: nil)
 

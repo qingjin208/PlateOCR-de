@@ -632,6 +632,9 @@ struct ContentView: View {
     /// Detector identity + best raw anchor score, for the on-device triage lines. The
     /// score only exists on the ONNX pose detector (see `LicensePlateRecognizer`).
     private var detectorTriage: String {
+        if plateRegion == .unitedStates {
+            return USPlateRecognitionService.detectorInfo + " · OCR PaddleOCR (PaddleLite)"
+        }
         var text = recognizer.detectorInfo
         #if canImport(onnxruntime) || canImport(onnxruntime_mobile_objc) || canImport(onnxruntime_objc)
         if let score = recognizer.detectorTopScore {

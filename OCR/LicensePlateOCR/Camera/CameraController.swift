@@ -593,7 +593,10 @@ final class CameraController: NSObject {
     /// analyzer changes; stale per-region detections and votes are discarded.
     func setRecognizer(_ newRecognizer: LicensePlateRecognizing) {
         recognizer = newRecognizer
-        detectorName = (newRecognizer as? LicensePlateRecognizer)?.detectorInfo ?? ""
+        detectorName = (newRecognizer as? LicensePlateRecognizer)?.detectorInfo
+            ?? ((newRecognizer as? USPlateRecognitionService) != nil
+                ? USPlateRecognitionService.detectorInfo
+                : "")
         lastTopScore = nil
         // An in-flight pass belongs to the old engine. Invalidate it so its late
         // completion cannot publish into the new region, and clear the status pill

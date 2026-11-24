@@ -95,7 +95,8 @@ struct CameraView: View {
                     // in the pill; it is the #1 cause of "no keypoints, no results".
                     // (The stub's name, e.g. LicensePlateDetectorUnavailable(原因), does
                     // not contain "ONNX", so the warning fires exactly when needed.)
-                    if !controller.detectorName.hasPrefix("ONNXPoseLicensePlateDetector") {
+                    if !controller.detectorName.hasPrefix("ONNXPoseLicensePlateDetector"),
+                   !controller.detectorName.hasPrefix("US OCRSDK") {
                         Text("Detector not using ONNX")
                             .foregroundStyle(.yellow)
                     }
@@ -108,7 +109,8 @@ struct CameraView: View {
                 // The actual failure cause, surfaced from the recognizer (model missing
                 // from the bundle vs. ORT session failure — different fixes). Kept small
                 // and capped so a long error message cannot cover the feed.
-                if !controller.detectorName.hasPrefix("ONNXPoseLicensePlateDetector") {
+                if !controller.detectorName.hasPrefix("ONNXPoseLicensePlateDetector"),
+                   !controller.detectorName.hasPrefix("US OCRSDK") {
                     Text(controller.detectorName)
                         .font(.system(size: 9, design: .monospaced))
                         .foregroundStyle(.yellow.opacity(0.85))
