@@ -15,6 +15,7 @@
 #include "pipeline.h" // NOLINT
 #include "timer.h"    // NOLINT
 #include <algorithm>  // NOLINT
+#include <cmath>      // NOLINT
 #include <iostream>   // NOLINT
 #include <map>        // NOLINT
 
@@ -580,7 +581,9 @@ std::vector<PlateRecognition> Pipeline::ProcessAll(cv::Mat img) {
         combined.text = post[0] + " " + post[1];
         combined.confidence = 0.0f;
         for (float score : rec_text_score) {
-            if (score > combined.confidence) combined.confidence = score;
+            // PaddleLite can emit NaN/inf for degenerate crops; never propagate
+            // them to Swift, where Int(confidence * 100) traps on non-finite input.
+            if (std::isfinite(score) && score > combined.confidence) combined.confidence = score;
         }
 
         size_t bestIndex = 0;
@@ -602,7 +605,8 @@ std::vector<PlateRecognition> Pipeline::ProcessAll(cv::Mat img) {
     for (size_t i = 0; i < rec_text.size(); ++i) {
         PlateRecognition result;
         result.text = rec_text[i];
-        result.confidence = (i < rec_text_score.size()) ? rec_text_score[i] : 0.0f;
+        float score = (i < rec_text_score.size()) ? rec_text_score[i] : 0.0f;
+        result.confidence = std::isfinite(score) ? score : 0.0f;
         result.box = rec_text_box[i];
         results.push_back(result);
     }

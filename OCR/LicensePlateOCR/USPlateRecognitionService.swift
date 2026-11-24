@@ -263,8 +263,14 @@ final class USPlateRecognitionService: LicensePlateRecognizing, @unchecked Senda
         }
         let size = CGSize(width: width, height: height)
         let plates = readings.map { reading -> PlateResult in
+            // The C++ recognizer may emit NaN/inf for a degenerate crop. Clamp at the
+            // boundary so UI formatting (`Int(confidence * 100)`) can never trap.
+            let rawConfidence = reading.confidence
+            let confidence = rawConfidence.isFinite
+                ? min(1, max(0, rawConfidence))
+                : 0
             PlateResult(text: reading.text,
-                        confidence: reading.confidence,
+                        confidence: confidence,
                         boundingBox: CGRect(x: reading.boundingBox.minX / width,
                                             y: reading.boundingBox.minY / height,
                                             width: reading.boundingBox.width / width,
