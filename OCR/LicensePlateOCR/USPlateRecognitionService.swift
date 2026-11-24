@@ -269,14 +269,14 @@ final class USPlateRecognitionService: LicensePlateRecognizing, @unchecked Senda
             let confidence: Float = rawConfidence.isFinite
                 ? min(Float(1), max(Float(0), rawConfidence))
                 : Float(0)
-            PlateResult(text: reading.text,
-                        confidence: confidence,
-                        boundingBox: CGRect(x: reading.boundingBox.minX / width,
-                                            y: reading.boundingBox.minY / height,
-                                            width: reading.boundingBox.width / width,
-                                            height: reading.boundingBox.height / height),
-                        imageSize: size,
-                        candidates: [])
+            return PlateResult(text: reading.text,
+                               confidence: confidence,
+                               boundingBox: CGRect(x: reading.boundingBox.minX / width,
+                                                   y: reading.boundingBox.minY / height,
+                                                   width: reading.boundingBox.width / width,
+                                                   height: reading.boundingBox.height / height),
+                               imageSize: size,
+                               candidates: [])
         }
         // The US SDK does not expose raw detections; report none so the diagnostics
         // panel stays honest about where each result came from.
