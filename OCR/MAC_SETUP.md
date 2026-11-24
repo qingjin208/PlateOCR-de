@@ -78,8 +78,13 @@ bash setup_mac.sh
   EU 蓝条的 D 与主字符等高，靠 `PlateImageCleaner` 遮白，不靠字符过滤。
 - **隐私 / 上架**：`PhotosPicker` 进程外取图，**不需要** `NSPhotoLibraryUsageDescription`；
   相机描述 `NSCameraUsageDescription` 已声明。App 自身未使用 `UserDefaults`、文件时间戳等
-  required reason API，**目前不需要** `PrivacyInfo.xcprivacy`；上架前请检查
-  `onnxruntime-objc` / `onnxruntime-mobile-objc` pod 是否自带已签名的隐私清单与签名。
+  required reason API。工程已包含最小化的 `LicensePlateOCR/PrivacyInfo.xcprivacy`
+  （空 `NSPrivacyAccessedAPITypes` / `NSPrivacyTracking` = false），并在两个 build configuration
+  设置了 `INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO`（App 完全离线：无任何网络请求、
+  无 HTTPS、无自研加密，全部推理在本地完成，故声明不使用豁免外加密，跳过每次上传的出口合规问卷）。
+  ⚠️ 仍需在 Mac 上核实 `onnxruntime-objc` pod 是否自带已签名的隐私清单：CocoaPods 静态库
+  **不会**自动合并到 App 的清单，若上传收到 `ITMS-91053`（缺 API 声明）/`ITMS-91061`
+  （SDK 缺清单），需升级 pod 或向 SDK 提供方索取清单。
 - **iPad（既有配置，非本分支改动）**：`UIRequiresFullScreen = YES` + `TARGETED_DEVICE_FAMILY = 1,2`
   会禁用 Split View / Slide Over；若要多任务需在 Target 设置里调整。
 
