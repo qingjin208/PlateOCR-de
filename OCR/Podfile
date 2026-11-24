@@ -48,10 +48,6 @@ post_install do |installer|
         xcconfig.attributes['SWIFT_INCLUDE_PATHS'] =
           [existing.presence, shim_path].compact.join(' ')
       end
-      # Xcode 16's User Script Sandboxing blocks CocoaPods' resource-copy
-      # script from writing Pods/Resources-to-copy-*.plist under ${SRCROOT},
-      # producing "Sandbox: bash(...) deny(1) file-write-create" on build.
-      xcconfig.attributes['ENABLE_USER_SCRIPT_SANDBOXING'] = 'NO'
       xcconfig.save_as(agg_target.xcconfig_path(config_name))
     end
   end
