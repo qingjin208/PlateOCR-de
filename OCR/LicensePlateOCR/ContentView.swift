@@ -38,6 +38,11 @@ enum MediaSource: String, CaseIterable, Hashable {
 struct ContentView: View {
     // Share the bundled plate detector and PaddleOCR across all media sources.
     @State private var recognizer: LicensePlateRecognizer
+    /// US-plate SDK adapter. Both engines conform to `LicensePlateRecognizing`, so the
+    /// camera controller can be swapped without touching its capture pipeline.
+    @State private var usRecognizer: USPlateRecognitionService
+    /// Header menu selection. German remains the default so existing behaviour is unchanged.
+    @State private var plateRegion: PlateRegion = .germany
     @State private var source: MediaSource = .camera
     @State private var cameraController: CameraController
     /// Opt-in SDK strengthening. One master switch in the sheet plus three isolated
@@ -67,6 +72,7 @@ struct ContentView: View {
         rec.enhancements = enhancements
         #endif
         _recognizer = State(initialValue: rec)
+        _usRecognizer = State(initialValue: USPlateRecognitionService())
         _enhancements = State(initialValue: enhancements)
         _cameraController = State(initialValue: CameraController(recognizer: rec))
         // Start with live detection OFF so the camera tab shows the idle guide frame
@@ -156,6 +162,7 @@ struct ContentView: View {
             .onChange(of: nmsIoU) { _, v in recognizer.nmsIoUThreshold = Float(v) }
             .onChange(of: showDiagnostics) { _, v in recognizer.captureDebugSnapshot = v }
             .onChange(of: enhancements) { _, newValue in handleEnhancementsChange(newValue) }
+            .onChange(of: plateRegion) { _, newRegion in handlePlateRegionChange(newRegion) }
     }
 
     /// Media-source and app-session reactions.
@@ -281,6 +288,29 @@ struct ContentView: View {
         recognizer.enhancements = newValue
     }
 
+    /// Switching region swaps the analyzer behind the shared camera funnel. Results from
+    /// the previous region are meaningless for the new one, so every derived UI state is
+    /// cleared and any in-flight media pass is cancelled before the swap.
+    private func handlePlateRegionChange(_ newRegion: PlateRegion) {
+        loadTask?.cancel()
+        loadTask = nil
+        isBusy = false
+        results = []
+        videoSamples = []
+        rawDetections = []
+        debugSnapshotImage = nil
+        displayImage = nil
+        imageData = nil
+        videoURL = nil
+        videoProgress = 0
+        lastDetectionCount = 0
+        errorMessage = nil
+        player?.pause()
+        player = nil
+        isPlaying = false
+        cameraController.setRecognizer(newRegion == .germany ? recognizer : usRecognizer)
+    }
+
     private func handleVideoURLChange(_ newURL: URL?) {
         player?.pause()
         isPlaying = false
@@ -357,7 +387,25 @@ struct ContentView: View {
     private var header: some View {
         VStack(spacing: 10) {
             HStack {
-                Text("Plate Recognition").font(.headline.bold())
+                Menu {
+                    ForEach(PlateRegion.allCases) { region in
+                        Button {
+                            withAnimation { plateRegion = region }
+                        } label: {
+                            Label(region.menuTitle,
+                                  systemImage: region == plateRegion ? "checkmark" : "car.fill")
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Text("Plate Recognition · \(plateRegion.shortTitle)")
+                            .font(.headline.bold())
+                        Image(systemName: "chevron.down")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
                 Spacer(minLength: 0)
                 Button {
                     withAnimation { showSettings = true }
@@ -685,16 +733,24 @@ struct ContentView: View {
             results = []
             lastDetectionCount = 0
             errorMessage = nil
-            recognizer.captureDebugSnapshot = showDiagnostics
-            // Wrap the upright CGImage in the SDK's input CVPixelBuffer (NV12 by
-            // default) and enter the buffer-only public API. The camera and video
-            // paths already cross the boundary as CVPixelBuffers, so all three
-            // sources now share one funnel. `tiled` adds a second pass for plates
-            // too small at full-frame scale.
-            let buffer = try PlatePixelBufferFactory.makeBuffer(from: oriented,
-                                                                format: recognizer.inputPixelFormat)
-            let frame = try await recognizer.recognize(in: buffer, orientation: .up,
+            let frame: PlateFrameResult
+            if plateRegion == .germany {
+                recognizer.captureDebugSnapshot = showDiagnostics
+                // Wrap the upright CGImage in the SDK's input CVPixelBuffer (NV12 by
+                // default) and enter the buffer-only public API. `tiled` adds a second
+                // pass for plates too small at full-frame scale.
+                let buffer = try PlatePixelBufferFactory.makeBuffer(from: oriented,
+                                                                    format: recognizer.inputPixelFormat)
+                frame = try await recognizer.recognize(in: buffer, orientation: .up,
                                                        mode: mode, tiled: true)
+            } else {
+                // The US SDK has no still-image entry point: reuse the same buffer
+                // funnel it uses for camera frames. BGRA avoids an unnecessary 4:2:0
+                // round-trip and the pixels are already upright.
+                let buffer = try PlatePixelBufferFactory.makeBuffer(from: oriented, format: .bgra)
+                frame = try await usRecognizer.recognize(in: buffer, orientation: .up,
+                                                         mode: mode, tiled: false)
+            }
             // Superseded by a newer selection: that task owns the UI state now.
             guard !Task.isCancelled else { return }
             results = frame.plates
@@ -702,7 +758,9 @@ struct ContentView: View {
             lastDetectionCount = frame.detections.count
             if showDiagnostics {
                 rawDetections = frame.detections
-                debugSnapshotImage = recognizer.debugSnapshot.map { UIImage(cgImage: $0) }
+                if plateRegion == .germany {
+                    debugSnapshotImage = recognizer.debugSnapshot.map { UIImage(cgImage: $0) }
+                }
             }
             isBusy = false
         } catch is CancellationError {
@@ -750,10 +808,36 @@ struct ContentView: View {
             lastDetectionCount = 0
             errorMessage = nil
             videoProgress = 0
-            recognizer.captureDebugSnapshot = showDiagnostics
-            let samples = try await recognizer.recognizeVideoSamples(at: dst, mode: mode,
+            let samples: [PlateVideoSample]
+            if plateRegion == .germany {
+                recognizer.captureDebugSnapshot = showDiagnostics
+                samples = try await recognizer.recognizeVideoSamples(at: dst, mode: mode,
                                                                      maxSamples: Int(videoSampleLimit)) { progress in
-                Task { @MainActor in videoProgress = progress }
+                    Task { @MainActor in videoProgress = progress }
+                }
+            } else {
+                // The US SDK has no video-file entry point. Decode a bounded number of
+                // frames here and push each through the same frame adapter the camera
+                // uses, keeping the sampled-frame overlay data intact.
+                let frames = try await USVideoFrameSampler.sample(url: dst,
+                                                                   maxSamples: Int(videoSampleLimit)) { progress in
+                    Task { @MainActor in videoProgress = progress }
+                }
+                var collected: [PlateVideoSample] = []
+                for (index, frame) in frames.enumerated() {
+                    try Task.checkCancellation()
+                    let result = try await usRecognizer.recognizeFrame(frame.buffer,
+                                                                        orientation: .up,
+                                                                        mode: mode,
+                                                                        tiled: false,
+                                                                        onDetections: nil)
+                    collected.append(PlateVideoSample(id: index,
+                                                      time: frame.time,
+                                                      imageSize: frame.size,
+                                                      detections: result.detections,
+                                                      plates: result.plates))
+                }
+                samples = collected
             }
             guard !Task.isCancelled else { return }
             videoSamples = samples

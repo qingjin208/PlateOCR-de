@@ -84,7 +84,7 @@ final class CameraController: NSObject {
     nonisolated let session = AVCaptureSession()
     private nonisolated let sessionQueue = DispatchQueue(label: "licenseplate.camera.session")
     private nonisolated let frameGate = FrameGate()
-    private let recognizer: LicensePlateRecognizing
+    private var recognizer: LicensePlateRecognizing
     private var didSetup = false
     @ObservationIgnored private var configurationTask: Task<Bool, Never>?
     private var active = false
@@ -586,6 +586,16 @@ final class CameraController: NSObject {
         // an empty reason text — a false alarm while the ONNX detector was still fine.
         self.detectorName = (recognizer as? LicensePlateRecognizer)?.detectorInfo ?? ""
         super.init()
+    }
+
+    /// Swaps the recognition backend when the user changes the plate region in the
+    /// header menu. Camera configuration is region-agnostic (still NV12), so only the
+    /// analyzer changes; stale per-region detections and votes are discarded.
+    func setRecognizer(_ newRecognizer: LicensePlateRecognizing) {
+        recognizer = newRecognizer
+        detectorName = (newRecognizer as? LicensePlateRecognizer)?.detectorInfo ?? ""
+        lastTopScore = nil
+        clearRecognitionHistory()
     }
 
     @discardableResult
