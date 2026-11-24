@@ -292,6 +292,13 @@ static YoloResult USDetectPlateTiled(YoloPredictor *predictor,
     auto consider = [&](cv::Mat &tile, int offsetX, int offsetY) {
         std::vector<YoloResult> rs = predictor->Predict(tile, 640, 640);
         for (const auto &r : rs) {
+            // Log every plausible candidate (not just the winner) so a device run
+            // shows whether the real plate was seen and at what score/shape.
+            if (r.score >= 0.3f && r.w > 8 && r.h > 8) {
+                NSLog(@"[OCRSDK-US]   cand score=%.3f local=(%.0f,%.0f,%.0f,%.0f) "
+                      @"AR=%.2f tileOff=(%d,%d)",
+                      r.score, r.x, r.y, r.w, r.h, r.w / r.h, offsetX, offsetY);
+            }
             if (r.score < scoreFloor || r.score <= best.score || r.w <= 8 || r.h <= 8) continue;
             YoloResult mapped = r;
             mapped.x += offsetX;
