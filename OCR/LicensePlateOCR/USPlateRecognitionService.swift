@@ -12,10 +12,10 @@
    - video: frames are decoded with AVAssetReader, the preferredTransform is baked in,
      and each frame goes through the same funnel.
 
- The framework is optional at build time. Without a rebuilt OCRSDK.xcframework that
- exposes `processPixelBuffer:completion:`, `canImport(OCRSDK)` is false (or the stub
- bridge is selected) and recognition fails with an explicit error instead of breaking
- the German build.
+ The SDK is compiled from source via the local `OCRSDK` CocoaPods pod (OCR/USPlateOCRSDK),
+ so `pod install` makes `canImport(OCRSDK)` true and every Run recompiles it. If the pod
+ is not installed the stub bridge is selected and recognition fails with an explicit
+ error instead of breaking the German build.
  */
 
 import Foundation
@@ -64,8 +64,8 @@ protocol USPlateSDKBridging: Sendable {
 #if canImport(OCRSDK)
 import OCRSDK
 
-/// Requires an OCRSDK.xcframework built from the US-plate branch with the
-/// `processPixelBuffer:completion:` API and the `OCRPlateResult` class exposed.
+/// Uses the local OCRSDK pod compiled from source, which exposes
+/// `processPixelBuffer:completion:` and the `OCRPlateResult` class.
 final class USPlateSDKBridge: USPlateSDKBridging, @unchecked Sendable {
     private let sdk = OCRSDK()
 
@@ -93,8 +93,8 @@ final class USPlateSDKBridge: USPlateSDKBridging, @unchecked Sendable {
 final class USPlateSDKUnavailableBridge: USPlateSDKBridging {
     func recognize(_ buffer: CVPixelBuffer) async throws -> [USPlateReading] {
         throw LicensePlateError.invalidInput(
-            "US OCRSDK is not linked. Add an OCRSDK.xcframework that exposes "
-            + "init + processPixelBuffer:completion: to enable US plate recognition.")
+            "US OCRSDK is not linked. Run `pod install` in the OCR directory to build "
+            + "the local OCRSDK pod (init + processPixelBuffer:completion:).")
     }
 }
 #endif

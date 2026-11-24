@@ -6,6 +6,13 @@ target 'LicensePlateOCR' do
   # "ONNX models are not supported in this build." The full pods load
   # .onnx directly — exactly what the LibreYOLO pose detector needs.
   pod 'onnxruntime-objc', '1.18.0'
+
+  # US-plate SDK compiled from source (Objective-C++/PaddleLite/OpenCV).
+  # `pod install` wires the source files, static libs and search paths into the
+  # app target; every subsequent "Run" recompiles it like any other source.
+  # It is arm64-device only (arm_neon.h + arm64-only static libs); the Swift
+  # adapter's #if canImport(OCRSDK) keeps the app building without it.
+  pod 'OCRSDK', :path => 'USPlateOCRSDK'
 end
 
 post_install do |installer|

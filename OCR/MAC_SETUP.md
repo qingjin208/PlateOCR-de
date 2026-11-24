@@ -99,3 +99,25 @@ bash setup_mac.sh
 - 资源：`Resources/De-plate-pose.onnx`、`Resources/PP-OCRv5_rec_mobile_infer.onnx`、
   `Resources/ppocrv5_dict.txt`
 - PC 校验脚本：`Scripts/paddleocr_rec_reference.py`（`--self-test` / `--eval` / `--fetch-models`）
+
+## 美国车牌识别（源码集成，2026-11-24）
+
+顶部标题右侧的下拉菜单可在 German plate (DE) / US plate (USA) 之间切换，UI 其余部分完全复用德牌界面。
+
+美国 SDK 以**源码**方式集成，不是预编译 framework：
+
+- 目录：`OCR/USPlateOCRSDK/`（本地 CocoaPods pod）。源码来自 VINRecognizeSDK 的
+  `feat/external-frame-api`（基于美牌 `dev` 分支），已补出 `processPixelBuffer:completion:` 外部送帧接口。
+- 静态库已裁成 arm64 单架构（OpenCV 123 MB + PaddleLite 66 MB），因此**仅支持真机**；
+  源码含 `arm_neon.h`，模拟器不可编译。德牌模式不受影响。
+- 接入方式：在 `OCR/` 下执行 `pod install`。CocoaPods 会把源码、静态库、头文件搜索路径
+  一次性写入工程；之后每次点 Run 都会重新编译这份源码，**无需再单独 Archive xcframework**。
+- Swift 侧 `USPlateRecognitionService.swift` 通过 `#if canImport(OCRSDK)` 自动启用；
+  若 pod 未安装则走占位实现并给出明确报错，德牌工程照常编译。
+- 三条输入路径：相机（NV12/BGRA 帧）、相册（CGImage→buffer）、视频（AVAssetReader 逐帧），
+  全部经 `USPlateRecognitionService` 转成统一的 `PlateResult`，叠加层无需改动。
+
+Mac 端完整步骤：
+1. `cd OCR && pod install`（会拉入 USPlateOCRSDK 本地 pod；首次较慢，含约 189 MB 静态库）。
+2. Xcode 打开 `LicensePlateOCR.xcworkspace`，选择真机，正常 Run。
+3. 标题下拉切到 US plate 即可。若 pod 未安装，切换到 US 会显示 "US OCRSDK is not linked"。

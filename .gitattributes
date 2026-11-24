@@ -5,3 +5,8 @@
 *.pt binary
 *.a binary
 *.f32 binary
+
+# US-plate SDK static libraries exceed GitHub's 100 MB hard push limit, so they
+# must be stored in Git LFS. Scoped to this directory so already-committed
+# binaries elsewhere in the repo keep their existing (plain) storage.
+OCR/USPlateOCRSDK/ThirdParty/lib/*.a filter=lfs diff=lfs merge=lfs -text
