@@ -265,10 +265,10 @@ final class USPlateRecognitionService: LicensePlateRecognizing, @unchecked Senda
         let plates = readings.map { reading -> PlateResult in
             // The C++ recognizer may emit NaN/inf for a degenerate crop. Clamp at the
             // boundary so UI formatting (`Int(confidence * 100)`) can never trap.
-            let rawConfidence = reading.confidence
-            let confidence = rawConfidence.isFinite
-                ? min(1, max(0, rawConfidence))
-                : 0
+            let rawConfidence: Float = reading.confidence
+            let confidence: Float = rawConfidence.isFinite
+                ? min(Float(1), max(Float(0), rawConfidence))
+                : Float(0)
             PlateResult(text: reading.text,
                         confidence: confidence,
                         boundingBox: CGRect(x: reading.boundingBox.minX / width,
