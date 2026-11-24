@@ -118,6 +118,18 @@ bash setup_mac.sh
   全部经 `USPlateRecognitionService` 转成统一的 `PlateResult`，叠加层无需改动。
 
 Mac 端完整步骤：
-1. `cd OCR && pod install`（会拉入 USPlateOCRSDK 本地 pod；首次较慢，含约 189 MB 静态库）。
-2. Xcode 打开 `LicensePlateOCR.xcworkspace`，选择真机，正常 Run。
-3. 标题下拉切到 US plate 即可。若 pod 未安装，切换到 US 会显示 "US OCRSDK is not linked"。
+1. **先装 Git LFS**（两个静态库通过 LFS 存储；否则拉到的是 134 字节指针文本，
+   Xcode 会报 `Mixed mode linking ... unknown file type: libopencv2.a / libpaddle_api_light_bundled.a`）：
+   ```bash
+   brew install git-lfs && git lfs install
+   cd /path/to/PlateOCR-de
+   git lfs pull
+   # 验证：应是真实的 ar 静态库（!<arch>），而不是 "version https://git-lfs.github.com/spec/v1"
+   head -c 8 OCR/USPlateOCRSDK/ThirdParty/lib/libopencv2.a
+   ```
+2. `cd OCR && pod install`（会拉入 USPlateOCRSDK 本地 pod；首次较慢，含约 189 MB 静态库）。
+3. Xcode 打开 `LicensePlateOCR.xcworkspace`，选择真机，正常 Run。
+4. 标题下拉切到 US plate 即可。若 pod 未安装，切换到 US 会显示 "US OCRSDK is not linked"。
+
+> 如果之前**未装 LFS 就已 `pod install`**，补装 LFS 并执行 `git lfs pull` 后，
+> 建议再跑一次 `pod deintegrate && pod install`（或 Clean Build Folder），确保 Xcode 不再缓存指针文件。
