@@ -15,6 +15,7 @@
 #include "pipeline.h" // NOLINT
 #include "timer.h"    // NOLINT
 #include <algorithm>  // NOLINT
+#include <cctype>     // NOLINT
 #include <cmath>      // NOLINT
 #include <iostream>   // NOLINT
 #include <map>        // NOLINT
@@ -435,6 +436,183 @@ std::string removeNonAsciiAlphaNum(const std::string& input) {
     return result;
 }
 
+namespace {
+
+struct USPlateRegion {
+    size_t index;
+    std::string raw;
+    std::string alnumLower;
+    std::string plateUpper;
+    std::string state;
+    float score;
+    cv::Rect rect;
+    bool plateLike;
+};
+
+std::string lowerAlnum(const std::string& input) {
+    std::string result;
+    for (unsigned char c : input) {
+        if (std::isalnum(c)) result += (char)std::tolower(c);
+    }
+    return result;
+}
+
+std::string upperAlnum(const std::string& input) {
+    std::string result;
+    for (unsigned char c : input) {
+        if (std::isalnum(c)) result += (char)std::toupper(c);
+    }
+    return result;
+}
+
+bool allAlpha(const std::string& s) {
+    if (s.empty()) return false;
+    for (unsigned char c : s) if (!std::isalpha(c)) return false;
+    return true;
+}
+
+// US plates vary by state, but every readable candidate must contain both a
+// letter and a digit. Pure words (state names, signs, labels) are rejected.
+bool looksLikePlateNumber(const std::string& s) {
+    if (s.size() < 3 || s.size() > 8) return false;
+    int letters = 0, digits = 0;
+    for (unsigned char c : s) {
+        if (std::isalpha(c)) ++letters;
+        else if (std::isdigit(c)) ++digits;
+        else return false;
+    }
+    return letters > 0 && digits > 0 && (letters >= 2 || digits >= 3);
+}
+
+const std::pair<const char*, const char*>* usStateNames() {
+    static const std::pair<const char*, const char*> kStates[] = {
+        {"alabama","Alabama"}, {"alaska","Alaska"}, {"arizona","Arizona"},
+        {"arkansas","Arkansas"}, {"california","California"}, {"colorado","Colorado"},
+        {"connecticut","Connecticut"}, {"delaware","Delaware"}, {"florida","Florida"},
+        {"georgia","Georgia"}, {"hawaii","Hawaii"}, {"idaho","Idaho"},
+        {"illinois","Illinois"}, {"indiana","Indiana"}, {"iowa","Iowa"},
+        {"kansas","Kansas"}, {"kentucky","Kentucky"}, {"louisiana","Louisiana"},
+        {"maine","Maine"}, {"maryland","Maryland"}, {"massachusetts","Massachusetts"},
+        {"michigan","Michigan"}, {"minnesota","Minnesota"}, {"mississippi","Mississippi"},
+        {"missouri","Missouri"}, {"montana","Montana"}, {"nebraska","Nebraska"},
+        {"nevada","Nevada"}, {"newhampshire","New Hampshire"}, {"newjersey","New Jersey"},
+        {"newmexico","New Mexico"}, {"newyork","New York"}, {"northcarolina","North Carolina"},
+        {"northdakota","North Dakota"}, {"ohio","Ohio"}, {"oklahoma","Oklahoma"},
+        {"oregon","Oregon"}, {"pennsylvania","Pennsylvania"}, {"rhodeisland","Rhode Island"},
+        {"southcarolina","South Carolina"}, {"southdakota","South Dakota"},
+        {"tennessee","Tennessee"}, {"texas","Texas"}, {"utah","Utah"},
+        {"vermont","Vermont"}, {"virginia","Virginia"}, {"washington","Washington"},
+        {"westvirginia","West Virginia"}, {"wisconsin","Wisconsin"}, {"wyoming","Wyoming"}
+    };
+    return kStates;
+}
+constexpr size_t kUSStateCount = 50;
+
+const std::pair<const char*, const char*>* usStateAbbrs() {
+    static const std::pair<const char*, const char*> kAbbrs[] = {
+        {"al","Alabama"}, {"ak","Alaska"}, {"az","Arizona"}, {"ar","Arkansas"},
+        {"ca","California"}, {"co","Colorado"}, {"ct","Connecticut"}, {"de","Delaware"},
+        {"fl","Florida"}, {"ga","Georgia"}, {"hi","Hawaii"}, {"id","Idaho"},
+        {"il","Illinois"}, {"in","Indiana"}, {"ia","Iowa"}, {"ks","Kansas"},
+        {"ky","Kentucky"}, {"la","Louisiana"}, {"me","Maine"}, {"md","Maryland"},
+        {"ma","Massachusetts"}, {"mi","Michigan"}, {"mn","Minnesota"},
+        {"ms","Mississippi"}, {"mo","Missouri"}, {"mt","Montana"}, {"ne","Nebraska"},
+        {"nv","Nevada"}, {"nh","New Hampshire"}, {"nj","New Jersey"},
+        {"nm","New Mexico"}, {"ny","New York"}, {"nc","North Carolina"},
+        {"nd","North Dakota"}, {"oh","Ohio"}, {"ok","Oklahoma"}, {"or","Oregon"},
+        {"pa","Pennsylvania"}, {"ri","Rhode Island"}, {"sc","South Carolina"},
+        {"sd","South Dakota"}, {"tn","Tennessee"}, {"tx","Texas"}, {"ut","Utah"},
+        {"vt","Vermont"}, {"va","Virginia"}, {"wa","Washington"},
+        {"wv","West Virginia"}, {"wi","Wisconsin"}, {"wy","Wyoming"}
+    };
+    return kAbbrs;
+}
+
+// Strict state decision: exact full name / exact abbreviation, plus a very
+// conservative typo tolerance. The old prefix/suffix/common-substring rules
+// matched arbitrary plate numbers and background words.
+std::string strictStateName(const std::string& s) {
+    if (!allAlpha(s)) return "";
+    const auto* states = usStateNames();
+    for (size_t i = 0; i < kUSStateCount; ++i) {
+        const std::string key(states[i].first);
+        if (s == key) return states[i].second;
+        if (s.size() >= 8 && levenshteinDistance(s, key) <= 2) return states[i].second;
+        if (s.size() >= 5 && levenshteinDistance(s, key) <= 1) return states[i].second;
+    }
+    const auto* abbrs = usStateAbbrs();
+    for (size_t i = 0; i < kUSStateCount; ++i) {
+        if (s == abbrs[i].first) return abbrs[i].second;
+    }
+    return "";
+}
+
+// Handles the common case where detection merges the state title and the plate
+// number into one OCR region, e.g. "CALIFORNIA8ABC123".
+bool splitMergedStatePlate(const std::string& s, std::string& state, std::string& plate) {
+    const auto* states = usStateNames();
+    size_t bestLength = 0;
+    for (size_t i = 0; i < kUSStateCount; ++i) {
+        const std::string key(states[i].first);
+        if (s.size() <= key.size() || !s.starts_with(key)) continue;
+        const std::string rest = s.substr(key.size());
+        if (looksLikePlateNumber(rest) && key.size() > bestLength) {
+            bestLength = key.size();
+            state = states[i].second;
+            plate = upperAlnum(rest);
+        }
+    }
+    if (bestLength > 0) return true;
+
+    const auto* abbrs = usStateAbbrs();
+    for (size_t i = 0; i < kUSStateCount; ++i) {
+        const std::string key(abbrs[i].first);
+        if (s.size() <= key.size() || !s.starts_with(key)) continue;
+        const std::string rest = s.substr(key.size());
+        if (looksLikePlateNumber(rest)) {
+            state = abbrs[i].second;
+            plate = upperAlnum(rest);
+            return true;
+        }
+    }
+    return false;
+}
+
+cv::Rect rectFromPlateBox(const std::vector<std::vector<int>>& box) {
+    int minX = INT_MAX, minY = INT_MAX, maxX = INT_MIN, maxY = INT_MIN;
+    for (const auto& point : box) {
+        if (point.size() < 2) continue;
+        minX = std::min(minX, point[0]);
+        minY = std::min(minY, point[1]);
+        maxX = std::max(maxX, point[0]);
+        maxY = std::max(maxY, point[1]);
+    }
+    if (minX == INT_MAX) return cv::Rect();
+    return cv::Rect(minX, minY, maxX - minX, maxY - minY);
+}
+
+std::vector<std::vector<int>> boxFromRect(const cv::Rect& r) {
+    return {{r.x, r.y}, {r.x + r.width, r.y},
+            {r.x + r.width, r.y + r.height}, {r.x, r.y + r.height}};
+}
+
+// The state title sits ABOVE the plate number and their horizontal spans
+// overlap. Without this check a state word elsewhere in the frame can be
+// paired with an unrelated plate-like region.
+bool stateAbovePlate(const cv::Rect& state, const cv::Rect& plate) {
+    if (state.empty() || plate.empty()) return false;
+    const double stateCenterY = state.y + state.height / 2.0;
+    const double plateCenterY = plate.y + plate.height / 2.0;
+    if (plateCenterY <= stateCenterY) return false;
+    const double overlap = std::min(state.x + state.width, plate.x + plate.width)
+                         - std::max(state.x, plate.x);
+    if (overlap < 0.25 * std::min(state.width, plate.width)) return false;
+    const double gap = plate.y - (state.y + state.height);
+    return gap <= 3.0 * std::max(state.height, plate.height);
+}
+
+}  // namespace
+
 std::vector<std::string> postProcess(std::vector<std::string> rec_text,std::vector<float> rec_text_score,std::vector<std::vector<std::vector<int>>> rec_text_box)
 {
     std::vector<std::string> resultVector;
@@ -572,43 +750,77 @@ std::vector<PlateRecognition> Pipeline::ProcessAll(cv::Mat img) {
         }
     }
 
-    // Reuse the legacy US post-processing: when a state name and a plate number are
-    // recognized, expose them as one combined reading. The box is the largest
-    // detected region, which is the plate itself rather than the state strip.
-    std::vector<std::string> post = postProcess(rec_text, rec_text_score, rec_text_box);
-    if (post.size() >= 2) {
-        PlateRecognition combined;
-        combined.text = post[0] + " " + post[1];
-        combined.confidence = 0.0f;
-        for (float score : rec_text_score) {
-            // PaddleLite can emit NaN/inf for degenerate crops; never propagate
-            // them to Swift, where Int(confidence * 100) traps on non-finite input.
-            if (std::isfinite(score) && score > combined.confidence) combined.confidence = score;
-        }
+    std::vector<USPlateRegion> regions;
+    regions.reserve(rec_text.size());
+    for (size_t i = 0; i < rec_text.size(); ++i) {
+        USPlateRegion region;
+        region.index = i;
+        region.raw = rec_text[i];
+        region.alnumLower = lowerAlnum(region.raw);
+        region.plateUpper = upperAlnum(region.raw);
+        const float score = (i < rec_text_score.size()) ? rec_text_score[i] : 0.0f;
+        region.score = std::isfinite(score) ? score : 0.0f;
+        region.rect = (i < rec_text_box.size()) ? rectFromPlateBox(rec_text_box[i]) : cv::Rect();
+        region.state = strictStateName(region.alnumLower);
+        region.plateLike = region.state.empty() && looksLikePlateNumber(region.alnumLower);
+        regions.push_back(region);
+    }
 
-        size_t bestIndex = 0;
-        int bestArea = INT_MIN;
-        for (size_t i = 0; i < rec_text_box.size(); ++i) {
-            if (rec_text_box[i].size() < 2) continue;
-            int area = calculateArea(rec_text_box[i]);
-            if (area > bestArea) {
-                bestArea = area;
-                bestIndex = i;
+    // Case 1: the detector merged "STATE" and the number into one region.
+    for (const auto& region : regions) {
+        std::string state, plate;
+        if (!splitMergedStatePlate(region.alnumLower, state, plate)) continue;
+        PlateRecognition result;
+        result.text = state + " " + plate;
+        result.confidence = region.score;
+        result.box = boxFromRect(region.rect);
+        results.push_back(result);
+        return results;
+    }
+
+    // Case 2: state title and plate number are separate regions. Require the
+    // state strip to sit above the number with horizontal overlap.
+    int bestState = -1, bestPlate = -1;
+    float bestScore = -1.0f;
+    for (size_t s = 0; s < regions.size(); ++s) {
+        if (regions[s].state.empty()) continue;
+        for (size_t p = 0; p < regions.size(); ++p) {
+            if (s == p || !regions[p].plateLike) continue;
+            if (!stateAbovePlate(regions[s].rect, regions[p].rect)) continue;
+            const float pairScore = std::min(regions[s].score, regions[p].score);
+            if (pairScore > bestScore) {
+                bestScore = pairScore;
+                bestState = (int)s;
+                bestPlate = (int)p;
             }
         }
-        if (bestIndex < rec_text_box.size()) combined.box = rec_text_box[bestIndex];
+    }
+    if (bestState >= 0 && bestPlate >= 0) {
+        PlateRecognition combined;
+        combined.text = regions[bestState].state + " " + regions[bestPlate].plateUpper;
+        combined.confidence = bestScore;
+        cv::Rect unionRect = regions[bestState].rect | regions[bestPlate].rect;
+        combined.box = boxFromRect(unionRect);
         results.push_back(combined);
         return results;
     }
 
-    // No state matched: still return every raw reading so a plate is not silently lost.
-    for (size_t i = 0; i < rec_text.size(); ++i) {
+    // Case 3: no trustworthy state reading. Return only plate-shaped candidates,
+    // never arbitrary OCR strings. Better no result than a fabricated one.
+    std::vector<size_t> order;
+    for (size_t i = 0; i < regions.size(); ++i) {
+        if (regions[i].plateLike) order.push_back(i);
+    }
+    std::stable_sort(order.begin(), order.end(), [&regions](size_t a, size_t b) {
+        return regions[a].score > regions[b].score;
+    });
+    for (size_t index : order) {
         PlateRecognition result;
-        result.text = rec_text[i];
-        float score = (i < rec_text_score.size()) ? rec_text_score[i] : 0.0f;
-        result.confidence = std::isfinite(score) ? score : 0.0f;
-        result.box = rec_text_box[i];
+        result.text = regions[index].plateUpper;
+        result.confidence = regions[index].score;
+        result.box = boxFromRect(regions[index].rect);
         results.push_back(result);
+        if (results.size() >= 2) break;
     }
     return results;
 }
