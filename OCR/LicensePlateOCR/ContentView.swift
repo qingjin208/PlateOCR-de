@@ -206,9 +206,13 @@ struct ContentView: View {
                 // top score ≈ 0 → the model never saw a plate-like input (wrong
                 // preprocessing/orientation on device); top score ≥ 0.25 → the model
                 // sees the plate and the decode/validation side must be dropping it.
-                Text("Detector \(detectorTriage)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.tertiary)
+                // The detector identity is a German-path diagnostic only; the US
+                // pipeline has no ONNX detector to triage, so hide it there.
+                if plateRegion == .germany {
+                    Text("Detector \(detectorTriage)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                }
                 if let debugSnapshotImage {
                     Image(uiImage: debugSnapshotImage)
                         .resizable()
@@ -607,8 +611,10 @@ struct ContentView: View {
                      ? "No plate recognized: the model found \(lastDetectionCount) candidate box(es), but OCR did not confirm them (try a different recognition mode)."
                      : "No plate detected. Try different media or a different recognition mode.")
                     .font(.footnote).foregroundStyle(.secondary)
-                Text("Detector: \(detectorTriage)")
-                    .font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
+                if plateRegion == .germany {
+                    Text("Detector: \(detectorTriage)")
+                        .font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
+                }
                 // The reselection button must be reachable here too: with no results the
                 // list above never renders, which previously left the loaded photo/video
                 // stuck on screen until the app was restarted.

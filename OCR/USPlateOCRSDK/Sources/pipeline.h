@@ -26,7 +26,18 @@
 
 using namespace paddle::lite_api; // NOLINT
 
-/// Result of one detected text region in an externally supplied frame.
+void InitModelPath(const std::string& model_path);
+
+struct ResultData {
+    std::string stateSource;           // 州名来源（OCR/分类模型（Clas））
+    std::string stateName;        // OCR 获取的州名
+    double stateConfidence;       // 州名分类/OCR 的置信度/分数
+    std::string licensePlate;     // OCR 获取的车牌号
+    int plateArea;                // 车牌号对应的面积
+};
+
+/// One result returned to the app through the external-frame API. The text is
+/// "State Plate" (e.g. "California 8ABC123"); the box is the detected plate region.
 struct PlateRecognition {
   std::string text;
   float confidence;
@@ -35,18 +46,22 @@ struct PlateRecognition {
 
 class Pipeline {
 public:
-  Pipeline(const std::string &detModelDir, const std::string &clsModelDir,
-           const std::string &recModelDir, const std::string &cPUPowerMode,
-           const int cPUThreadNum, const std::string &config_path,
-           const std::string &dict_path);
+  Pipeline(const std::string &detModelDir,  const std::string &clsModelDir,
+           const std::string &recModelDir,  const std::string &classPath,
+           const std::string &cPUPowerMode, const int cPUThreadNum,
+           const std::string &config_path,  const std::string &dict_path,
+           const std::string &label_path);
   
   std::tuple<cv::Mat, std::vector<std::string>> Process(cv::Mat srcimg, std::string output_img_path,
                   std::vector<std::string> &res_txt);
+    
+  std::tuple<std::string,double, std::string,int> OCRImages(cv::Mat img, std::string output_img_path,
+                                                                        std::vector<std::string> &res_txt);
 
-  /// Frame-entry result: one item per detected region, with the original box and
-  /// recognizer confidence. When the US state post-processing finds a state + plate
-  /// pair, a single combined item is returned instead.
-  std::vector<PlateRecognition> ProcessAll(cv::Mat srcimg);
+  /// External-frame entry: runs the full iOS pipeline (YOLO plate box is applied
+  /// by the caller; this receives the plate ROI) and returns app-facing results.
+  std::vector<PlateRecognition> ProcessAll(cv::Mat img);
+
 private:
   std::map<std::string, double> Config_;
   std::vector<std::string> charactor_dict_;

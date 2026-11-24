@@ -13,6 +13,7 @@
 #include "yolo_process.h"
 #include "pipeline.h"
 #include "timer.h"
+#include <algorithm>
 #include <arm_neon.h>
 #include <iostream>
 #include <mutex>
@@ -65,28 +66,37 @@ YoloPredictor *yoloPredictor;
 
 - (void)initializePipeline {
     NSBundle *bundle = [NSBundle bundleForClass:[self class]];
-    NSString *detPath = [bundle pathForResource:@"ch_ppocr_mobile_v4.0_det_slim_opt" ofType:@"nb"];
-    NSString *recPath = [bundle pathForResource:@"ch_ppocr_mobile_v4.0_rec_slim_opt" ofType:@"nb"];
-    NSString *clsPath = [bundle pathForResource:@"ch_ppocr_mobile_v2.0_cls_slim_opt" ofType:@"nb"];
-    NSString *dictPath = [bundle pathForResource:@"ppocr_keys_v1" ofType:@"txt"];
+    // Exact model set from the iOS release line (origin/iOS). The US pipeline is
+    // a matched set: YOLO plate box + 51-class state classifier + PaddleOCR
+    // det/cls/rec. The rec model `rec-en.nb` must be paired with `rec-en.txt`;
+    // mixing it with the German `ppocr_keys_v1` dict produces garbage text.
+    NSString *detPath = [bundle pathForResource:@"det" ofType:@"nb"];
+    NSString *clsPath = [bundle pathForResource:@"cls" ofType:@"nb"];
+    NSString *recPath = [bundle pathForResource:@"rec-en" ofType:@"nb"];
+    NSString *classPath = [bundle pathForResource:@"License_plate_classification_arm" ofType:@"nb"];
+    NSString *labelPath = [bundle pathForResource:@"label" ofType:@"txt"];
+    NSString *dictPath = [bundle pathForResource:@"rec-en" ofType:@"txt"];
     NSString *configPath = [bundle pathForResource:@"config" ofType:@"txt"];
     NSString *yoloPath = [bundle pathForResource:@"yolo" ofType:@"nb"];
 
-    NSAssert(detPath && recPath && clsPath && dictPath && configPath && yoloPath,
-             @"OCRSDK model resources are missing");
+    NSAssert(detPath && clsPath && recPath && classPath && labelPath && dictPath
+             && configPath && yoloPath,
+             @"OCRSDK model resources are missing (iOS US model set)");
 
-    // The original US demo gates OCR with a plate detector on a center crop.
-    // Without this gate the OCR reads arbitrary text from the whole frame.
     yoloPredictor = new YoloPredictor([yoloPath UTF8String], "LITE_POWER_HIGH", 1);
 
+    // iOS release-line constructor: det, cls, rec, state-classifier, power,
+    // threads, config, dict, labels.
     pipe_ = new Pipeline(
         [detPath UTF8String],
         [clsPath UTF8String],
         [recPath UTF8String],
+        [classPath UTF8String],
         "LITE_POWER_HIGH",
         1,
         [configPath UTF8String],
-        [dictPath UTF8String]
+        [dictPath UTF8String],
+        [labelPath UTF8String]
     );
 }
 
@@ -246,38 +256,50 @@ static cv::Rect USCenterPlateCrop(const cv::Mat &image) {
         BOOL converted = [self makeRGBMatFromPixelBuffer:retainedBuffer
                                                      mat:rgbImage
                                                    error:&processingError];
-        cv::Rect cropRect = useCenterCrop
+        // Search region: camera frames are limited to the demo's center plate
+        // strip; stills/videos are searched over the whole image. In BOTH cases
+        // YOLO localizes the plate before OCR — the original demo never OCRed
+        // an unlocalized frame, and doing so is what made stills read scenery.
+        cv::Rect searchRect = useCenterCrop
             ? USCenterPlateCrop(rgbImage)
             : cv::Rect(0, 0, rgbImage.cols, rgbImage.rows);
-        if (cropRect.width <= 0 || cropRect.height <= 0) {
-            cropRect = cv::Rect(0, 0, rgbImage.cols, rgbImage.rows);
+        if (searchRect.width <= 0 || searchRect.height <= 0) {
+            searchRect = cv::Rect(0, 0, rgbImage.cols, rgbImage.rows);
         }
-        cv::Mat inferenceImage = rgbImage(cropRect).clone();
+        cv::Mat searchImage = rgbImage(searchRect).clone();
 
-        // The original demo only ran OCR when YOLO saw a complete plate inside
-        // the crop. Keep the gate for camera frames; if the detector itself
-        // fails, fall through to OCR rather than losing the frame silently.
-        BOOL allowOCR = YES;
-        if (useCenterCrop && yoloPredictor && !inferenceImage.empty()) {
-            BOOL wholePlate = NO;
+        // Locate the plate with YOLO and crop to its box. Clip the box back into
+        // the search image so a slightly overshooting detection still yields a
+        // valid ROI instead of a black-padded crop that confuses OCR.
+        cv::Rect plateBox;
+        if (yoloPredictor && !searchImage.empty()) {
             try {
-                std::vector<YoloResult> yoloResults = yoloPredictor->Predict(inferenceImage, 640, 640);
-                const int margin = 5;
+                std::vector<YoloResult> yoloResults = yoloPredictor->Predict(searchImage, 640, 640);
+                YoloResult best;
+                best.score = -1.f;
                 for (const auto &object : yoloResults) {
-                    if (object.x >= margin && object.y >= margin
-                        && object.x + object.w + margin <= inferenceImage.cols
-                        && object.y + object.h + margin <= inferenceImage.rows) {
-                        wholePlate = YES;
-                        break;
-                    }
+                    // Camera frames kept the strict score gate from the demo;
+                    // stills use a lower floor so a small plate is not discarded.
+                    const float floor = useCenterCrop ? 0.82f : 0.5f;
+                    if (object.score > best.score && object.score >= floor) best = object;
+                }
+                if (best.score >= 0.f && best.w > 8 && best.h > 8) {
+                    int x = std::max(0, (int)best.x);
+                    int y = std::max(0, (int)best.y);
+                    int w = std::min((int)best.w, searchImage.cols - x);
+                    int h = std::min((int)best.h, searchImage.rows - y);
+                    if (w > 8 && h > 8) plateBox = cv::Rect(x, y, w, h);
                 }
             } catch (...) {
-                wholePlate = YES;
+                // A YOLO failure falls back to searching the whole region.
             }
-            allowOCR = wholePlate;
         }
 
-        if (allowOCR && converted && !inferenceImage.empty() && pipe_) {
+        cv::Mat inferenceImage = plateBox.width > 0
+            ? searchImage(plateBox).clone()
+            : searchImage;
+
+        if (converted && !inferenceImage.empty() && pipe_) {
             std::vector<PlateRecognition> recognitions = pipe_->ProcessAll(inferenceImage);
             for (const PlateRecognition &recognition : recognitions) {
                 OCRPlateResult *result = [OCRPlateResult new];
@@ -295,11 +317,12 @@ static cv::Rect USCenterPlateCrop(const cv::Mat &image) {
                     maxX = MAX(maxX, point[0]);
                     maxY = MAX(maxY, point[1]);
                 }
-                // Boxes come back in crop coordinates; translate to full frame
-                // so the app's overlays stay aligned with the camera preview.
+                // ProcessAll returns the plate-box outline in ROI coordinates;
+                // add the ROI and search offsets so overlays align to the frame.
                 result.boundingBox = (minX == CGFLOAT_MAX)
                     ? CGRectZero
-                    : CGRectMake(minX + cropRect.x, minY + cropRect.y,
+                    : CGRectMake(minX + plateBox.x + searchRect.x,
+                                 minY + plateBox.y + searchRect.y,
                                  maxX - minX, maxY - minY);
                 [output addObject:result];
             }
