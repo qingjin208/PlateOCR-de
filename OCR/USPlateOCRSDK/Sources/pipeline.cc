@@ -1747,6 +1747,9 @@ std::vector<PlateRecognition> Pipeline::ProcessAll(cv::Mat img) {
     std::vector<PlateRecognition> results;
     if (img.empty()) return results;
 
+    std::cout << "[OCRSDK-US] pipeline input image: " << img.cols << "x" << img.rows
+              << " (if this is the full frame size, plate localization failed)" << std::endl;
+
     std::vector<std::string> resTxt;
     cv::Mat visualized;
     std::tie(visualized, resTxt) = this->Process(img, "ocr_result.jpg", resTxt);

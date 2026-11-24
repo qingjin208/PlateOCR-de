@@ -255,6 +255,72 @@ static cv::Rect USCenterPlateCrop(const cv::Mat &image) {
     return cv::Rect((image.cols - cropW) / 2, (image.rows - cropH) / 2, cropW, cropH);
 }
 
+/// Sliding-window plate detection for large stills / extracted video frames.
+/// The US detector takes a 640x640 input: a full-resolution photo (e.g. 4000px)
+/// shrinks a plate to a few tens of pixels and the detector misses it, so the
+/// caller ends up OCRing the whole frame (low state score, no text box, a
+/// full-frame overlay) — exactly the reported symptom. The German path solves
+/// this with `detectTiled`; do the same here: crop overlapping square tiles,
+/// run YOLO on each at native scale, map detections back to full-frame
+/// coordinates and keep the best-scoring one. Results are in `image` pixels.
+static YoloResult USDetectPlateTiled(YoloPredictor *predictor,
+                                     const cv::Mat &image,
+                                     int tileSize,
+                                     float overlap,
+                                     float scoreFloor,
+                                     int *tileCount) {
+    YoloResult best;
+    best.score = -1.f;
+    best.x = best.y = best.w = best.h = 0.f;
+    if (tileCount) *tileCount = 0;
+    if (!predictor || image.empty()) return best;
+
+    const int W = image.cols;
+    const int H = image.rows;
+    const int ts = std::min(tileSize, std::min(W, H));
+    if (ts < 16) return best;
+
+    const int step = std::max(1, (int)(ts * (1.0f - overlap)));
+    auto offsets = [ts, step](int length) {
+        std::vector<int> out;
+        if (length <= ts) { out.push_back(0); return out; }
+        for (int o = 0; o + ts < length; o += step) out.push_back(o);
+        out.push_back(length - ts);  // always pin the last tile to the far edge
+        return out;
+    };
+
+    auto consider = [&](cv::Mat &tile, int offsetX, int offsetY) {
+        std::vector<YoloResult> rs = predictor->Predict(tile, 640, 640);
+        for (const auto &r : rs) {
+            if (r.score < scoreFloor || r.score <= best.score || r.w <= 8 || r.h <= 8) continue;
+            YoloResult mapped = r;
+            mapped.x += offsetX;
+            mapped.y += offsetY;
+            best = mapped;
+        }
+    };
+
+    if (W <= ts && H <= ts) {
+        cv::Mat work = image.clone();
+        consider(work, 0, 0);
+        if (tileCount) *tileCount = 1;
+        return best;
+    }
+
+    std::vector<int> ys = offsets(H);
+    std::vector<int> xs = offsets(W);
+    int count = 0;
+    for (int ty : ys) {
+        for (int tx : xs) {
+            cv::Mat tile = image(cv::Rect(tx, ty, ts, ts)).clone();
+            ++count;
+            consider(tile, tx, ty);
+        }
+    }
+    if (tileCount) *tileCount = count;
+    return best;
+}
+
 - (void)processPixelBuffer:(CVPixelBufferRef)pixelBuffer
                 completion:(void (^)(NSArray<OCRPlateResult *> *results,
                                      NSError * _Nullable error))completion {
@@ -315,14 +381,26 @@ static cv::Rect USCenterPlateCrop(const cv::Mat &image) {
         cv::Rect plateBox;
         if (yoloPredictor && !searchImage.empty()) {
             try {
-                std::vector<YoloResult> yoloResults = yoloPredictor->Predict(searchImage, 640, 640);
                 YoloResult best;
                 best.score = -1.f;
-                for (const auto &object : yoloResults) {
-                    // Camera frames kept the strict score gate from the demo;
-                    // stills use a lower floor so a small plate is not discarded.
-                    const float floor = useCenterCrop ? 0.82f : 0.5f;
-                    if (object.score > best.score && object.score >= floor) best = object;
+                if (useCenterCrop) {
+                    // Camera: single pass over the demo's center strip, strict gate.
+                    std::vector<YoloResult> yoloResults = yoloPredictor->Predict(searchImage, 640, 640);
+                    for (const auto &object : yoloResults) {
+                        if (object.score > best.score && object.score >= 0.82f) best = object;
+                    }
+                } else {
+                    // Stills / video: the whole frame is too large for one 640 pass —
+                    // a small plate vanishes and OCR reads scenery. Tile it like the
+                    // German path so every tile shows the plate at a usable scale.
+                    int tileCount = 0;
+                    best = USDetectPlateTiled(yoloPredictor, searchImage,
+                                              /*tileSize=*/1024, /*overlap=*/0.3f,
+                                              /*scoreFloor=*/0.5f, &tileCount);
+                    NSLog(@"[OCRSDK-US] tiled detect: tiles=%d frame=%dx%d bestScore=%.3f "
+                          @"box=(%.1f,%.1f,%.1f,%.1f)",
+                          tileCount, searchImage.cols, searchImage.rows, best.score,
+                          best.x, best.y, best.w, best.h);
                 }
                 if (best.score >= 0.f && best.w > 8 && best.h > 8) {
                     int x = std::max(0, (int)best.x);
