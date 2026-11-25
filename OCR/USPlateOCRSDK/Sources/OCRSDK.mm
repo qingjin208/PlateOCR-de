@@ -272,6 +272,13 @@ static YoloResult USDetectPlateTiled(YoloPredictor *predictor,
     YoloResult best;
     best.score = -1.f;
     best.x = best.y = best.w = best.h = 0.f;
+    // Relaxed fallback: same shape/size gate but a box cut by a tile seam is
+    // allowed. Used only when no whole-plate candidate exists, so a severely
+    // angled plate that happens to straddle a tile still yields a crop instead
+    // of forcing OCR back onto the full frame.
+    YoloResult relaxedBest;
+    relaxedBest.score = -1.f;
+    relaxedBest.x = relaxedBest.y = relaxedBest.w = relaxedBest.h = 0.f;
     if (tileCount) *tileCount = 0;
     if (!predictor || image.empty()) return best;
 
@@ -292,18 +299,40 @@ static YoloResult USDetectPlateTiled(YoloPredictor *predictor,
     auto consider = [&](cv::Mat &tile, int offsetX, int offsetY) {
         std::vector<YoloResult> rs = predictor->Predict(tile, 640, 640);
         for (const auto &r : rs) {
-            // Log every plausible candidate (not just the winner) so a device run
-            // shows whether the real plate was seen and at what score/shape.
-            if (r.score >= 0.3f && r.w > 8 && r.h > 8) {
-                NSLog(@"[OCRSDK-US]   cand score=%.3f local=(%.0f,%.0f,%.0f,%.0f) "
-                      @"AR=%.2f tileOff=(%d,%d)",
-                      r.score, r.x, r.y, r.w, r.h, r.w / r.h, offsetX, offsetY);
-            }
-            if (r.score < scoreFloor || r.score <= best.score || r.w <= 8 || r.h <= 8) continue;
+            const float ar = (r.h > 0.f) ? (r.w / r.h) : 0.f;
+            // The iOS YOLO model is a plate VERIFIER trained on a ~2:1 white-box
+            // ROI, not a whole-scene detector. Fed a large scene tile it emits
+            // out-of-distribution hits: bumper/grille bands stretched across the
+            // tile (the logged AR 3.49 box) or half-plates severed by a tile seam.
+            // The original demo rejects exactly these via isWholePlate (box must
+            // sit inside the ROI with a margin) plus a minimum area ratio. Apply
+            // the equivalent gate here instead of blindly taking the top score.
+            const float m = 4.f;
+            bool seamLeft   = (r.x <= m) && (offsetX > 0);
+            bool seamTop    = (r.y <= m) && (offsetY > 0);
+            bool seamRight  = (r.x + r.w >= tile.cols - m) &&
+                              (offsetX + tile.cols < image.cols);
+            bool seamBottom = (r.y + r.h >= tile.rows - m) &&
+                              (offsetY + tile.rows < image.rows);
+            bool cutBySeam = seamLeft || seamTop || seamRight || seamBottom;
+            bool plausibleAR = (ar >= 1.4f && ar <= 3.2f);
+            bool plausibleSize = (r.w >= 60.f && r.h >= 28.f);
+            bool keep = plausibleAR && plausibleSize && !cutBySeam;
+
+            NSLog(@"[OCRSDK-US]   cand score=%.3f local=(%.0f,%.0f,%.0f,%.0f) "
+                  @"AR=%.2f seam=%d arOK=%d sizeOK=%d keep=%d tileOff=(%d,%d)",
+                  r.score, r.x, r.y, r.w, r.h, ar,
+                  cutBySeam?1:0, plausibleAR?1:0, plausibleSize?1:0,
+                  keep?1:0, offsetX, offsetY);
+
+            if (r.score < scoreFloor) continue;
             YoloResult mapped = r;
             mapped.x += offsetX;
             mapped.y += offsetY;
-            best = mapped;
+            if (plausibleAR && plausibleSize && mapped.score > relaxedBest.score)
+                relaxedBest = mapped;
+            if (keep && mapped.score > best.score)
+                best = mapped;
         }
     };
 
@@ -311,7 +340,7 @@ static YoloResult USDetectPlateTiled(YoloPredictor *predictor,
         cv::Mat work = image.clone();
         consider(work, 0, 0);
         if (tileCount) *tileCount = 1;
-        return best;
+        return best.score >= 0.f ? best : relaxedBest;
     }
 
     std::vector<int> ys = offsets(H);
@@ -325,7 +354,7 @@ static YoloResult USDetectPlateTiled(YoloPredictor *predictor,
         }
     }
     if (tileCount) *tileCount = count;
-    return best;
+    return best.score >= 0.f ? best : relaxedBest;
 }
 
 - (void)processPixelBuffer:(CVPixelBufferRef)pixelBuffer
