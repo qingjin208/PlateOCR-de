@@ -1742,33 +1742,119 @@ std::tuple<cv::Mat, std::vector<std::string>> Pipeline::Process(cv::Mat img, std
 // External-frame API adapter (app side). The caller has already localized the
 // plate with YOLO and passes a plate ROI. We run the exact iOS pipeline (state
 // classifier + region OCR + fusion) and map its 5-field result to PlateRecognition.
+//
+// The original demo never trusted a single read: it accumulated 5 camera frames
+// and picked the answer with getResult() — state prefers Clas with a 0.12
+// confidence window then frequency vote, plate takes the LONGEST read then a
+// frequency vote. The first port dropped that whole layer and took resTxt[1]/[3]
+// from one pass, so a truncated single-frame OCR produced a wrong plate number.
+//
+// Image upload is a single still, so we reproduce the 5 reads by running the
+// identical Process() on scale variants of the ROI. DetResizeImg snaps to 32px
+// multiples, so scaling genuinely changes the text-line splits and OCR reads —
+// the same variation the original saw across frames. Camera passes sampleCount=1
+// (it is already multi-frame at the caller).
 // ---------------------------------------------------------------------------
-std::vector<PlateRecognition> Pipeline::ProcessAll(cv::Mat img) {
+static std::pair<std::string, std::string> USVoteStateAndPlate(const std::vector<ResultData>& results) {
+    std::string selectedState, selectedPlate;
+    if (results.empty()) return {selectedState, selectedPlate};
+
+    // --- state: prefer Clas, confidence window, then frequency vote ---
+    std::vector<ResultData> clasResults, ocrResults;
+    for (const auto& r : results) {
+        if (r.stateSource == "Clas") clasResults.push_back(r);
+        else if (r.stateSource == "OCR") ocrResults.push_back(r);
+    }
+    const std::vector<ResultData>& target = !clasResults.empty() ? clasResults : ocrResults;
+    if (!target.empty()) {
+        double maxConf = -1e30;
+        for (const auto& r : target) maxConf = std::max(maxConf, r.stateConfidence);
+        const double confidenceThreshold = 0.12;
+        std::vector<ResultData> candidates;
+        for (const auto& r : target) {
+            if (maxConf - r.stateConfidence < confidenceThreshold) candidates.push_back(r);
+        }
+        if (candidates.size() == 1) {
+            selectedState = candidates[0].stateName;
+        } else {
+            std::unordered_map<std::string, int> count;
+            for (const auto& r : candidates) count[r.stateName]++;
+            int best = 0;
+            for (const auto& kv : count) {
+                if (kv.second > best) { best = kv.second; selectedState = kv.first; }
+            }
+        }
+    }
+
+    // --- plate: longest read, then frequency vote among the longest ---
+    size_t maxLen = 0;
+    for (const auto& r : results) maxLen = std::max(maxLen, r.licensePlate.size());
+    std::vector<std::string> longest;
+    for (const auto& r : results) {
+        if (r.licensePlate.size() == maxLen) longest.push_back(r.licensePlate);
+    }
+    if (longest.size() == 1) {
+        selectedPlate = longest[0];
+    } else if (!longest.empty()) {
+        std::unordered_map<std::string, int> count;
+        for (const auto& p : longest) count[p]++;
+        int best = 0;
+        for (const auto& kv : count) {
+            if (kv.second > best) { best = kv.second; selectedPlate = kv.first; }
+        }
+    }
+    return {selectedState, selectedPlate};
+}
+
+std::vector<PlateRecognition> Pipeline::ProcessAll(cv::Mat img, int sampleCount) {
     std::vector<PlateRecognition> results;
     if (img.empty()) return results;
 
     std::cout << "[OCRSDK-US] pipeline input image: " << img.cols << "x" << img.rows
               << " (if this is the full frame size, plate localization failed)" << std::endl;
 
-    std::vector<std::string> resTxt;
-    cv::Mat visualized;
-    std::tie(visualized, resTxt) = this->Process(img, "ocr_result.jpg", resTxt);
+    // Scale variants mimic the original's 5-frame read variation. Keep the
+    // unscaled ROI first so a clean plate is never degraded by resampling.
+    const float scales[] = {1.0f, 1.12f, 0.88f, 1.24f, 0.78f};
+    const int n = std::max(1, std::min(sampleCount, (int)(sizeof(scales) / sizeof(scales[0]))));
 
-    // iOS Process emits: [stateSource, stateName, stateConfidence, plateNumber, plateArea]
-    if (resTxt.size() < 5) return results;
+    std::vector<ResultData> reads;
+    for (int i = 0; i < n; ++i) {
+        cv::Mat sample = img;
+        if (i > 0 && scales[i] != 1.0f) {
+            cv::resize(img, sample, cv::Size(), scales[i], scales[i], cv::INTER_CUBIC);
+        }
+        std::vector<std::string> resTxt;
+        cv::Mat visualized;
+        std::tie(visualized, resTxt) = this->Process(sample, "ocr_result.jpg", resTxt);
+        if (resTxt.size() < 5) continue;
 
-    std::string state = resTxt[1];
-    std::string plate = resTxt[3];
-    // Strip any non alphanumeric separators the recognizer may have emitted.
-    std::string cleanPlate;
-    for (unsigned char c : plate) {
-        if (std::isalnum(c)) cleanPlate += static_cast<char>(c);
+        ResultData d;
+        d.stateSource = resTxt[0];
+        d.stateName = resTxt[1];
+        try { d.stateConfidence = std::stod(resTxt[2]); } catch (...) { d.stateConfidence = 0.0; }
+        if (!std::isfinite(d.stateConfidence)) d.stateConfidence = 0.0;
+        d.licensePlate = resTxt[3];  // already toupper+alnum by processLicensePlate in Process
+        try { d.plateArea = std::stoi(resTxt[4]); } catch (...) { d.plateArea = 0; }
+        reads.push_back(d);
+        std::cout << "[OCRSDK-US] read " << i << " scale=" << scales[i]
+                  << " src=" << d.stateSource << " state=" << d.stateName
+                  << " conf=" << d.stateConfidence << " plate=" << d.licensePlate
+                  << " area=" << d.plateArea << std::endl;
     }
-    std::string text = state.empty() ? cleanPlate : state + " " + cleanPlate;
+    if (reads.empty()) return results;
+
+    std::string state, plate;
+    std::tie(state, plate) = USVoteStateAndPlate(reads);
+    std::cout << "[OCRSDK-US] voted reads=" << reads.size()
+              << " state=" << state << " plate=" << plate << std::endl;
+
+    std::string text = state.empty() ? plate : state + " " + plate;
     if (text.empty()) return results;
 
+    // Confidence = best state confidence among reads, clamped (UI displays this).
     double conf = 0.0;
-    try { conf = std::stod(resTxt[2]); } catch (...) { conf = 0.0; }
+    for (const auto& r : reads) conf = std::max(conf, r.stateConfidence);
     if (!std::isfinite(conf)) conf = 0.0;
 
     PlateRecognition result;

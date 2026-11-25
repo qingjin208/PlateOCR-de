@@ -60,7 +60,11 @@ public:
 
   /// External-frame entry: runs the full iOS pipeline (YOLO plate box is applied
   /// by the caller; this receives the plate ROI) and returns app-facing results.
-  std::vector<PlateRecognition> ProcessAll(cv::Mat img);
+  /// sampleCount > 1 replicates the original demo's multi-frame voting on a
+  /// single still by OCRing several scale variants of the ROI and voting with
+  /// the exact original getResult rules (state: Clas-first + confidence window,
+  /// plate: longest-then-frequency). Camera passes 1 (already multi-frame).
+  std::vector<PlateRecognition> ProcessAll(cv::Mat img, int sampleCount = 1);
 
 private:
   std::map<std::string, double> Config_;

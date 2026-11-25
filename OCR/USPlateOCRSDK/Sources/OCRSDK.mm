@@ -455,7 +455,11 @@ static YoloResult USDetectPlateTiled(YoloPredictor *predictor,
             : searchImage;
 
         if (converted && !inferenceImage.empty() && pipe_) {
-            std::vector<PlateRecognition> recognitions = pipe_->ProcessAll(inferenceImage);
+            // Stills/video are a single shot: ask the pipeline to reproduce the
+            // original demo's 5-frame voting via scale-variant reads. Live camera
+            // is already multi-frame at this layer, so keep it at one read.
+            int sampleCount = useCenterCrop ? 1 : 5;
+            std::vector<PlateRecognition> recognitions = pipe_->ProcessAll(inferenceImage, sampleCount);
             for (const PlateRecognition &recognition : recognitions) {
                 OCRPlateResult *result = [OCRPlateResult new];
                 result.text = [NSString stringWithUTF8String:recognition.text.c_str()] ?: @"";
